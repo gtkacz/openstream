@@ -23,7 +23,7 @@ pub const PROBE_ORDER: &[(&str, Codec)] = &[
 ];
 
 pub fn open_encoder(cfg: &EncoderConfig) -> Result<Box<dyn VideoEncoder>, CodecError> {
-    for &(name, codec) in PROBE_ORDER.iter().filter(|(_, codec)| *codec == cfg.codec) {
+    for &(name, _) in PROBE_ORDER.iter().filter(|(_, codec)| *codec == cfg.codec) {
         match open_named(name, cfg) {
             Ok(encoder) => return Ok(encoder),
             Err(error) => tracing::debug!(encoder = name, error = %error, "encoder unavailable"),

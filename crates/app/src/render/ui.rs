@@ -1,4 +1,3 @@
-use std::time::Duration;
 use winit::{event::WindowEvent, window::Window};
 pub struct EguiLayer {
     ctx: egui::Context,
@@ -9,7 +8,6 @@ pub struct UiFrame {
     pub paint_jobs: Vec<egui::ClippedPrimitive>,
     pub textures_delta: egui::TexturesDelta,
     pub screen: egui_wgpu::ScreenDescriptor,
-    pub repaint_delay: Option<Duration>,
 }
 impl EguiLayer {
     pub fn new(window: &Window, device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -46,7 +44,9 @@ impl EguiLayer {
         egui_winit::update_viewport_info(&mut vi, &self.ctx, window, false);
         let mut input = self.state.take_egui_input(window);
         input.viewports.insert(egui::ViewportId::ROOT, vi);
-        let out = self.ctx.run(input, |ctx| ui(ctx));
+        self.ctx.begin_pass(input);
+        ui(&self.ctx);
+        let out = self.ctx.end_pass();
         self.state
             .handle_platform_output(window, out.platform_output);
         UiFrame {
@@ -56,7 +56,6 @@ impl EguiLayer {
                 size_in_pixels: size,
                 pixels_per_point: out.pixels_per_point,
             },
-            repaint_delay: None,
         }
     }
     pub fn prepare(

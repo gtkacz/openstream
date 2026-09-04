@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn tall_video_in_wide_window_pillarboxes() {
         let [x, y] = fit_scale((1080, 1920), (1920, 1080));
-        assert!((x-.3164).abs()<.001&&y==1.);
+        assert!((x - 0.3164).abs() < 0.001 && y == 1.0);
     }
     #[test]
     fn matching_aspect_fills_window() {

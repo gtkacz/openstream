@@ -141,14 +141,27 @@ impl ApplicationHandler<AppEvent> for App {
         self.window = Some(w)
     }
     fn user_event(&mut self, _: &ActiveEventLoop, e: AppEvent) {
-        if let AppEvent::Status(s) = e {
-            self.status = s
+        match e {
+            AppEvent::Status(s) => self.status = s,
+            AppEvent::NewFrame => {}
         }
         if let Some(w) = &self.window {
             w.request_redraw()
         }
     }
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, e: WindowEvent) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        if let Some(ui) = self.ui.as_mut() {
+            let response = ui.on_window_event(&window, &e);
+            if response.repaint {
+                window.request_redraw();
+            }
+            if response.consumed {
+                return;
+            }
+        }
         match e {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => {
