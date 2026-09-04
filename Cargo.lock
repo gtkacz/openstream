@@ -229,6 +229,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -237,9 +238,11 @@ version = "0.1.0"
 dependencies = [
  "brp-capture",
  "brp-codec",
+ "brp-net",
  "brp-proto",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -17,6 +17,10 @@ pub enum NetError {
     Proto(#[from] brp_proto::ProtoError),
 }
 impl NetError {
+    pub(crate) fn connection(e: impl std::fmt::Display) -> Self {
+        Self::Connection(e.to_string())
+    }
+
     pub(crate) fn stream(e: impl std::fmt::Display) -> Self {
         Self::Stream(e.to_string())
     }

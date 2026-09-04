@@ -8,5 +8,7 @@ rust-version.workspace = true
 brp-proto.workspace = true
 brp-codec.workspace = true
 brp-capture.workspace = true
+brp-net.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
