@@ -5,3 +5,8 @@ pub mod synthetic;
 pub use error::CaptureError;
 pub use frame::*;
 pub use synthetic::SyntheticSource;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::PortalCapture;

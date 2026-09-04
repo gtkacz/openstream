@@ -17,3 +17,7 @@ pub const ENCODER_IDLE_STOP_GRACE: Duration = Duration::from_secs(5);
 pub const IDLE_KEYFRAME_RETRY: Duration = Duration::from_millis(500);
 pub const MIN_BITRATE_KBPS: u32 = 1_000;
 pub const MAX_BITRATE_KBPS: u32 = 250_000;
+pub const RELAY_ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const STATS_LOG_INTERVAL: Duration = Duration::from_secs(2);
+/// The compositor negotiates the stream format within a frame or two; this covers a slow first connection.
+pub const PORTAL_FORMAT_TIMEOUT: Duration = Duration::from_secs(10);

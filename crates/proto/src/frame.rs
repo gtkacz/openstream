@@ -40,3 +40,53 @@ impl FrameHeader {
         Ok((h, p))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn header() -> FrameHeader {
+        FrameHeader {
+            live_id: 1,
+            preset_id: 1,
+            kind: FrameKind::Video,
+            seq: 42,
+            capture_ts_us: 1_000_000,
+            keyframe: true,
+            len: 3,
+        }
+    }
+
+    #[test]
+    fn prefixed_frame_splits_into_header_and_payload() {
+        let mut bytes = header().encode_prefix().unwrap();
+        bytes.extend_from_slice(&[9, 8, 7]);
+        let (h, payload) = FrameHeader::decode_prefixed(&bytes).unwrap();
+        assert_eq!(h, header());
+        assert_eq!(payload, &[9, 8, 7]);
+    }
+
+    #[test]
+    fn prefixed_frame_rejects_length_mismatch() {
+        let mut bytes = header().encode_prefix().unwrap();
+        bytes.extend_from_slice(&[9, 8]);
+        assert!(matches!(
+            FrameHeader::decode_prefixed(&bytes),
+            Err(ProtoError::LengthMismatch {
+                declared: 3,
+                actual: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn prefixed_frame_rejects_oversized_declared_length() {
+        let mut header = header();
+        header.len = (crate::constants::MAX_FRAME_BYTES + 1) as u32;
+        let bytes = header.encode_prefix().unwrap();
+        assert!(matches!(
+            FrameHeader::decode_prefixed(&bytes),
+            Err(ProtoError::FrameTooLarge(_))
+        ));
+    }
+}

@@ -6,6 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 [dependencies]
 brp-proto.workspace = true
+tracing.workspace = true
 serde.workspace = true
 postcard.workspace = true
 thiserror.workspace = true
+ffmpeg-sys-next.workspace = true

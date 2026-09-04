@@ -8,4 +8,24 @@ rust-version.workspace = true
 name = "brp"
 path = "src/main.rs"
 [dependencies]
-
+brp-proto.workspace = true
+brp-codec.workspace = true
+brp-capture.workspace = true
+brp-net.workspace = true
+brp-pipeline.workspace = true
+iroh.workspace = true
+iroh-tickets.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+clap.workspace = true
+directories.workspace = true
+data-encoding.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true

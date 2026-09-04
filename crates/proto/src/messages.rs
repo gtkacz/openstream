@@ -110,3 +110,110 @@ pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ProtoError> {
     postcard::from_bytes(bytes).map_err(ProtoError::Decode)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewer_message_round_trips_through_postcard() {
+        let msg = ViewerMessage::Subscribe {
+            live_id: 1,
+            preset_id: 1,
+            want_audio: false,
+        };
+        let bytes = encode(&msg).unwrap();
+        let back: ViewerMessage = decode(&bytes).unwrap();
+        assert_eq!(back, msg);
+    }
+
+    #[test]
+    fn publisher_ack_round_trips_with_extradata() {
+        let msg = PublisherMessage::SubscribeAck {
+            video: CodecParams {
+                codec: Codec::Hevc,
+                width: 2560,
+                height: 1440,
+                fps: 60,
+                extradata: vec![0, 0, 0, 1, 0x40],
+            },
+            audio: None,
+        };
+        let back: PublisherMessage = decode(&encode(&msg).unwrap()).unwrap();
+        assert_eq!(back, msg);
+    }
+
+    #[test]
+    fn decode_rejects_truncated_input() {
+        let bytes = encode(&ViewerMessage::RequestKeyframe).unwrap();
+        let err = decode::<ViewerMessage>(&bytes[..bytes.len().saturating_sub(1)]);
+        assert!(matches!(err, Err(ProtoError::Decode(_))) || bytes.len() <= 1);
+    }
+
+    #[test]
+    fn preset_validation_accepts_source_preset() {
+        let preset = Preset {
+            id: 1,
+            name: "Source".into(),
+            width: 2560,
+            height: 1440,
+            fps: 60,
+            bitrate_kbps: 40_000,
+            codec: Codec::Hevc,
+        };
+        assert!(preset.validate(2560, 1440, 60).is_ok());
+    }
+
+    #[test]
+    fn preset_validation_rejects_odd_dimensions_and_out_of_range_bitrate() {
+        let odd = Preset {
+            id: 1,
+            name: "x".into(),
+            width: 1921,
+            height: 1080,
+            fps: 60,
+            bitrate_kbps: 20_000,
+            codec: Codec::H264,
+        };
+        assert_eq!(odd.validate(1920, 1080, 60), Err(PresetError::OddDimension));
+        let too_high = Preset {
+            id: 1,
+            name: "x".into(),
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_kbps: 900_000,
+            codec: Codec::H264,
+        };
+        assert_eq!(
+            too_high.validate(1920, 1080, 60),
+            Err(PresetError::BitrateOutOfRange)
+        );
+        let upscaled = Preset {
+            id: 1,
+            name: "x".into(),
+            width: 3840,
+            height: 2160,
+            fps: 60,
+            bitrate_kbps: 20_000,
+            codec: Codec::H264,
+        };
+        assert_eq!(
+            upscaled.validate(1920, 1080, 60),
+            Err(PresetError::LargerThanSource)
+        );
+        let too_fast = Preset {
+            id: 1,
+            name: "x".into(),
+            width: 1920,
+            height: 1080,
+            fps: 120,
+            bitrate_kbps: 20_000,
+            codec: Codec::H264,
+        };
+        assert_eq!(
+            too_fast.validate(1920, 1080, 60),
+            Err(PresetError::FasterThanSource)
+        );
+    }
+}
