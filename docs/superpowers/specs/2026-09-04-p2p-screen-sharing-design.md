@@ -192,6 +192,13 @@ The publisher adjusts bitrate anywhere from 1 Mbps to 250 Mbps per preset.
 | Resubscribe backoff | 1 s doubling to 30 s | Standard exponential backoff |
 | Opus | 48 kHz stereo, 20 ms, 128 kbps | Transparent for game audio, 50 packets per second |
 | Capture fallback timeout | 2 s | Graphics Capture normally delivers its first frame within milliseconds |
+| Max frame size | 32 MB | A 4K keyframe at the maximum bitrate is a few megabytes; larger is a protocol violation |
+| Max control message | 64 KB | Control messages carry at most codec extradata |
+| Receive queue | 8 frames | Slack between the QUIC reader and the decoder before back-pressure reaches the publisher |
+| Idle keyframe retry | 500 ms | Compositors emit frames only on damage; a static screen must still serve a new viewer a keyframe |
+| Portal format timeout | 10 s | Covers a slow first compositor connection |
+| Relay online timeout | 5 s | How long a publisher waits for relay registration before printing its ticket |
+| Stats log interval | 2 s | Frequent enough to watch bitrate settle, quiet enough for a terminal |
 | Jitter buffer initial depth | 60 ms | Three audio packets |
 
 ## 7. Data flow
