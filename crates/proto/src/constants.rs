@@ -1,0 +1,14 @@
+use std::time::Duration;
+pub const PROTOCOL_VERSION: u8 = 1;
+pub const MEDIA_ALPN: &[u8] = b"brp/media/1";
+pub const TICKET_KIND: &str = "brp";
+pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_CONTROL_BYTES: usize = 64 * 1024;
+pub const SENDER_BACKLOG_FRAMES: usize = 2;
+pub const FORCED_KEYFRAME_MIN_INTERVAL: Duration = Duration::from_secs(1);
+pub const REORDER_MAX_WAIT: Duration = Duration::from_millis(200);
+pub const RESUBSCRIBE_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+pub const RESUBSCRIBE_BACKOFF_MAX: Duration = Duration::from_secs(30);
+pub const ENCODER_IDLE_STOP_GRACE: Duration = Duration::from_secs(5);
+pub const MIN_BITRATE_KBPS: u32 = 1_000;
+pub const MAX_BITRATE_KBPS: u32 = 250_000;

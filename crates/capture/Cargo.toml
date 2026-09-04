@@ -1,0 +1,10 @@
+[package]
+name = "brp-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+[dependencies]
+brp-proto.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

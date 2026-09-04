@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.91"
+
+[workspace.dependencies]
+brp-proto = { path = "crates/proto" }
+brp-codec = { path = "crates/codec" }
+brp-capture = { path = "crates/capture" }
+brp-net = { path = "crates/net" }
+brp-pipeline = { path = "crates/pipeline" }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
+thiserror = "2.0"
+tracing = "0.1"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+iroh-base = { version = "1.1", features = ["key"] }
+iroh = { version = "1.1", default-features = false, features = ["tls-ring", "portmapper"] }
+iroh-tickets = "1.0"
+rand = "0.10"

@@ -1,0 +1,13 @@
+[package]
+name = "brp-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+iroh-base.workspace = true
+iroh-tickets.workspace = true
+rand.workspace = true

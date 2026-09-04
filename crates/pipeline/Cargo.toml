@@ -1,0 +1,12 @@
+[package]
+name = "brp-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+[dependencies]
+brp-proto.workspace = true
+brp-codec.workspace = true
+brp-capture.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
