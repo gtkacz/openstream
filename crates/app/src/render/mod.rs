@@ -1,4 +1,5 @@
 //! wgpu device and the video plus egui renderers.
+pub mod grid;
 pub mod ui;
 pub mod video;
 use crate::error::AppError;

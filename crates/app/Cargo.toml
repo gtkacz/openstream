@@ -7,6 +7,9 @@ rust-version.workspace = true
 [[bin]]
 name = "brp"
 path = "src/main.rs"
+[lib]
+name = "brp_app"
+path = "src/lib.rs"
 [dependencies]
 brp-proto.workspace = true
 brp-codec.workspace = true

@@ -1,13 +1,6 @@
 //! brp: peer-to-peer screen sharing.
-mod cli;
-mod error;
-mod identity;
-mod publish;
-mod render;
-mod watch;
-mod window;
-
-use crate::cli::{Cli, Command};
+use brp_app::cli::{Cli, Command};
+use brp_app::{publish, watch};
 use clap::Parser;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
