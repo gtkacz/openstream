@@ -230,6 +230,10 @@ impl Room {
     }
 
     pub fn snapshot(&self) -> RoomSnapshot {
+        // Read before materialising members: a version must never be newer than the contents it
+        // describes, so a change landing mid-snapshot forces a stale-version re-snapshot rather
+        // than hiding new contents behind an already-current version.
+        let version = self.version();
         let now = Instant::now();
         let members = lock(&self.membership)
             .members()
@@ -244,7 +248,7 @@ impl Room {
         RoomSnapshot {
             me: self.me,
             nickname: self.nickname.clone(),
-            version: self.version(),
+            version,
             members,
             own_lives: self.registry.views(),
             watches: self.watcher.views(),
