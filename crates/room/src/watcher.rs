@@ -296,6 +296,7 @@ impl Watcher {
             );
             if !self.set_state(key, preset_id, WatchState::Live) {
                 stop_viewer(viewer).await;
+                let _ = subscription.control.send(ViewerMessage::Unsubscribe).await;
                 return;
             }
 
