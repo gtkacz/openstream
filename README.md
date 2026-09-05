@@ -29,49 +29,25 @@ when processing falls behind, older video frames are dropped instead of
 allowing delay to accumulate. The stream uses the versioned media ALPN
 `brp/media/1` and postcard-encoded control and frame metadata.
 
-## Current commands
+## Usage
 
-Build the release binary:
-
-```sh
+```
 cargo build --release
+
+# Create a room, share one monitor, print the ticket
+./target/release/brp publish --nickname alice [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--no-relay]
+
+# Join that room and share too
+./target/release/brp publish --nickname bob --ticket <ticket>
+
+# Watch the ticket's publisher (the full participant window arrives in the next slice)
+./target/release/brp watch <ticket> [--nickname N] [--no-relay]
 ```
 
-On the publishing machine, start capture:
+A ticket names the room and one member already in it. Anyone in the room can hand out a ticket.
+Media connections are accepted only from room members. Encoders run only while someone watches.
 
-```sh
-./target/release/brp publish
-```
-
-The desktop portal opens a picker for a monitor or window. The command prints
-the selected encoder and a ticket. Share the complete ticket with the viewer.
-
-On the viewing machine:
-
-```sh
-./target/release/brp watch '<ticket>'
-```
-
-The viewer currently subscribes to live `1` and preset `1`, then opens a native
-window showing the decoded stream.
-
-Available options:
-
-```text
-brp publish [--fps FPS] [--bitrate-kbps KBPS]
-            [--codec h264|hevc|av1]
-            [--source monitor|window] [--no-relay]
-brp watch <ticket> [--no-relay]
-```
-
-Defaults are 60 FPS, monitor capture, automatic bitrate, automatic codec
-selection, and iroh's default relay configuration. The publisher chooses a
-hardware encoder when available (HEVC by default), then falls back through the
-supported hardware/software probes. The default bitrate is scaled from the
-source dimensions and frame rate; for example, 1080p60 is 20 Mbps and 1440p60
-is 40 Mbps.
-
-Stop publishing or viewing with `Ctrl-C` or by closing the viewer window.
+`--no-relay` skips the public relay servers; use it on a LAN.
 
 ## Linux prerequisites
 
@@ -125,6 +101,7 @@ Run the hardware-independent test suite:
 
 ```sh
 cargo test --workspace
+cargo test -p brp-room              # two rooms in one process, fake codecs
 ```
 
 Run formatting and lint checks:
