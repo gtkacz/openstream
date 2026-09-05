@@ -12,7 +12,8 @@ pub fn dimensions(count: usize) -> (usize, usize) {
     (cols, count.div_ceil(cols))
 }
 
-/// One rect per tile in row-major order, tiling `area` exactly.
+/// One rect per tile in row-major order, each sized to one grid cell of `area`. When the last row
+/// is not full, its remaining cells stay empty.
 pub fn layout(area: Rect, count: usize) -> Vec<Rect> {
     let (cols, rows) = dimensions(count);
     if cols == 0 {
@@ -37,6 +38,9 @@ pub struct PixelRect {
     pub height: f32,
 }
 
+/// Converts `rect`, in egui points, to a viewport in physical pixels by scaling with
+/// `pixels_per_point`, clamped to `surface` (width, height in pixels) so the result never leaves
+/// the surface and never has negative size.
 pub fn to_pixels(rect: Rect, pixels_per_point: f32, surface: (u32, u32)) -> PixelRect {
     let (max_x, max_y) = (surface.0 as f32, surface.1 as f32);
     let x = (rect.min.x * pixels_per_point).clamp(0.0, max_x);
