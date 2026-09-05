@@ -1,4 +1,4 @@
-//! wgpu device and the video plus egui renderers.
+//! wgpu device plus the tile and egui renderers.
 pub mod grid;
 pub mod tiles;
 pub mod ui;

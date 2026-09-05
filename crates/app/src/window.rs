@@ -25,6 +25,8 @@ use crate::render::{GpuContext, ui::EguiLayer};
 use crate::ui::state::{BitrateMeter, UiState, total_encoded_bytes};
 use crate::ui::{self, UiOutput};
 
+/// Wakes the winit event loop for a reason that does not arrive as a `WindowEvent`. Sent through
+/// the `EventLoopProxy` from other threads (the room's background tasks, the share task).
 pub enum AppEvent {
     /// The room's version counter moved; re-snapshot on the next redraw.
     RoomChanged,
@@ -36,6 +38,8 @@ pub enum AppEvent {
     ShareFinished(Result<(), String>),
 }
 
+/// The winit `ApplicationHandler` for the participant window: owns the room handle, the last
+/// snapshot, and the GPU and egui state, and turns panel commands into room calls each redraw.
 pub struct App {
     runtime: Handle,
     room: Arc<Room>,
@@ -178,6 +182,7 @@ impl App {
         // The handle is cloned so the guard does not borrow `self` while `share` needs it mutably.
         let runtime = self.runtime.clone();
         let _guard = runtime.enter();
+        self.state.status.clear();
         for command in commands {
             let result = match command {
                 RoomCommand::Watch { key, preset_id } => {

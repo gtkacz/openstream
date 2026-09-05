@@ -27,6 +27,9 @@ pub struct UiOutput {
 /// Takes the root [`egui::Ui`] for the pass (as built by [`egui::Context::run_ui`]) rather than
 /// the [`egui::Context`] itself: egui 0.36 attaches top-level panels to a [`egui::Ui`], not a
 /// [`egui::Context`].
+///
+/// egui may run the closure that calls this more than once per frame; the caller keeps the last
+/// output, so commands from an earlier pass are discarded.
 pub fn draw(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,

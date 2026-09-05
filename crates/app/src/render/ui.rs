@@ -4,6 +4,8 @@ pub struct EguiLayer {
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
 }
+/// A frame must be passed through `prepare` and then `cleanup` before it is dropped; the texture
+/// deltas it carries assert on drop when unapplied.
 pub struct UiFrame {
     pub paint_jobs: Vec<egui::ClippedPrimitive>,
     pub textures_delta: egui::TexturesDelta,

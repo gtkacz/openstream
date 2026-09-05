@@ -107,7 +107,8 @@ Run the hardware-independent test suite:
 ```sh
 cargo test --workspace
 cargo test -p brp-room              # two rooms in one process, fake codecs
-cargo test -p brp                   # grid, preset, pacing, and rate helpers
+cargo test -p brp                   # grid, preset, and rate helpers
+cargo test -p brp-pipeline          # slot, fan-out, reorder, pacing
 ```
 
 Run formatting and lint checks:

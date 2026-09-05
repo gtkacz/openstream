@@ -119,3 +119,65 @@ pub fn preset_selector(
             }
         });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brp_proto::{Codec, SourceKind, template_presets};
+
+    fn live() -> LiveInfo {
+        LiveInfo {
+            id: 1,
+            title: "desk".into(),
+            kind: SourceKind::Monitor,
+            source_width: 2560,
+            source_height: 1440,
+            source_fps: 60,
+            has_audio: false,
+            presets: template_presets(2560, 1440, 60, Codec::Hevc),
+        }
+    }
+
+    #[test]
+    fn keeps_the_wanted_preset_when_the_live_still_offers_it() {
+        let mut info = live();
+        // Source plus 1080p only, so the wanted 1080p preset is still offered.
+        info.presets.retain(|p| p.id <= 2);
+        assert_eq!(offered_preset(&info, Some(2)), Some(2));
+    }
+
+    #[test]
+    fn falls_back_to_source_when_the_wanted_preset_is_gone() {
+        let mut info = live();
+        info.presets.retain(|p| p.id <= 2);
+        assert_eq!(offered_preset(&info, Some(9)), Some(1));
+    }
+
+    #[test]
+    fn falls_back_to_source_when_nothing_is_wanted() {
+        let mut info = live();
+        info.presets.retain(|p| p.id <= 2);
+        assert_eq!(offered_preset(&info, None), Some(1));
+    }
+
+    #[test]
+    fn falls_back_to_the_first_preset_when_source_is_absent() {
+        let mut info = live();
+        info.presets.retain(|p| p.id == 2 || p.id == 3);
+        assert_eq!(offered_preset(&info, None), Some(2));
+    }
+
+    #[test]
+    fn keeps_the_wanted_preset_even_without_source() {
+        let mut info = live();
+        info.presets.retain(|p| p.id == 2 || p.id == 3);
+        assert_eq!(offered_preset(&info, Some(3)), Some(3));
+    }
+
+    #[test]
+    fn returns_none_when_the_live_has_no_presets() {
+        let mut info = live();
+        info.presets.clear();
+        assert_eq!(offered_preset(&info, Some(1)), None);
+    }
+}

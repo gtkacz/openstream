@@ -31,6 +31,9 @@ struct Tile {
     bind_group: wgpu::BindGroup,
 }
 
+/// Owns the tile pipeline and one GPU-backed tile per watched live, keyed by `TileKey`. The caller
+/// uploads decoded frames as they arrive, then calls `update_fits` and `draw` once per redraw with
+/// the same placements.
 pub struct TileRenderer {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,

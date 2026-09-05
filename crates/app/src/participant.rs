@@ -18,6 +18,9 @@ use crate::error::AppError;
 use crate::identity;
 use crate::window::{App, AppEvent};
 
+/// Runs `brp create` or `brp join` to completion: creates or joins the room, opens the
+/// participant window, and blocks until the window closes, at which point the room is left in an
+/// orderly fashion. `ticket` selects join over create.
 pub fn run(runtime: &Runtime, ticket: Option<String>, args: WindowArgs) -> Result<(), AppError> {
     let ticket = ticket.as_deref().map(RoomTicket::from_str).transpose()?;
     let relay = if args.no_relay {

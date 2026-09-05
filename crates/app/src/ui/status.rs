@@ -13,7 +13,8 @@ pub fn draw(ui: &mut egui::Ui, snapshot: &RoomSnapshot, ticket: &str, state: &Ui
                 ui.ctx().copy_text(ticket.to_string());
             }
             ui.separator();
-            let members = snapshot.members.len();
+            // `snapshot.members` excludes this participant, so count it in.
+            let members = snapshot.members.len() + 1;
             let plural = if members == 1 { "" } else { "s" };
             ui.label(format!("{members} member{plural}"));
             ui.separator();
