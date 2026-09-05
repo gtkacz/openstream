@@ -38,6 +38,8 @@ pub fn toggle_template(info: &LiveInfo, template_id: u32) -> Vec<Preset> {
     presets
 }
 
+/// Sets the bitrate on the preset matching `preset_id`, clamped to the allowed range; other
+/// presets are left untouched.
 pub fn with_bitrate(info: &LiveInfo, preset_id: u32, kbps: u32) -> Vec<Preset> {
     info.presets
         .iter()
@@ -64,6 +66,7 @@ pub fn with_fps(info: &LiveInfo, fps: u32) -> Vec<Preset> {
         .collect()
 }
 
+/// Sets the codec on every preset of the live.
 pub fn with_codec(info: &LiveInfo, codec: Codec) -> Vec<Preset> {
     info.presets
         .iter()
@@ -154,5 +157,22 @@ mod tests {
                 .iter()
                 .all(|p| p.codec == Codec::H264)
         );
+    }
+
+    #[test]
+    fn templates_are_empty_without_a_source_preset() {
+        let mut info = live();
+        info.presets.retain(|p| p.id != SOURCE_PRESET_ID);
+        assert!(templates_for(&info).is_empty());
+        assert_eq!(toggle_template(&info, 4), info.presets);
+    }
+
+    #[test]
+    fn edits_of_an_empty_preset_list_stay_empty() {
+        let mut info = live();
+        info.presets = Vec::new();
+        assert!(with_fps(&info, 30).is_empty());
+        assert!(with_codec(&info, Codec::Av1).is_empty());
+        assert!(with_bitrate(&info, 1, 5_000).is_empty());
     }
 }
