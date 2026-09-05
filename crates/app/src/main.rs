@@ -15,8 +15,7 @@ use tracing_subscriber::EnvFilter;
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
-            // zbus warns when the portal omits optional properties; that is expected and not actionable.
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,zbus=error")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
     let cli = Cli::parse();

@@ -32,10 +32,6 @@ pub trait DecoderFactory: Send + Sync + 'static {
     fn open(&self, params: &CodecParams) -> Result<Box<dyn VideoDecoder>, CodecError>;
 }
 
-/// A size every hardware encoder accepts, used only to learn which codec the GPU offers.
-const PROBE_WIDTH: u32 = 640;
-const PROBE_HEIGHT: u32 = 360;
-
 fn config_for(preset: &Preset) -> EncoderConfig {
     EncoderConfig {
         width: preset.width,
@@ -76,19 +72,16 @@ impl EncoderFactory for FfmpegCodecs {
 
     fn preferred_codec(&self) -> Codec {
         *self.probed_codec.get_or_init(|| {
-            // NVENC rejects frames below roughly 145x49, so a tiny probe would wrongly skip every hardware encoder.
             let probe = EncoderConfig {
-                width: PROBE_WIDTH,
-                height: PROBE_HEIGHT,
+                width: 64,
+                height: 64,
                 fps: 30,
                 bitrate_kbps: 1_000,
                 codec: Codec::Hevc,
             };
-            brp_codec::ffmpeg::with_quiet_logs(|| {
-                brp_codec::open_encoder_auto(probe, None)
-                    .map(|e| e.params().codec)
-                    .unwrap_or(Codec::Av1)
-            })
+            brp_codec::open_encoder_auto(probe, None)
+                .map(|e| e.params().codec)
+                .unwrap_or(Codec::Av1)
         })
     }
 }
