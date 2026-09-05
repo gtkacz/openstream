@@ -6,7 +6,7 @@ use brp_codec::{
     CodecError, EncoderConfig, FrameConverter, VideoDecoder, VideoEncoder, open_decoder,
     open_encoder,
 };
-use brp_proto::{CodecParams, PixelFormat, Preset};
+use brp_proto::{Codec, CodecParams, PixelFormat, Preset};
 
 pub struct EncoderParts {
     pub converter: Box<dyn FrameConverter>,
@@ -20,6 +20,10 @@ pub trait EncoderFactory: Send + Sync + 'static {
         source_format: PixelFormat,
         preset: &Preset,
     ) -> Result<EncoderParts, CodecError>;
+
+    /// The codec new lives default to. The real factory probes the GPU once; the spec prefers HEVC,
+    /// then H.264, then the software AV1 fallback.
+    fn preferred_codec(&self) -> Codec;
 }
 
 pub trait DecoderFactory: Send + Sync + 'static {
@@ -61,6 +65,19 @@ impl EncoderFactory for FfmpegCodecs {
             encoder,
         })
     }
+
+    fn preferred_codec(&self) -> Codec {
+        let probe = EncoderConfig {
+            width: 64,
+            height: 64,
+            fps: 30,
+            bitrate_kbps: 1_000,
+            codec: Codec::Hevc,
+        };
+        brp_codec::open_encoder_auto(probe, None)
+            .map(|e| e.params().codec)
+            .unwrap_or(Codec::Av1)
+    }
 }
 
 impl DecoderFactory for FfmpegCodecs {
@@ -91,6 +108,10 @@ pub mod fake {
                 converter: Box::new(SolidConverter::new(preset.width, preset.height)),
                 encoder: Box::new(FakeEncoder::new(config_for(preset), FAKE_KEYFRAME_INTERVAL)),
             })
+        }
+
+        fn preferred_codec(&self) -> Codec {
+            Codec::H264
         }
     }
 

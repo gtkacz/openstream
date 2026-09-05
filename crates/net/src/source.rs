@@ -20,6 +20,8 @@ pub enum SubscribeRejected {
     UnknownLive(u32),
     #[error("unknown preset {0}")]
     UnknownPreset(u32),
+    #[error("encoder could not start: {0}")]
+    EncoderFailed(String),
 }
 /// One frame read from the media stream, before reordering.
 #[derive(Debug, Clone, PartialEq, Eq)]
