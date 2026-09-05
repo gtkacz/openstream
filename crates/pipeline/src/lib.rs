@@ -10,4 +10,4 @@ pub use fanout::{FanOut, KeyframeRequest, PushOutcome};
 pub use publisher::{Publisher, PublisherStats};
 pub use reorder::{Drained, IncomingFrame, Reorder};
 pub use slot::{LatestSlot, SlotWait};
-pub use viewer::{FrameNotify, Viewer, ViewerStats};
+pub use viewer::{FrameNotify, Viewer, ViewerSink, ViewerStats};

@@ -5,7 +5,7 @@ use std::time::Duration;
 use brp_codec::fake::{FakeDecoder, FakeEncoder};
 use brp_codec::{EncoderConfig, RawFrame, VideoEncoder};
 use brp_net::ReceivedFrame;
-use brp_pipeline::Viewer;
+use brp_pipeline::{LatestSlot, Viewer, ViewerSink, ViewerStats};
 use brp_proto::constants::REORDER_MAX_WAIT;
 use brp_proto::{Codec, EncodedFrame, FrameHeader, FrameKind, ViewerMessage};
 use tokio::sync::mpsc;
@@ -53,14 +53,19 @@ async fn decodes_in_sequence_order_and_publishes_latest_frame() {
     let (control_tx, _control_rx) = mpsc::channel(8);
     let notified = Arc::new(AtomicUsize::new(0));
     let notify_count = notified.clone();
+    let sink = ViewerSink {
+        slot: LatestSlot::new(),
+        stats: Arc::new(ViewerStats::default()),
+        notify: Arc::new(move || {
+            notify_count.fetch_add(1, Ordering::SeqCst);
+        }),
+    };
     let viewer = Viewer::start(
         tokio::runtime::Handle::current(),
         rx,
         control_tx,
         Box::new(FakeDecoder),
-        Arc::new(move || {
-            notify_count.fetch_add(1, Ordering::SeqCst);
-        }),
+        sink,
     );
 
     tx.send(received(&frames[0])).await.unwrap();
@@ -83,12 +88,17 @@ async fn gap_that_outlives_the_wait_cap_requests_a_keyframe() {
     let frames = encoded_frames(5);
     let (tx, rx) = mpsc::channel(8);
     let (control_tx, mut control_rx) = mpsc::channel(8);
+    let sink = ViewerSink {
+        slot: LatestSlot::new(),
+        stats: Arc::new(ViewerStats::default()),
+        notify: Arc::new(|| {}),
+    };
     let viewer = Viewer::start(
         tokio::runtime::Handle::current(),
         rx,
         control_tx,
         Box::new(FakeDecoder),
-        Arc::new(|| {}),
+        sink,
     );
 
     tx.send(received(&frames[0])).await.unwrap();
@@ -110,4 +120,31 @@ async fn gap_that_outlives_the_wait_cap_requests_a_keyframe() {
         "frame 0 and the recovery keyframe"
     );
     viewer.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sink_slot_stays_open_after_the_frame_channel_closes() {
+    let (tx, rx) = mpsc::channel(8);
+    let (ctl_tx, _ctl_rx) = mpsc::channel(8);
+    let slot = LatestSlot::new();
+    let sink = ViewerSink {
+        slot: slot.clone(),
+        stats: Arc::new(ViewerStats::default()),
+        notify: Arc::new(|| {}),
+    };
+    let viewer = Viewer::start(
+        tokio::runtime::Handle::current(),
+        rx,
+        ctl_tx,
+        Box::new(FakeDecoder),
+        sink,
+    );
+    drop(tx);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    viewer.stop();
+    slot.put(RawFrame::black(8, 4, 1));
+    assert!(
+        slot.try_take().is_some(),
+        "a later attempt must be able to reuse the slot"
+    );
 }

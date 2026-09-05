@@ -24,6 +24,12 @@ pub struct ViewerStats {
     pub keyframe_requests: AtomicU64,
 }
 
+pub struct ViewerSink {
+    pub slot: Arc<LatestSlot<RawFrame>>,
+    pub stats: Arc<ViewerStats>,
+    pub notify: FrameNotify,
+}
+
 pub struct Viewer {
     slot: Arc<LatestSlot<RawFrame>>,
     stats: Arc<ViewerStats>,
@@ -37,10 +43,13 @@ impl Viewer {
         frames: Receiver<ReceivedFrame>,
         control: Sender<ViewerMessage>,
         decoder: Box<dyn VideoDecoder>,
-        notify: FrameNotify,
+        sink: ViewerSink,
     ) -> Self {
-        let slot = LatestSlot::new();
-        let stats = Arc::new(ViewerStats::default());
+        let ViewerSink {
+            slot,
+            stats,
+            notify,
+        } = sink;
         let stop = Arc::new(AtomicBool::new(false));
         let worker = DecodeLoop {
             runtime,
@@ -117,7 +126,6 @@ impl DecodeLoop {
             };
             self.handle(drained);
         }
-        self.slot.close();
     }
 
     fn handle(&mut self, drained: Drained) {

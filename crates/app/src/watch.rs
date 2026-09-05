@@ -46,14 +46,19 @@ pub fn run(runtime: &Runtime, args: WatchArgs) -> Result<(), AppError> {
         .map_err(|e| AppError::Window(e.to_string()))?;
     let proxy = event_loop.create_proxy();
     let frame_proxy = proxy.clone();
+    let sink = brp_pipeline::ViewerSink {
+        slot: brp_pipeline::LatestSlot::new(),
+        stats: Arc::new(brp_pipeline::ViewerStats::default()),
+        notify: Arc::new(move || {
+            let _ = frame_proxy.send_event(AppEvent::NewFrame);
+        }),
+    };
     let viewer = Viewer::start(
         runtime.handle().clone(),
         subscription.frames,
         subscription.control,
         decoder,
-        Arc::new(move || {
-            let _ = frame_proxy.send_event(AppEvent::NewFrame);
-        }),
+        sink,
     );
     let mut events = subscription.events;
     runtime.spawn(async move {
