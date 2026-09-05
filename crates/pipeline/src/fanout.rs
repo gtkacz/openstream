@@ -72,6 +72,11 @@ impl FanOut {
     pub fn subscriber_count(&self) -> usize {
         self.subs.len()
     }
+    /// Drops subscribers whose receiver is gone. `push` does this as a side effect; callers that
+    /// only count, such as idle detection, need it explicitly.
+    pub fn prune(&mut self) {
+        self.subs.retain(|s| !s.tx.is_closed());
+    }
     pub fn push(&mut self, f: Arc<EncodedFrame>) -> PushOutcome {
         let mut o = PushOutcome::default();
         let mut req = false;
@@ -201,5 +206,15 @@ mod tests {
         drop(rx);
         fanout.push(frame(1, true));
         assert_eq!(fanout.subscriber_count(), 0);
+    }
+
+    #[test]
+    fn prune_forgets_closed_receivers_without_a_push() {
+        let mut fanout = FanOut::new(KeyframeRequest::new());
+        let rx = fanout.add();
+        let _kept = fanout.add();
+        drop(rx);
+        fanout.prune();
+        assert_eq!(fanout.subscriber_count(), 1);
     }
 }

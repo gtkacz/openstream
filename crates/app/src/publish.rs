@@ -20,7 +20,8 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         RelaySetting::Default
     };
     let endpoint = bind_endpoint(identity::load_or_create()?, relay).await?;
-    let slot = brp_pipeline::LatestSlot::new();
+    let slot: Arc<brp_pipeline::LatestSlot<Arc<brp_capture::CaptureFrame>>> =
+        brp_pipeline::LatestSlot::new();
     let sink_slot = slot.clone();
     let session = PortalCapture
         .start(
@@ -28,7 +29,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
                 kind: args.source.into(),
                 target_fps: args.fps,
             },
-            Box::new(move |frame| sink_slot.put(frame)),
+            Box::new(move |frame| sink_slot.put(Arc::new(frame))),
         )
         .await?;
     let info = session.info();
@@ -59,14 +60,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     };
     preset.validate(info.width, info.height, info.fps.max(fps))?;
     let converter = SwsConverter::new(info.width, info.height, PixelFormat::Bgrx, width, height)?;
-    let publisher = Publisher::start(
-        LIVE_ID,
-        PRESET_ID,
-        slot,
-        session,
-        Box::new(converter),
-        encoder,
-    );
+    let publisher = Publisher::start(LIVE_ID, PRESET_ID, slot, Box::new(converter), encoder);
     let router = Router::builder(endpoint.clone())
         .accept(MEDIA_ALPN, MediaServer::new(Arc::new(publisher.clone())))
         .spawn();
@@ -98,6 +92,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         tokio::select! { _ = tokio::signal::ctrl_c() => break, _ = ticker.tick() => { let bytes = publisher.stats().bytes_encoded.load(Ordering::Relaxed); let kbps = (bytes.saturating_sub(last_bytes) * 8) / 1000 / STATS_LOG_INTERVAL.as_secs().max(1); last_bytes = bytes; tracing::info!(viewers = publisher.subscriber_count(), frames = publisher.stats().frames_encoded.load(Ordering::Relaxed), dropped_at_input = publisher.frames_dropped_at_input(), kbps, "publishing"); } }
     }
     publisher.stop();
+    session.stop();
     if let Err(e) = router.shutdown().await {
         tracing::warn!(error = %e, "router shutdown");
     }

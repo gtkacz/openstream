@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use brp_capture::{CaptureFrame, CaptureSession};
+use brp_capture::CaptureFrame;
 use brp_codec::{FrameConverter, InputImage, VideoEncoder};
 use brp_net::{LiveSource, SubscribeRejected, Subscription};
 use brp_proto::CodecParams;
@@ -34,17 +34,15 @@ struct Inner {
     keyframe: KeyframeRequest,
     stop: AtomicBool,
     stats: PublisherStats,
-    slot: Arc<LatestSlot<CaptureFrame>>,
+    slot: Arc<LatestSlot<Arc<CaptureFrame>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
-    session: Mutex<Option<Box<dyn CaptureSession>>>,
 }
 
 impl Publisher {
     pub fn start(
         live_id: u32,
         preset_id: u32,
-        slot: Arc<LatestSlot<CaptureFrame>>,
-        session: Box<dyn CaptureSession>,
+        slot: Arc<LatestSlot<Arc<CaptureFrame>>>,
         converter: Box<dyn FrameConverter>,
         encoder: Box<dyn VideoEncoder>,
     ) -> Self {
@@ -60,7 +58,6 @@ impl Publisher {
             stats: PublisherStats::default(),
             slot,
             thread: Mutex::new(None),
-            session: Mutex::new(Some(session)),
         });
         let worker = inner.clone();
         let handle = thread::Builder::new()
@@ -88,7 +85,9 @@ impl Publisher {
     }
 
     pub fn subscriber_count(&self) -> usize {
-        lock(&self.inner.fanout).subscriber_count()
+        let mut fanout = lock(&self.inner.fanout);
+        fanout.prune();
+        fanout.subscriber_count()
     }
 
     pub fn stop(&self) {
@@ -96,9 +95,6 @@ impl Publisher {
         self.inner.slot.close();
         if let Some(handle) = lock(&self.inner.thread).take() {
             let _ = handle.join();
-        }
-        if let Some(session) = lock(&self.inner.session).take() {
-            session.stop();
         }
     }
 }
@@ -130,14 +126,14 @@ fn encode_loop(
     mut converter: Box<dyn FrameConverter>,
     mut encoder: Box<dyn VideoEncoder>,
 ) {
-    let mut last: Option<CaptureFrame> = None;
+    let mut last: Option<Arc<CaptureFrame>> = None;
     while !inner.stop.load(Ordering::Relaxed) {
         let frame = match inner.slot.take_timeout(IDLE_KEYFRAME_RETRY) {
             SlotWait::Value(frame) => {
                 last = Some(frame);
-                last.as_ref()
+                last.as_deref()
             }
-            SlotWait::Timeout if inner.keyframe.pending() => last.as_ref(),
+            SlotWait::Timeout if inner.keyframe.pending() => last.as_deref(),
             SlotWait::Timeout => continue,
             SlotWait::Closed => break,
         };

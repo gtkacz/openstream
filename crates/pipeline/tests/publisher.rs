@@ -1,9 +1,8 @@
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use brp_capture::{
-    CaptureBackend, CaptureFrame, CaptureSession, SourceInfo, SourceRequest, SyntheticSource,
-};
+use brp_capture::{CaptureBackend, CaptureFrame, SourceRequest, SyntheticSource};
 use brp_codec::EncoderConfig;
 use brp_codec::fake::{FakeEncoder, SolidConverter};
 use brp_net::{LiveSource, SubscribeRejected};
@@ -34,7 +33,7 @@ async fn subscriber_receives_a_keyframe_first_then_ordered_frames() {
             kind: SourceKind::Monitor,
             target_fps: 60,
         },
-        Box::new(move |frame| sink_slot.put(frame)),
+        Box::new(move |frame| sink_slot.put(Arc::new(frame))),
     )
     .await
     .unwrap();
@@ -42,7 +41,6 @@ async fn subscriber_receives_a_keyframe_first_then_ordered_frames() {
         1,
         1,
         slot,
-        session,
         Box::new(SolidConverter::new(32, 16)),
         Box::new(FakeEncoder::new(cfg(), 30)),
     );
@@ -78,23 +76,15 @@ async fn subscriber_receives_a_keyframe_first_then_ordered_frames() {
         publisher.subscribe(1, 9).unwrap_err(),
         SubscribeRejected::UnknownPreset(9)
     );
+
     drop(sub);
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(publisher.subscriber_count(), 0);
+    assert_eq!(
+        publisher.subscriber_count(),
+        0,
+        "counting prunes closed receivers"
+    );
     publisher.stop();
-}
-
-struct StaticSession;
-
-impl CaptureSession for StaticSession {
-    fn info(&self) -> SourceInfo {
-        SourceInfo {
-            width: 8,
-            height: 8,
-            fps: 60,
-        }
-    }
-    fn stop(self: Box<Self>) {}
+    session.stop();
 }
 
 #[tokio::test]
@@ -104,19 +94,19 @@ async fn static_screen_still_serves_a_late_subscriber_a_keyframe() {
         1,
         1,
         slot.clone(),
-        Box::new(StaticSession),
         Box::new(SolidConverter::new(8, 8)),
         Box::new(FakeEncoder::new(cfg(), 1_000)),
     );
-    slot.put(CaptureFrame {
+    slot.put(Arc::new(CaptureFrame {
         width: 8,
         height: 8,
         stride: 32,
         format: PixelFormat::Bgra,
         data: vec![0; 256],
         capture_ts_us: 1,
-    });
+    }));
     tokio::time::sleep(Duration::from_millis(50)).await;
+
     let mut sub = publisher.subscribe(1, 1).unwrap();
     let frame = tokio::time::timeout(Duration::from_millis(1_500), sub.frames.recv())
         .await
