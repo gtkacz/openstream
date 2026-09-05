@@ -1,6 +1,6 @@
 # Slice 2: rooms, multiple lives, and the participant window
 
-Status: approved design, 2026-09-04. Refines phase 2 of `2026-09-04-p2p-screen-sharing-design.md`, which remains the master spec. Where this document is silent, the master spec applies.
+Status: approved design, 2026-09-04. Frame-rate amendment approved 2026-09-05 (section 3, 5.2, 7, 10). Refines phase 2 of `2026-09-04-p2p-screen-sharing-design.md`, which remains the master spec. Where this document is silent, the master spec applies.
 
 ## 1. Goals
 
@@ -26,6 +26,7 @@ Status: approved design, 2026-09-04. Refines phase 2 of `2026-09-04-p2p-screen-s
 | Preset switching is unsubscribe plus subscribe | Avoids decoder and reorder reset logic on the viewer for a user-initiated action that costs one extra round trip. `SwitchPreset` and `PresetSwitched` stay reserved. |
 | Preset templates rather than free-form fields | No invalid presets can be typed; the UI stays small. |
 | Two implementation plans, 2a headless room layer and 2b window | Each ends runnable and testable; 2a is verified with headless publishers and the phase 1 viewer. |
+| Frame rate is a per-live control that sets every preset's `fps`, enforced by frame pacing in the publisher | The catalog already advertises a preset frame rate; pacing makes it true. Capture keeps the rate PipeWire negotiated at start, bounded by `--fps`, because changing it would reopen the portal picker. |
 
 ## 4. Product model additions
 
@@ -58,6 +59,7 @@ Modules, each with one responsibility:
 - `pipeline::Publisher::start` no longer receives the capture session and reads `Arc<CaptureFrame>` from its slot, so several encoders share one capture without copying pixels. The registry owns sessions.
 - `net::MediaServer::new(source, policy)` takes a `ConnectionPolicy` with `allows(peer) -> bool`, checked before any stream is accepted. Refused connections close with an application code that the client maps to a retriable error.
 - `proto` gains `LiveInfo`, `Presence`, `Signed<T>` with `sign(secret, &T)` and `verify() -> Result<(author, T)>`, preset template derivation, and the constants in section 9.
+- `pipeline::Publisher` paces to the preset frame rate: a captured frame is skipped when its timestamp falls before the next slot at `1 / fps` after the last encoded frame. Presets at the source rate pass every frame.
 - `app::publish` is rebuilt on `Room`. `app::watch` is deleted in plan 2b.
 
 ### 5.3 Data flow
@@ -108,12 +110,12 @@ Adding a preset rebroadcasts presence. Removing a preset stops its encoder and e
 
 - **Left panel.** Members with nickname, short id, and a path badge. Under each, their lives with a watch checkbox and a preset selector.
 - **Centre.** Tile grid: columns are the ceiling of the square root of the watch count, rows follow, which yields the master spec's one to nine layouts. Each tile draws letterboxed video and, on hover, an overlay with title, preset selector, and stats toggle. Reconnecting and ended states show as a status line over the last frame.
-- **Bottom panel.** Own lives with title, per-preset encoder state including the encoder name and bitrate, template checkboxes, a bitrate control within the allowed range, a codec selector, and a stop button. Share monitor and share window buttons open the portal picker; new lives are titled by kind and ordinal.
+- **Bottom panel.** Own lives with title, per-preset encoder state including the encoder name and bitrate, template checkboxes, a bitrate control within the allowed range, a frame-rate control from 1 to the source rate that applies to every preset of the live, a codec selector, and a stop button. Share monitor and share window buttons open the portal picker; new lives are titled by kind and ordinal.
 - **Status bar.** Copy ticket, member count, aggregate encode bitrate, nickname.
 
 Rendering generalises the phase 1 video renderer to a set of tiles, each with its own planes, letterbox uniform, and viewport inside the central area, drawn in one render pass before egui. Redraw triggers: any watch's new frame, a snapshot version bump, input.
 
-Commands: `brp create [--nickname N] [--no-relay]`, `brp join <ticket> [--nickname N] [--no-relay]`, and `brp publish` with its phase 1 flags plus `--ticket` and `--nickname`. Nickname defaults to the short peer id.
+Commands: `brp create [--nickname N] [--fps F] [--no-relay]`, `brp join <ticket> [--nickname N] [--fps F] [--no-relay]`, and `brp publish` with its phase 1 flags plus `--ticket` and `--nickname`. Nickname defaults to the short peer id. `--fps` is the capture ceiling for lives started from the window and defaults to 60.
 
 ## 8. Error handling
 
@@ -140,7 +142,7 @@ Commands: `brp create [--nickname N] [--no-relay]`, `brp join <ticket> [--nickna
 
 ## 10. Testing
 
-- **Unit.** Membership apply and expiry; presence signing, tampering, replay; template derivation including aspect and even rounding; grid layout for one to nine; registry lazy start and idle stop with an injected clock; watcher backoff schedule.
+- **Unit.** Membership apply and expiry; presence signing, tampering, replay; template derivation including aspect and even rounding; grid layout for one to nine; publisher frame pacing; registry lazy start and idle stop with an injected clock; watcher backoff schedule.
 - **Integration, hardware-free.** Two rooms in one process with relays disabled, fake codecs, synthetic capture: mutual presence; catalog propagation; a watch that decodes frames; refusal of a third endpoint outside the room; live stop ending the watch; preset add and remove propagating.
 - **Backfill.** Phase 1 unit tests for slot, fan-out, reorder, synthetic source, ticket, and fake codec, taken from the phase 1 plan.
 - **Manual.** Two machines: create and join, three lives across both, a three-tile grid, a preset switch, publisher exit, ticket minted by the joiner used from a third machine.
