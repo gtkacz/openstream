@@ -5,8 +5,8 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use brp_net::PathKind;
-use brp_proto::Preset;
 use brp_proto::constants::SOURCE_PRESET_ID;
+use brp_proto::{LiveInfo, Preset};
 use brp_room::RoomSnapshot;
 
 use super::state::{UiState, ordered_members};
@@ -39,20 +39,20 @@ pub fn draw(
                         .iter()
                         .find(|w| w.publisher == key.0 && w.live_id == key.1);
                     let mut watched = watch.is_some();
-                    let mut preset_id = watch
+                    let wanted = watch
                         .map(|w| w.preset_id)
-                        .or_else(|| state.preset_choice.get(&key).copied())
-                        .unwrap_or(SOURCE_PRESET_ID);
-                    // A remembered choice the publisher has since removed falls back to Source.
-                    if !live.presets.iter().any(|p| p.id == preset_id) {
-                        preset_id = SOURCE_PRESET_ID;
-                    }
+                        .or_else(|| state.preset_choice.get(&key).copied());
+                    let label = format!(
+                        "{} {}x{}",
+                        live.title, live.source_width, live.source_height
+                    );
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
-                        let label = format!(
-                            "{} {}x{}",
-                            live.title, live.source_width, live.source_height
-                        );
+                        let Some(mut preset_id) = offered_preset(live, wanted) else {
+                            // The publisher advertises no presets at all; nothing to watch yet.
+                            ui.add_enabled(false, egui::Checkbox::new(&mut watched, label));
+                            return;
+                        };
                         if ui.checkbox(&mut watched, label).changed() {
                             commands.push(if watched {
                                 RoomCommand::Watch { key, preset_id }
@@ -82,6 +82,16 @@ pub fn path_badge(path: PathKind) -> &'static str {
         PathKind::Relayed => "relayed",
         PathKind::Unknown => "path unknown",
     }
+}
+
+/// The preset to offer for a remote live: the remembered or watched choice when the live still
+/// offers it, else Source, else the first preset the publisher advertises.
+pub fn offered_preset(live: &LiveInfo, wanted: Option<u32>) -> Option<u32> {
+    let offered = |id: u32| live.presets.iter().any(|p| p.id == id);
+    wanted
+        .filter(|id| offered(*id))
+        .or_else(|| offered(SOURCE_PRESET_ID).then_some(SOURCE_PRESET_ID))
+        .or_else(|| live.presets.first().map(|p| p.id))
 }
 
 /// Draws a combo box over `presets` and writes the chosen id into `selected` when it changes.

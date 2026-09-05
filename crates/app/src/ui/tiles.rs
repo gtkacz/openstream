@@ -3,7 +3,7 @@
 
 use brp_room::{RoomSnapshot, WatchState, WatchView};
 
-use super::members::preset_selector;
+use super::members::{offered_preset, preset_selector};
 use super::state::{UiState, ordered_watches};
 use crate::commands::RoomCommand;
 use crate::render::grid;
@@ -103,7 +103,9 @@ fn overlay(
         |ui| {
             ui.strong(title.as_str());
             if let Some(live) = live {
-                let mut preset_id = watch.preset_id;
+                let Some(mut preset_id) = offered_preset(live, Some(watch.preset_id)) else {
+                    return;
+                };
                 preset_selector(ui, ("tile-preset", key), &live.presets, &mut preset_id);
                 if preset_id != watch.preset_id {
                     state.preset_choice.insert(key, preset_id);
