@@ -32,7 +32,16 @@ pub struct WatchHandle {
 
 type WatchKey = (PublicKey, u32);
 
+/// Identifies one watch task. The generation tells a task that was replaced by a preset switch
+/// apart from its successor under the same key, so its last state writes are ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WatchTask {
+    key: WatchKey,
+    generation: u64,
+}
+
 struct WatchEntry {
+    generation: u64,
     preset_id: u32,
     state: WatchState,
     handle: WatchHandle,
@@ -45,6 +54,7 @@ struct WatchEntry {
 struct Inner {
     clients: HashMap<PublicKey, Arc<MediaClient>>,
     watches: HashMap<WatchKey, WatchEntry>,
+    next_generation: u64,
 }
 
 pub struct Watcher {
@@ -97,22 +107,29 @@ impl Watcher {
             stats: Arc::new(ViewerStats::default()),
         };
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        lock(&self.inner).watches.insert(
-            (publisher, live_id),
-            WatchEntry {
-                preset_id,
-                state: WatchState::Connecting,
-                handle: handle.clone(),
-                _cancel: cancel_tx,
-            },
+        let task = {
+            let mut inner = lock(&self.inner);
+            let generation = inner.next_generation;
+            inner.next_generation += 1;
+            inner.watches.insert(
+                (publisher, live_id),
+                WatchEntry {
+                    generation,
+                    preset_id,
+                    state: WatchState::Connecting,
+                    handle: handle.clone(),
+                    _cancel: cancel_tx,
+                },
+            );
+            WatchTask {
+                key: (publisher, live_id),
+                generation,
+            }
+        };
+        tokio::spawn(
+            self.clone()
+                .run_watch(task, preset_id, handle.clone(), cancel_rx),
         );
-        tokio::spawn(self.clone().run_watch(
-            publisher,
-            live_id,
-            preset_id,
-            handle.clone(),
-            cancel_rx,
-        ));
         (self.on_change)();
         Ok(handle)
     }
@@ -168,17 +185,13 @@ impl Watcher {
         }
     }
 
-    /// Returns false when the watch was removed meanwhile, which tells the task to stop.
-    fn set_state(&self, key: WatchKey, preset_id: u32, state: WatchState) -> bool {
-        let mut inner = lock(&self.inner);
-        let Some(entry) = inner.watches.get_mut(&key) else {
-            return false;
-        };
-        entry.state = state;
-        entry.preset_id = preset_id;
-        drop(inner);
-        (self.on_change)();
-        true
+    /// Returns false when the watch was removed or replaced meanwhile, which tells the task to stop.
+    fn set_state(&self, task: WatchTask, preset_id: u32, state: WatchState) -> bool {
+        let applied = apply_state(&mut lock(&self.inner), task, preset_id, state);
+        if applied {
+            (self.on_change)();
+        }
+        applied
     }
 
     async fn client_for(&self, publisher: PublicKey) -> Result<Arc<MediaClient>, RoomError> {
@@ -224,17 +237,16 @@ impl Watcher {
 
     async fn run_watch(
         self: Arc<Self>,
-        publisher: PublicKey,
-        live_id: u32,
+        task: WatchTask,
         mut preset_id: u32,
         handle: WatchHandle,
         mut cancel: oneshot::Receiver<()>,
     ) {
-        let key = (publisher, live_id);
+        let (publisher, live_id) = task.key;
         let mut backoff = RESUBSCRIBE_BACKOFF_INITIAL;
         loop {
             if !lock(&self.membership).is_member(&publisher) {
-                self.set_state(key, preset_id, WatchState::Ended);
+                self.set_state(task, preset_id, WatchState::Ended);
                 return;
             }
             let attempt = async {
@@ -255,11 +267,11 @@ impl Watcher {
                     if let Some(fallback) = self.fallback_preset(publisher, live_id, preset_id) {
                         preset_id = fallback;
                     } else if !self.live_exists(publisher, live_id) {
-                        self.set_state(key, preset_id, WatchState::Ended);
+                        self.set_state(task, preset_id, WatchState::Ended);
                         return;
                     }
                     if !self
-                        .wait_before_retry(key, preset_id, &mut backoff, &mut cancel)
+                        .wait_before_retry(task, preset_id, &mut backoff, &mut cancel)
                         .await
                     {
                         return;
@@ -270,7 +282,7 @@ impl Watcher {
                     tracing::debug!(%error, "watch attempt failed");
                     self.forget_client(publisher);
                     if !self
-                        .wait_before_retry(key, preset_id, &mut backoff, &mut cancel)
+                        .wait_before_retry(task, preset_id, &mut backoff, &mut cancel)
                         .await
                     {
                         return;
@@ -285,7 +297,7 @@ impl Watcher {
                 Err(error) => {
                     tracing::error!(%error, "no decoder for this live");
                     let _ = subscription.control.send(ViewerMessage::Unsubscribe).await;
-                    self.set_state(key, preset_id, WatchState::Ended);
+                    self.set_state(task, preset_id, WatchState::Ended);
                     return;
                 }
             };
@@ -301,7 +313,7 @@ impl Watcher {
                 decoder,
                 sink,
             );
-            if !self.set_state(key, preset_id, WatchState::Live) {
+            if !self.set_state(task, preset_id, WatchState::Live) {
                 stop_viewer(viewer).await;
                 let _ = subscription.control.send(ViewerMessage::Unsubscribe).await;
                 return;
@@ -330,14 +342,14 @@ impl Watcher {
                     if let Some(fallback) = self.fallback_preset(publisher, live_id, preset_id) {
                         preset_id = fallback;
                     } else if !self.live_exists(publisher, live_id) {
-                        self.set_state(key, preset_id, WatchState::Ended);
+                        self.set_state(task, preset_id, WatchState::Ended);
                         return;
                     }
                 }
                 Outcome::Lost => self.forget_client(publisher),
             }
             if !self
-                .wait_before_retry(key, preset_id, &mut backoff, &mut cancel)
+                .wait_before_retry(task, preset_id, &mut backoff, &mut cancel)
                 .await
             {
                 return;
@@ -348,12 +360,12 @@ impl Watcher {
     /// Marks the watch reconnecting and sleeps the current backoff. False means the watch is gone.
     async fn wait_before_retry(
         &self,
-        key: WatchKey,
+        task: WatchTask,
         preset_id: u32,
         backoff: &mut std::time::Duration,
         cancel: &mut oneshot::Receiver<()>,
     ) -> bool {
-        if !self.set_state(key, preset_id, WatchState::Reconnecting) {
+        if !self.set_state(task, preset_id, WatchState::Reconnecting) {
             return false;
         }
         tokio::select! {
@@ -365,7 +377,78 @@ impl Watcher {
     }
 }
 
+/// Writes a task's state onto its entry. A task whose entry was removed, or replaced by a newer
+/// generation after a preset switch, gets false and must stop instead of clobbering its successor.
+fn apply_state(inner: &mut Inner, task: WatchTask, preset_id: u32, state: WatchState) -> bool {
+    let Some(entry) = inner.watches.get_mut(&task.key) else {
+        return false;
+    };
+    if entry.generation != task.generation {
+        return false;
+    }
+    entry.state = state;
+    entry.preset_id = preset_id;
+    true
+}
+
 /// `Viewer::stop` joins the decode thread, so it runs off the async executor.
 async fn stop_viewer(viewer: Viewer) {
     let _ = tokio::task::spawn_blocking(move || viewer.stop()).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+
+    use super::*;
+
+    fn entry(generation: u64, preset_id: u32) -> WatchEntry {
+        WatchEntry {
+            generation,
+            preset_id,
+            state: WatchState::Connecting,
+            handle: WatchHandle {
+                slot: LatestSlot::new(),
+                stats: Arc::new(ViewerStats::default()),
+            },
+            _cancel: oneshot::channel().0,
+        }
+    }
+
+    #[test]
+    fn a_replaced_task_cannot_write_over_its_successor() {
+        let key = (SecretKey::generate().public(), 1);
+        let mut inner = Inner::default();
+        inner.watches.insert(key, entry(1, 3));
+        let stale = WatchTask { key, generation: 0 };
+        assert!(!apply_state(&mut inner, stale, 2, WatchState::Live));
+        let current = &inner.watches[&key];
+        assert_eq!(
+            (current.preset_id, current.state),
+            (3, WatchState::Connecting)
+        );
+    }
+
+    #[test]
+    fn the_current_task_updates_state_and_preset() {
+        let key = (SecretKey::generate().public(), 1);
+        let mut inner = Inner::default();
+        inner.watches.insert(key, entry(4, 1));
+        let current = WatchTask { key, generation: 4 };
+        assert!(apply_state(&mut inner, current, 2, WatchState::Live));
+        let entry = &inner.watches[&key];
+        assert_eq!((entry.preset_id, entry.state), (2, WatchState::Live));
+    }
+
+    #[test]
+    fn a_removed_watch_tells_its_task_to_stop() {
+        let key = (SecretKey::generate().public(), 1);
+        let mut inner = Inner::default();
+        assert!(!apply_state(
+            &mut inner,
+            WatchTask { key, generation: 0 },
+            1,
+            WatchState::Ended
+        ));
+    }
 }
