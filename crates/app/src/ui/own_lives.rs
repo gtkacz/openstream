@@ -153,8 +153,9 @@ fn live_rows(
             match (&view.encoder, &view.last_error) {
                 (Some(encoder), _) => {
                     let plural = if encoder.subscribers == 1 { "" } else { "s" };
+                    let measured = state.preset_kbps(info.id, preset.id).unwrap_or(0);
                     ui.label(format!(
-                        "{} · {} viewer{plural} · {} frames",
+                        "{} · {measured} kbps · {} viewer{plural} · {} frames",
                         encoder.name, encoder.subscribers, encoder.frames_encoded
                     ))
                 }

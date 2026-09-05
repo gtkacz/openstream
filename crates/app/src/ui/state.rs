@@ -27,8 +27,11 @@ pub struct UiState {
     pub bitrate_edits: HashMap<(u32, u32), u32>,
     /// Frame rate being edited per live id, committed when the widget is released.
     pub fps_edits: HashMap<u32, u32>,
-    /// Upload rate reported by the bitrate meter, in kilobits per second.
+    /// Aggregate upload rate across every running encoder, in kilobits per second.
     pub upload_kbps: u64,
+    upload_meter: BitrateMeter,
+    /// One meter per running encoder, keyed by (live id, preset id); dropped when the encoder stops.
+    preset_meters: HashMap<(u32, u32), BitrateMeter>,
 }
 
 impl UiState {
@@ -49,6 +52,40 @@ impl UiState {
             SourceKind::Window => "Window",
         };
         format!("{name} {counter}")
+    }
+
+    /// Feeds the cumulative byte counters of a snapshot into the upload and per-encoder meters.
+    /// Meters of encoders that are no longer running are forgotten, so a restarted encoder starts
+    /// a fresh measurement instead of inheriting a stale one.
+    pub fn refresh_rates(&mut self, snapshot: &RoomSnapshot, now: Instant) {
+        self.upload_kbps = self.upload_meter.update(total_encoded_bytes(snapshot), now);
+        let running: HashMap<(u32, u32), u64> = snapshot
+            .own_lives
+            .iter()
+            .flat_map(|live| {
+                live.presets.iter().filter_map(move |preset| {
+                    preset
+                        .encoder
+                        .as_ref()
+                        .map(|encoder| ((live.info.id, preset.preset.id), encoder.bytes_encoded))
+                })
+            })
+            .collect();
+        self.preset_meters
+            .retain(|key, _| running.contains_key(key));
+        for (key, bytes) in running {
+            self.preset_meters
+                .entry(key)
+                .or_default()
+                .update(bytes, now);
+        }
+    }
+
+    /// Measured encode rate of one running encoder, or `None` while it is not running.
+    pub fn preset_kbps(&self, live_id: u32, preset_id: u32) -> Option<u64> {
+        self.preset_meters
+            .get(&(live_id, preset_id))
+            .map(BitrateMeter::kbps)
     }
 }
 
@@ -76,6 +113,10 @@ impl BitrateMeter {
         self.kbps = bits / 1000 / elapsed.as_secs().max(1);
         self.last_bytes = total_bytes;
         self.last_at = Some(now);
+        self.kbps
+    }
+
+    pub fn kbps(&self) -> u64 {
         self.kbps
     }
 }
@@ -118,6 +159,8 @@ pub fn ordered_watches(snapshot: &RoomSnapshot) -> Vec<&WatchView> {
 mod tests {
     use super::*;
     use brp_net::PathKind;
+    use brp_proto::{Codec, LiveInfo, Preset};
+    use brp_room::{EncoderView, OwnLiveView, PresetView};
     use iroh::SecretKey;
     use std::time::Duration;
 
@@ -141,6 +184,72 @@ mod tests {
             meter.update(bytes, start + STATS_LOG_INTERVAL + Duration::from_millis(1)),
             2_000
         );
+    }
+
+    fn own_live_with_encoder(bytes: Option<u64>) -> OwnLiveView {
+        let preset = Preset {
+            id: 1,
+            name: "Source".into(),
+            width: 64,
+            height: 32,
+            fps: 30,
+            bitrate_kbps: 5_000,
+            codec: Codec::H264,
+        };
+        OwnLiveView {
+            info: LiveInfo {
+                id: 7,
+                title: "desk".into(),
+                kind: SourceKind::Monitor,
+                source_width: 64,
+                source_height: 32,
+                source_fps: 30,
+                has_audio: false,
+                presets: vec![preset.clone()],
+            },
+            presets: vec![PresetView {
+                preset,
+                encoder: bytes.map(|bytes_encoded| EncoderView {
+                    name: "fake",
+                    subscribers: 1,
+                    frames_encoded: 10,
+                    bytes_encoded,
+                    dropped_at_input: 0,
+                }),
+                last_error: None,
+            }],
+        }
+    }
+
+    fn snapshot_with(own_lives: Vec<OwnLiveView>) -> RoomSnapshot {
+        RoomSnapshot {
+            me: SecretKey::generate().public(),
+            nickname: "me".into(),
+            version: 1,
+            members: Vec::new(),
+            own_lives,
+            watches: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn per_encoder_rates_follow_the_snapshot_and_vanish_when_the_encoder_stops() {
+        let start = Instant::now();
+        let mut state = UiState::new();
+        state.refresh_rates(&snapshot_with(vec![own_live_with_encoder(Some(0))]), start);
+        assert_eq!(state.preset_kbps(7, 1), Some(0));
+        let bytes = 250_000 * STATS_LOG_INTERVAL.as_secs();
+        state.refresh_rates(
+            &snapshot_with(vec![own_live_with_encoder(Some(bytes))]),
+            start + STATS_LOG_INTERVAL,
+        );
+        assert_eq!(state.preset_kbps(7, 1), Some(2_000));
+        assert_eq!(state.upload_kbps, 2_000);
+        state.refresh_rates(
+            &snapshot_with(vec![own_live_with_encoder(None)]),
+            start + 2 * STATS_LOG_INTERVAL,
+        );
+        assert_eq!(state.preset_kbps(7, 1), None);
     }
 
     fn member(nickname: &str) -> MemberView {

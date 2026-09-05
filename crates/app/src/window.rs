@@ -22,7 +22,7 @@ use crate::error::AppError;
 use crate::render::grid::{self, PixelRect};
 use crate::render::tiles::{TileKey, TileRenderer};
 use crate::render::{GpuContext, ui::EguiLayer};
-use crate::ui::state::{BitrateMeter, UiState, total_encoded_bytes};
+use crate::ui::state::UiState;
 use crate::ui::{self, UiOutput};
 
 /// Wakes the winit event loop for a reason that does not arrive as a `WindowEvent`. Sent through
@@ -47,7 +47,6 @@ pub struct App {
     snapshot: RoomSnapshot,
     ticket: String,
     state: UiState,
-    meter: BitrateMeter,
     handles: HashMap<TileKey, WatchHandle>,
     pending_share: Option<JoinHandle<()>>,
     window: Option<Arc<Window>>,
@@ -67,7 +66,6 @@ impl App {
             snapshot,
             ticket,
             state: UiState::new(),
-            meter: BitrateMeter::default(),
             handles: HashMap::new(),
             pending_share: None,
             window: None,
@@ -98,9 +96,7 @@ impl App {
         if let Some(tiles) = self.tiles.as_mut() {
             tiles.retain(|key| live.contains(key));
         }
-        self.state.upload_kbps = self
-            .meter
-            .update(total_encoded_bytes(&self.snapshot), Instant::now());
+        self.state.refresh_rates(&self.snapshot, Instant::now());
     }
 
     fn redraw(&mut self) {
