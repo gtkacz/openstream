@@ -221,6 +221,14 @@ impl Room {
         RoomTicket::new(self.topic, vec![self.endpoint.addr()])
     }
 
+    /// Waits for relay registration so the ticket carries a relay address. Always bounded, because
+    /// with relays disabled the transport never reports online.
+    pub async fn online(&self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, self.endpoint.online())
+            .await
+            .is_ok()
+    }
+
     pub fn snapshot(&self) -> RoomSnapshot {
         let now = Instant::now();
         let members = lock(&self.membership)

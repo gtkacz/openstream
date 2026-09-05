@@ -13,6 +13,7 @@ brp-codec.workspace = true
 brp-capture.workspace = true
 brp-net.workspace = true
 brp-pipeline.workspace = true
+brp-room.workspace = true
 iroh.workspace = true
 iroh-tickets.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }

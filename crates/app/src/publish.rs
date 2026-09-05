@@ -1,17 +1,16 @@
-use crate::{cli::PublishArgs, error::AppError, identity};
-use brp_capture::{CaptureBackend, PortalCapture, SourceRequest};
-use brp_codec::ffmpeg::SwsConverter;
-use brp_codec::{EncoderConfig, open_encoder_auto};
-use brp_net::{MediaServer, RelaySetting, bind_endpoint};
-use brp_pipeline::Publisher;
-use brp_proto::constants::{MEDIA_ALPN, RELAY_ONLINE_TIMEOUT, STATS_LOG_INTERVAL};
-use brp_proto::{Codec, PixelFormat, Preset, RoomTicket, default_bitrate_kbps};
-use iroh::protocol::Router;
+use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
-const LIVE_ID: u32 = 1;
-const PRESET_ID: u32 = 1;
+use brp_capture::PortalCapture;
+use brp_net::RelaySetting;
+use brp_proto::constants::{RELAY_ONLINE_TIMEOUT, SOURCE_PRESET_ID, STATS_LOG_INTERVAL};
+use brp_proto::{RoomTicket, SourceKind};
+use brp_room::codecs::FfmpegCodecs;
+use brp_room::{Room, RoomConfig, RoomTimings};
+
+use crate::cli::PublishArgs;
+use crate::error::AppError;
+use crate::identity;
 
 pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     let relay = if args.no_relay {
@@ -19,86 +18,89 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     } else {
         RelaySetting::Default
     };
-    let endpoint = bind_endpoint(identity::load_or_create()?, relay, vec![]).await?;
-    let slot: Arc<brp_pipeline::LatestSlot<Arc<brp_capture::CaptureFrame>>> =
-        brp_pipeline::LatestSlot::new();
-    let sink_slot = slot.clone();
-    let session = PortalCapture
-        .start(
-            SourceRequest {
-                kind: args.source.into(),
-                target_fps: args.fps,
-            },
-            Box::new(move |frame| sink_slot.put(Arc::new(frame))),
-        )
-        .await?;
-    let info = session.info();
-    let fps = info.fps.min(args.fps).max(1);
-    let (width, height) = (info.width & !1, info.height & !1);
-    let bitrate_kbps = args
-        .bitrate_kbps
-        .unwrap_or_else(|| default_bitrate_kbps(width, height, fps));
-    let forced = args.codec.map(Into::into);
-    let encoder = open_encoder_auto(
-        EncoderConfig {
-            width,
-            height,
-            fps,
-            bitrate_kbps,
-            codec: forced.unwrap_or(Codec::Hevc),
-        },
-        forced,
-    )?;
-    let preset = Preset {
-        id: PRESET_ID,
-        name: "Source".into(),
-        width,
-        height,
-        fps,
-        bitrate_kbps,
-        codec: encoder.params().codec,
+    let secret = identity::load_or_create()?;
+    let nickname = args
+        .nickname
+        .clone()
+        .unwrap_or_else(|| secret.public().fmt_short().to_string());
+    let config = RoomConfig {
+        secret,
+        relay,
+        nickname,
+        target_fps: args.fps,
+        capture: Arc::new(PortalCapture),
+        encoders: Arc::new(FfmpegCodecs),
+        decoders: Arc::new(FfmpegCodecs),
+        on_change: Arc::new(|| {}),
+        on_frame: Arc::new(|| {}),
+        timings: RoomTimings::default(),
     };
-    preset.validate(info.width, info.height, info.fps.max(fps))?;
-    let converter = SwsConverter::new(info.width, info.height, PixelFormat::Bgrx, width, height)?;
-    let publisher = Publisher::start(LIVE_ID, PRESET_ID, slot, Box::new(converter), encoder);
-    let router = Router::builder(endpoint.clone())
-        .accept(
-            MEDIA_ALPN,
-            MediaServer::new(Arc::new(publisher.clone()), Arc::new(brp_net::AllowAll)),
-        )
-        .spawn();
-    if relay == RelaySetting::Default
-        && tokio::time::timeout(RELAY_ONLINE_TIMEOUT, endpoint.online())
-            .await
-            .is_err()
-    {
+    let room = match &args.ticket {
+        Some(ticket) => Room::join(config, RoomTicket::from_str(ticket)?).await?,
+        None => Room::create(config).await?,
+    };
+
+    let kind: SourceKind = args.source.into();
+    let title = match kind {
+        SourceKind::Monitor => "Monitor 1",
+        SourceKind::Window => "Window 1",
+    };
+    let live = room.start_live(kind, title.into()).await?;
+    if args.bitrate_kbps.is_some() || args.codec.is_some() {
+        let mut presets = room
+            .snapshot()
+            .own_lives
+            .iter()
+            .find(|l| l.info.id == live)
+            .map(|l| l.info.presets.clone())
+            .unwrap_or_default();
+        for preset in &mut presets {
+            if let (Some(bitrate), true) = (args.bitrate_kbps, preset.id == SOURCE_PRESET_ID) {
+                preset.bitrate_kbps = bitrate;
+            }
+            if let Some(codec) = args.codec {
+                preset.codec = codec.into();
+            }
+        }
+        room.set_presets(live, presets)?;
+    }
+
+    if relay == RelaySetting::Default && !room.online(RELAY_ONLINE_TIMEOUT).await {
         tracing::warn!(
             "relay registration timed out; the ticket may only work on the local network"
         );
     }
-    let ticket = RoomTicket::new(RoomTicket::random_topic(), vec![endpoint.addr()]);
+    let snapshot = room.snapshot();
+    let own = &snapshot.own_lives[0];
     println!(
-        "Encoder: {} ({:?} {}x{} @ {} fps, {} kbps)",
-        publisher.encoder_name(),
-        preset.codec,
-        width,
-        height,
-        fps,
-        bitrate_kbps
+        "Nickname: {}  Live: {} ({}x{} @ {} fps, {} presets)",
+        snapshot.nickname,
+        own.info.title,
+        own.info.source_width,
+        own.info.source_height,
+        own.info.source_fps,
+        own.presets.len()
     );
     println!(
-        "Ticket:\n{ticket}\n\nShare the ticket with a viewer: brp watch <ticket>. Press Ctrl-C to stop."
+        "Ticket:\n{}\n\nShare it: brp watch <ticket>. Press Ctrl-C to stop.",
+        room.ticket()
     );
+
     let mut ticker = tokio::time::interval(STATS_LOG_INTERVAL);
-    let mut last_bytes = 0;
+    let mut last_bytes = 0u64;
     loop {
-        tokio::select! { _ = tokio::signal::ctrl_c() => break, _ = ticker.tick() => { let bytes = publisher.stats().bytes_encoded.load(Ordering::Relaxed); let kbps = (bytes.saturating_sub(last_bytes) * 8) / 1000 / STATS_LOG_INTERVAL.as_secs().max(1); last_bytes = bytes; tracing::info!(viewers = publisher.subscriber_count(), frames = publisher.stats().frames_encoded.load(Ordering::Relaxed), dropped_at_input = publisher.frames_dropped_at_input(), kbps, "publishing"); } }
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = ticker.tick() => {
+                let snapshot = room.snapshot();
+                let bytes: u64 = snapshot.own_lives.iter().flat_map(|l| l.presets.iter()).filter_map(|p| p.encoder.as_ref()).map(|e| e.bytes_encoded).sum();
+                let kbps = bytes.saturating_sub(last_bytes) * 8 / 1000 / STATS_LOG_INTERVAL.as_secs().max(1);
+                last_bytes = bytes;
+                let running: Vec<String> = snapshot.own_lives.iter().flat_map(|l| l.presets.iter()).filter_map(|p| p.encoder.as_ref().map(|e| format!("{}:{}x{}", e.name, p.preset.width, p.preset.height))).collect();
+                tracing::info!(members = snapshot.members.len(), encoders = ?running, kbps, "publishing");
+            }
+        }
     }
-    publisher.stop();
-    session.stop();
-    if let Err(e) = router.shutdown().await {
-        tracing::warn!(error = %e, "router shutdown");
-    }
-    endpoint.close().await;
+    room.leave().await;
     Ok(())
 }

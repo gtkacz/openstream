@@ -1,88 +1,131 @@
-use crate::{
-    cli::WatchArgs,
-    error::AppError,
-    identity,
-    window::{App, AppEvent},
-};
-use brp_codec::open_decoder;
-use brp_net::{MediaClient, RelaySetting, bind_endpoint};
-use brp_pipeline::Viewer;
-use brp_proto::{PublisherMessage, RoomTicket};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use brp_capture::PortalCapture;
+use brp_net::RelaySetting;
+use brp_proto::RoomTicket;
+use brp_proto::constants::{JOIN_TIMEOUT, SOURCE_PRESET_ID};
+use brp_room::codecs::FfmpegCodecs;
+use brp_room::{Room, RoomConfig, RoomError, RoomTimings, WatchState};
 use tokio::runtime::Runtime;
 use winit::event_loop::EventLoop;
 
+use crate::cli::WatchArgs;
+use crate::error::AppError;
+use crate::identity;
+use crate::window::{App, AppEvent};
+
 const LIVE_ID: u32 = 1;
-const PRESET_ID: u32 = 1;
+/// How often the status line follows the watch state until plan 2b renders snapshots directly.
+const STATUS_POLL: Duration = Duration::from_millis(500);
 
 pub fn run(runtime: &Runtime, args: WatchArgs) -> Result<(), AppError> {
     let ticket = RoomTicket::from_str(&args.ticket)?;
-    let bootstrap = ticket
-        .bootstrap
-        .first()
-        .cloned()
-        .ok_or(AppError::EmptyTicket)?;
+    let publisher = ticket.bootstrap.first().ok_or(AppError::EmptyTicket)?.id;
     let relay = if args.no_relay {
         RelaySetting::Disabled
     } else {
         RelaySetting::Default
     };
-    let (endpoint, client, subscription) = runtime.block_on(async {
-        let endpoint = bind_endpoint(identity::load_or_create()?, relay, vec![]).await?;
-        let client = MediaClient::connect(&endpoint, bootstrap).await?;
-        let subscription = client.subscribe(LIVE_ID, PRESET_ID).await?;
-        Ok::<_, AppError>((endpoint, client, subscription))
-    })?;
-    let params = subscription.params.clone();
-    let decoder = open_decoder(&params)?;
-    let publisher = client.remote_id().fmt_short();
-    println!(
-        "Subscribed to {publisher}: {:?} {}x{} @ {} fps",
-        params.codec, params.width, params.height, params.fps
-    );
+
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|e| AppError::Window(e.to_string()))?;
     let proxy = event_loop.create_proxy();
     let frame_proxy = proxy.clone();
-    let sink = brp_pipeline::ViewerSink {
-        slot: brp_pipeline::LatestSlot::new(),
-        stats: Arc::new(brp_pipeline::ViewerStats::default()),
-        notify: Arc::new(move || {
-            let _ = frame_proxy.send_event(AppEvent::NewFrame);
-        }),
-    };
-    let viewer = Viewer::start(
-        runtime.handle().clone(),
-        subscription.frames,
-        subscription.control,
-        decoder,
-        sink,
-    );
-    let mut events = subscription.events;
-    runtime.spawn(async move {
-        while let Some(msg) = events.recv().await {
-            if matches!(msg, PublisherMessage::LiveEnded) {
-                let _ = proxy.send_event(AppEvent::Status("live ended by the publisher".into()));
+
+    let (room, handle, description) = runtime.block_on(async {
+        let secret = identity::load_or_create()?;
+        let nickname = args
+            .nickname
+            .clone()
+            .unwrap_or_else(|| secret.public().fmt_short().to_string());
+        let config = RoomConfig {
+            secret,
+            relay,
+            nickname,
+            target_fps: 60,
+            capture: Arc::new(PortalCapture),
+            encoders: Arc::new(FfmpegCodecs),
+            decoders: Arc::new(FfmpegCodecs),
+            on_change: Arc::new(|| {}),
+            on_frame: Arc::new(move || {
+                let _ = frame_proxy.send_event(AppEvent::NewFrame);
+            }),
+            timings: RoomTimings::default(),
+        };
+        let room = Room::join(config, ticket).await?;
+        let deadline = Instant::now() + JOIN_TIMEOUT;
+        let live = loop {
+            let found = room
+                .snapshot()
+                .members
+                .into_iter()
+                .find(|m| m.id == publisher)
+                .and_then(|m| m.lives.into_iter().find(|l| l.id == LIVE_ID));
+            if let Some(live) = found {
+                break live;
+            }
+            if Instant::now() > deadline {
+                return Err(AppError::Room(RoomError::UnknownLive(LIVE_ID)));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let handle = room.watch(publisher, LIVE_ID, SOURCE_PRESET_ID)?;
+        let description = format!(
+            "{} {}x{} @ {} fps from {}",
+            live.title,
+            live.source_width,
+            live.source_height,
+            live.source_fps,
+            publisher.fmt_short()
+        );
+        Ok::<_, AppError>((Arc::new(room), handle, description))
+    })?;
+    println!("Watching: {description}");
+
+    let poller = runtime.spawn({
+        let room = room.clone();
+        let mut last = String::new();
+        async move {
+            let mut tick = tokio::time::interval(STATUS_POLL);
+            loop {
+                tick.tick().await;
+                let snapshot = room.snapshot();
+                let status = match snapshot.watches.first() {
+                    Some(w) if w.state == WatchState::Live => format!(
+                        "live, {:?} path",
+                        snapshot
+                            .members
+                            .iter()
+                            .find(|m| m.id == w.publisher)
+                            .map(|m| m.path)
+                    ),
+                    Some(w) => format!("{:?}", w.state),
+                    None => "publisher left the room".to_string(),
+                };
+                if status != last && proxy.send_event(AppEvent::Status(status.clone())).is_ok() {
+                    last = status;
+                }
             }
         }
     });
-    let description = format!(
-        "{:?} {}x{} @ {} fps from {publisher}",
-        params.codec, params.width, params.height, params.fps
-    );
+
     let mut app = App::new(
-        format!("brp: {publisher}"),
+        format!("brp: {}", publisher.fmt_short()),
         description,
-        viewer.slot(),
-        viewer.stats(),
+        handle.slot.clone(),
+        handle.stats.clone(),
     );
     let outcome = event_loop
         .run_app(&mut app)
         .map_err(|e| AppError::Window(e.to_string()));
-    viewer.stop();
-    client.close();
-    runtime.block_on(endpoint.close());
+
+    poller.abort();
+    drop(handle);
+    if let Ok(room) = Arc::try_unwrap(room) {
+        runtime.block_on(room.leave());
+    }
     outcome
 }

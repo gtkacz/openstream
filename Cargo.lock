@@ -469,6 +469,7 @@ dependencies = [
  "brp-net",
  "brp-pipeline",
  "brp-proto",
+ "brp-room",
  "bytemuck",
  "clap",
  "data-encoding",

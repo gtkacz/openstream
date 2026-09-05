@@ -24,12 +24,20 @@ pub struct PublishArgs {
     pub source: SourceArg,
     #[arg(long)]
     pub no_relay: bool,
+    /// Join this room instead of creating a new one.
+    #[arg(long)]
+    pub ticket: Option<String>,
+    /// Shown to other participants. Defaults to the short peer id.
+    #[arg(long)]
+    pub nickname: Option<String>,
 }
 #[derive(Args, Debug)]
 pub struct WatchArgs {
     pub ticket: String,
     #[arg(long)]
     pub no_relay: bool,
+    #[arg(long)]
+    pub nickname: Option<String>,
 }
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum CodecArg {
