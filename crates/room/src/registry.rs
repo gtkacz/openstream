@@ -216,6 +216,10 @@ impl LiveRegistry {
         Ok(())
     }
 
+    pub fn live_count(&self) -> usize {
+        lock(&self.inner).lives.len()
+    }
+
     pub fn live_infos(&self) -> Vec<LiveInfo> {
         lock(&self.inner)
             .lives

@@ -47,8 +47,8 @@ pub fn run(runtime: &Runtime, args: WatchArgs) -> Result<(), AppError> {
             nickname,
             target_fps: 60,
             capture: Arc::new(PortalCapture),
-            encoders: Arc::new(FfmpegCodecs),
-            decoders: Arc::new(FfmpegCodecs),
+            encoders: Arc::new(FfmpegCodecs::default()),
+            decoders: Arc::new(FfmpegCodecs::default()),
             on_change: Arc::new(|| {}),
             on_frame: Arc::new(move || {
                 let _ = frame_proxy.send_event(AppEvent::NewFrame);

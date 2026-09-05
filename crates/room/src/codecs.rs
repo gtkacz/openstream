@@ -1,5 +1,7 @@
 //! Where encoders and decoders come from. The room only knows these traits, so tests swap in fakes.
 
+use std::sync::OnceLock;
+
 use brp_capture::SourceInfo;
 use brp_codec::ffmpeg::SwsConverter;
 use brp_codec::{
@@ -42,8 +44,10 @@ fn config_for(preset: &Preset) -> EncoderConfig {
 
 /// The production factory: swscale for conversion, the spec's probe order for encoders,
 /// hardware-first decoding.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FfmpegCodecs;
+#[derive(Debug, Default)]
+pub struct FfmpegCodecs {
+    probed_codec: OnceLock<Codec>,
+}
 
 impl EncoderFactory for FfmpegCodecs {
     fn open(
@@ -67,16 +71,18 @@ impl EncoderFactory for FfmpegCodecs {
     }
 
     fn preferred_codec(&self) -> Codec {
-        let probe = EncoderConfig {
-            width: 64,
-            height: 64,
-            fps: 30,
-            bitrate_kbps: 1_000,
-            codec: Codec::Hevc,
-        };
-        brp_codec::open_encoder_auto(probe, None)
-            .map(|e| e.params().codec)
-            .unwrap_or(Codec::Av1)
+        *self.probed_codec.get_or_init(|| {
+            let probe = EncoderConfig {
+                width: 64,
+                height: 64,
+                fps: 30,
+                bitrate_kbps: 1_000,
+                codec: Codec::Hevc,
+            };
+            brp_codec::open_encoder_auto(probe, None)
+                .map(|e| e.params().codec)
+                .unwrap_or(Codec::Av1)
+        })
     }
 }
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use brp_capture::SyntheticSource;
+use brp_capture::{CaptureBackend, FrameSink, SourceRequest, StartFuture, SyntheticSource};
 use brp_net::RelaySetting;
 use brp_proto::SourceKind;
 use brp_room::codecs::fake::FakeCodecs;
@@ -102,10 +102,10 @@ async fn a_bad_ticket_times_out_instead_of_hanging() {
 }
 
 use brp_net::{MediaClient, RelaySetting as Relay, bind_endpoint};
-use brp_proto::constants::SOURCE_PRESET_ID;
+use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID};
 use brp_proto::{Codec, Preset};
 use brp_room::WatchState;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 async fn joined_pair() -> (Room, Room) {
     let a = Room::create(config("alice")).await.unwrap();
@@ -263,4 +263,46 @@ async fn preset_changes_propagate_and_a_removed_preset_falls_back_to_source() {
 
     b.leave().await;
     a.leave().await;
+}
+
+/// Counts capture sessions actually opened, so the test can prove the ninth `start_live` never
+/// touches capture (which for real users is a desktop portal permission dialog).
+struct CountingCapture {
+    opened: Arc<AtomicUsize>,
+    inner: SyntheticSource,
+}
+
+impl CaptureBackend for CountingCapture {
+    fn start(&self, request: SourceRequest, sink: FrameSink) -> StartFuture<'_> {
+        self.opened.fetch_add(1, Ordering::SeqCst);
+        self.inner.start(request, sink)
+    }
+}
+
+#[tokio::test]
+async fn the_ninth_live_is_refused_before_capture_opens_a_session() {
+    let opened = Arc::new(AtomicUsize::new(0));
+    let mut cfg = config("alice");
+    cfg.capture = Arc::new(CountingCapture {
+        opened: opened.clone(),
+        inner: SyntheticSource {
+            width: 64,
+            height: 32,
+            fps: 30,
+        },
+    });
+    let room = Room::create(cfg).await.unwrap();
+
+    for i in 0..MAX_LIVES_PER_PARTICIPANT {
+        room.start_live(SourceKind::Monitor, format!("l{i}"))
+            .await
+            .unwrap();
+    }
+    let refused = room
+        .start_live(SourceKind::Monitor, "one too many".into())
+        .await;
+    assert!(matches!(refused, Err(brp_room::RoomError::TooManyLives)));
+    assert_eq!(opened.load(Ordering::SeqCst), MAX_LIVES_PER_PARTICIPANT);
+
+    room.leave().await;
 }

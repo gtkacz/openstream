@@ -129,7 +129,10 @@ impl Watcher {
     pub fn member_left(&self, id: PublicKey) {
         let mut inner = lock(&self.inner);
         inner.watches.retain(|(publisher, _), _| *publisher != id);
-        inner.clients.remove(&id);
+        // Close explicitly so the peer sees an ended connection instead of waiting out an idle timeout.
+        if let Some(client) = inner.clients.remove(&id) {
+            client.close();
+        }
         drop(inner);
         (self.on_change)();
     }
@@ -160,7 +163,9 @@ impl Watcher {
     pub fn stop_all(&self) {
         let mut inner = lock(&self.inner);
         inner.watches.clear();
-        inner.clients.clear();
+        for client in inner.clients.drain().map(|(_, client)| client) {
+            client.close();
+        }
     }
 
     /// Returns false when the watch was removed meanwhile, which tells the task to stop.
@@ -189,7 +194,9 @@ impl Watcher {
     }
 
     fn forget_client(&self, publisher: PublicKey) {
-        lock(&self.inner).clients.remove(&publisher);
+        if let Some(client) = lock(&self.inner).clients.remove(&publisher) {
+            client.close();
+        }
     }
 
     /// Spec 6.6: a watched preset the publisher removed falls back to Source while the live remains.

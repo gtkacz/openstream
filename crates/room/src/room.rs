@@ -8,8 +8,8 @@ use brp_capture::{CaptureBackend, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::FrameNotify;
 use brp_proto::constants::{
-    ENCODER_IDLE_STOP_GRACE, JOIN_TIMEOUT, MEDIA_ALPN, MEMBER_EXPIRY, NICKNAME_MAX_LEN,
-    PRESENCE_HEARTBEAT, REGISTRY_HOUSEKEEPING,
+    ENCODER_IDLE_STOP_GRACE, JOIN_TIMEOUT, MAX_LIVES_PER_PARTICIPANT, MEDIA_ALPN, MEMBER_EXPIRY,
+    NICKNAME_MAX_LEN, PRESENCE_HEARTBEAT, REGISTRY_HOUSEKEEPING,
 };
 use brp_proto::{Preset, RoomTicket, SourceKind, template_presets};
 use iroh::protocol::Router;
@@ -252,6 +252,11 @@ impl Room {
     }
 
     pub async fn start_live(&self, kind: SourceKind, title: String) -> Result<u32, RoomError> {
+        // Cheap check before capture opens a session (a portal permission dialog for real users),
+        // so a session isn't opened only to be rejected once `add_live` re-checks the same cap.
+        if self.registry.live_count() >= MAX_LIVES_PER_PARTICIPANT {
+            return Err(RoomError::TooManyLives);
+        }
         let fan = Arc::new(CaptureFan::default());
         let sink = fan.clone();
         let session = self
