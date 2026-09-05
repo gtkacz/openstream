@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use brp_capture::{CaptureBackend, SourceRequest};
-use brp_net::{MediaServer, PathKind, RelaySetting, bind_endpoint};
+use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::FrameNotify;
 use brp_proto::constants::{
     ENCODER_IDLE_STOP_GRACE, JOIN_TIMEOUT, MEDIA_ALPN, MEMBER_EXPIRY, NICKNAME_MAX_LEN,
@@ -25,6 +25,7 @@ use crate::gossip::{self, PresenceLoop, lock};
 use crate::membership::Membership;
 use crate::registry::{CaptureFan, ChangeNotify, LiveRegistry};
 use crate::snapshot::{MemberView, RoomSnapshot};
+use crate::watcher::{WatchHandle, Watcher};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RoomTimings {
@@ -68,6 +69,7 @@ pub struct Room {
     router: Router,
     membership: Arc<Mutex<Membership>>,
     registry: Arc<LiveRegistry>,
+    watcher: Arc<Watcher>,
     capture: Arc<dyn CaptureBackend>,
     encoders: Arc<dyn EncoderFactory>,
     target_fps: u32,
@@ -139,7 +141,7 @@ impl Room {
         )
         .await?;
 
-        let (expired_tx, _expired_rx) = mpsc::channel::<PublicKey>(16);
+        let (expired_tx, mut expired_rx) = mpsc::channel::<PublicKey>(16);
         let presence = PresenceLoop {
             secret: config.secret,
             nickname: nickname.clone(),
@@ -163,7 +165,27 @@ impl Room {
                 }
             }
         };
-        let tasks = vec![tokio::spawn(presence.run()), tokio::spawn(housekeeping)];
+        let watcher = Watcher::new(
+            endpoint.clone(),
+            tokio::runtime::Handle::current(),
+            config.decoders.clone(),
+            membership.clone(),
+            notify.clone(),
+            config.on_frame.clone(),
+        );
+        let expiry_consumer = {
+            let watcher = watcher.clone();
+            async move {
+                while let Some(id) = expired_rx.recv().await {
+                    watcher.member_left(id);
+                }
+            }
+        };
+        let tasks = vec![
+            tokio::spawn(presence.run()),
+            tokio::spawn(housekeeping),
+            tokio::spawn(expiry_consumer),
+        ];
 
         Ok(Self {
             me,
@@ -173,6 +195,7 @@ impl Room {
             router,
             membership,
             registry,
+            watcher,
             capture: config.capture,
             encoders: config.encoders,
             target_fps: config.target_fps,
@@ -207,7 +230,7 @@ impl Room {
                 nickname: m.presence.nickname.clone(),
                 lives: m.presence.lives.clone(),
                 seen_ago_ms: now.duration_since(m.last_seen).as_millis() as u64,
-                path: PathKind::Unknown,
+                path: self.watcher.path_kind(&m.id),
             })
             .collect();
         RoomSnapshot {
@@ -216,7 +239,7 @@ impl Room {
             version: self.version(),
             members,
             own_lives: self.registry.views(),
-            watches: Vec::new(),
+            watches: self.watcher.views(),
         }
     }
 
@@ -252,10 +275,24 @@ impl Room {
         self.registry.set_presets(live_id, presets)
     }
 
+    pub fn watch(
+        &self,
+        publisher: PublicKey,
+        live_id: u32,
+        preset_id: u32,
+    ) -> Result<WatchHandle, RoomError> {
+        self.watcher.watch(publisher, live_id, preset_id)
+    }
+
+    pub fn unwatch(&self, publisher: PublicKey, live_id: u32) -> Result<(), RoomError> {
+        self.watcher.unwatch(publisher, live_id)
+    }
+
     pub async fn leave(mut self) {
         for task in self.tasks.drain(..) {
             task.abort();
         }
+        self.watcher.stop_all();
         self.registry.stop_all();
         if let Err(error) = self.router.shutdown().await {
             tracing::warn!(%error, "router shutdown");

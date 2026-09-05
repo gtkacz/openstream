@@ -7,6 +7,7 @@ pub mod membership;
 pub mod registry;
 mod room;
 pub mod snapshot;
+mod watcher;
 
 pub use error::RoomError;
 pub use registry::ChangeNotify;
@@ -14,3 +15,4 @@ pub use room::{Room, RoomConfig, RoomTimings};
 pub use snapshot::{
     EncoderView, MemberView, OwnLiveView, PresetView, RoomSnapshot, WatchState, WatchView,
 };
+pub use watcher::WatchHandle;
