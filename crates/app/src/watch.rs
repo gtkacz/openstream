@@ -123,6 +123,9 @@ pub fn run(runtime: &Runtime, args: WatchArgs) -> Result<(), AppError> {
         .map_err(|e| AppError::Window(e.to_string()));
 
     poller.abort();
+    // try_unwrap below needs the poller's Arc<Room> clone gone; abort only requests
+    // cancellation, so wait for the task to actually finish (a cancelled JoinError is expected).
+    let _ = runtime.block_on(poller);
     drop(handle);
     if let Ok(room) = Arc::try_unwrap(room) {
         runtime.block_on(room.leave());

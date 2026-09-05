@@ -6,8 +6,6 @@ pub enum AppError {
     #[error(transparent)]
     Codec(#[from] brp_codec::CodecError),
     #[error(transparent)]
-    Net(#[from] brp_net::NetError),
-    #[error(transparent)]
     Room(#[from] brp_room::RoomError),
     #[error("preset rejected: {0}")]
     Preset(#[from] brp_proto::PresetError),
