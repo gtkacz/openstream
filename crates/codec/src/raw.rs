@@ -49,3 +49,31 @@ impl RawFrame {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn black_frame_has_limited_range_black_and_tight_strides() {
+        let f = RawFrame::black(6, 4, 77);
+        assert_eq!(
+            (f.y_stride, f.uv_stride, f.y.len(), f.uv.len()),
+            (6, 6, 24, 12)
+        );
+        assert!(f.y.iter().all(|&v| v == 16) && f.uv.iter().all(|&v| v == 128));
+        assert!(f.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_short_buffers_and_odd_sizes() {
+        let mut f = RawFrame::black(6, 4, 0);
+        f.y.pop();
+        assert!(matches!(f.validate(), Err(CodecError::InvalidFrame(_))));
+        let odd = RawFrame {
+            width: 5,
+            ..RawFrame::black(6, 4, 0)
+        };
+        assert!(matches!(odd.validate(), Err(CodecError::InvalidFrame(_))));
+    }
+}

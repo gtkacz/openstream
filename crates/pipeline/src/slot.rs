@@ -82,3 +82,67 @@ impl<T> LatestSlot<T> {
         self.lock().dropped
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn put_overwrites_unread_value_and_counts_the_drop() {
+        let slot = LatestSlot::new();
+        slot.put(1);
+        slot.put(2);
+        assert_eq!(slot.try_take(), Some(2));
+        assert_eq!(slot.dropped(), 1);
+        assert_eq!(slot.try_take(), None);
+    }
+
+    #[test]
+    fn take_blocks_until_a_value_arrives() {
+        let slot = LatestSlot::new();
+        let producer = {
+            let slot = slot.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(20));
+                slot.put(7);
+            })
+        };
+        assert_eq!(slot.take(), Some(7));
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn take_timeout_reports_timeout_then_value_then_closed() {
+        let slot = LatestSlot::new();
+        assert!(matches!(
+            slot.take_timeout(Duration::from_millis(10)),
+            SlotWait::Timeout
+        ));
+        slot.put("x");
+        assert!(matches!(
+            slot.take_timeout(Duration::from_millis(10)),
+            SlotWait::Value("x")
+        ));
+        slot.close();
+        assert!(matches!(
+            slot.take_timeout(Duration::from_millis(10)),
+            SlotWait::Closed
+        ));
+        assert_eq!(slot.take(), None);
+    }
+
+    #[test]
+    fn close_wakes_a_blocked_taker() {
+        let slot: Arc<LatestSlot<u8>> = LatestSlot::new();
+        let waiter = {
+            let slot = slot.clone();
+            thread::spawn(move || slot.take())
+        };
+        thread::sleep(Duration::from_millis(20));
+        slot.close();
+        assert_eq!(waiter.join().unwrap(), None);
+    }
+}

@@ -101,3 +101,105 @@ impl FanOut {
         o
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn frame(seq: u64, keyframe: bool) -> Arc<EncodedFrame> {
+        Arc::new(EncodedFrame {
+            seq,
+            capture_ts_us: seq * 16_667,
+            keyframe,
+            data: vec![seq as u8],
+        })
+    }
+
+    #[test]
+    fn keyframe_request_is_rate_limited() {
+        let kf = KeyframeRequest::new();
+        let t0 = Instant::now();
+        assert!(!kf.take_if_allowed(t0));
+        kf.request();
+        assert!(kf.pending());
+        assert!(kf.take_if_allowed(t0));
+        assert!(!kf.pending());
+        kf.request();
+        assert!(!kf.take_if_allowed(t0 + Duration::from_millis(100)));
+        assert!(kf.pending());
+        assert!(kf.take_if_allowed(t0 + FORCED_KEYFRAME_MIN_INTERVAL));
+    }
+
+    #[test]
+    fn new_subscriber_waits_for_a_keyframe_and_requests_one() {
+        let kf = KeyframeRequest::new();
+        let mut fanout = FanOut::new(kf.clone());
+        let mut rx = fanout.add();
+        assert!(kf.pending());
+        assert_eq!(
+            fanout.push(frame(1, false)),
+            PushOutcome {
+                delivered: 0,
+                skipped: 1
+            }
+        );
+        assert_eq!(
+            fanout.push(frame(2, true)),
+            PushOutcome {
+                delivered: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(rx.try_recv().unwrap().seq, 2);
+        fanout.push(frame(3, false));
+        assert_eq!(rx.try_recv().unwrap().seq, 3);
+    }
+
+    #[test]
+    fn full_channel_skips_until_next_keyframe_and_requests_one() {
+        let kf = KeyframeRequest::new();
+        let mut fanout = FanOut::new(kf.clone());
+        let mut rx = fanout.add();
+        assert!(kf.take_if_allowed(Instant::now()));
+        fanout.push(frame(1, true));
+        fanout.push(frame(2, false));
+        assert!(!kf.pending());
+        assert_eq!(
+            fanout.push(frame(3, false)),
+            PushOutcome {
+                delivered: 0,
+                skipped: 1
+            }
+        );
+        assert!(kf.pending());
+        assert_eq!(rx.try_recv().unwrap().seq, 1);
+        assert_eq!(rx.try_recv().unwrap().seq, 2);
+        assert_eq!(
+            fanout.push(frame(4, false)),
+            PushOutcome {
+                delivered: 0,
+                skipped: 1
+            }
+        );
+        assert_eq!(
+            fanout.push(frame(5, true)),
+            PushOutcome {
+                delivered: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(rx.try_recv().unwrap().seq, 5);
+    }
+
+    #[test]
+    fn dropped_receiver_is_removed_on_push() {
+        let mut fanout = FanOut::new(KeyframeRequest::new());
+        let rx = fanout.add();
+        assert_eq!(fanout.subscriber_count(), 1);
+        drop(rx);
+        fanout.push(frame(1, true));
+        assert_eq!(fanout.subscriber_count(), 0);
+    }
+}
