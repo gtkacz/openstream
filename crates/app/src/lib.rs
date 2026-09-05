@@ -2,6 +2,7 @@
 pub mod cli;
 pub mod error;
 pub mod identity;
+pub mod presets;
 pub mod publish;
 pub mod render;
 pub mod watch;
