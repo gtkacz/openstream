@@ -191,6 +191,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "arboard"
 version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -543,6 +549,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "brp-room"
+version = "0.1.0"
+dependencies = [
+ "brp-capture",
+ "brp-codec",
+ "brp-net",
+ "brp-pipeline",
+ "brp-proto",
+ "bytes",
+ "iroh",
+ "iroh-gossip",
+ "n0-future",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -585,6 +609,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "calloop"
@@ -1532,6 +1559,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
+name = "fixedbitset"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1635,6 +1668,19 @@ checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
  "futures-sink",
+]
+
+[[package]]
+name = "futures-concurrency"
+version = "7.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175cd8cca9e1d45b87f18ffa75088f2099e3c4fe5e2f83e42de112560bea8ea6"
+dependencies = [
+ "fixedbitset",
+ "futures-core",
+ "futures-lite",
+ "pin-project",
+ "smallvec",
 ]
 
 [[package]]
@@ -2487,6 +2533,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-gossip"
+version = "0.101.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e1dc4b05f73e7a1b9e83b531eb63c3fd671b0af3aeb13b59c546dd7ca747515"
+dependencies = [
+ "blake3",
+ "bytes",
+ "data-encoding",
+ "derive_more",
+ "futures-concurrency",
+ "hex",
+ "indexmap",
+ "iroh",
+ "iroh-base",
+ "iroh-metrics",
+ "irpc",
+ "n0-error",
+ "n0-future",
+ "postcard",
+ "rand",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "iroh-metrics"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2570,6 +2643,33 @@ dependencies = [
  "n0-error",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "irpc"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3623d6ff582b415904b29bbe6ebcb4a4f9a262ccdee05a45fdd003ef0950c386"
+dependencies = [
+ "futures-util",
+ "irpc-derive",
+ "n0-error",
+ "n0-future",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "irpc-derive"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35c254013736de16472140d26904e6ac98e8f3887284dcf4af40f88c77411b56"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2975,6 +3075,7 @@ version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26c59ea174675ce6bc196878851e5049e11b8b1f9af3ba87e4d6df8d828bb001"
 dependencies = [
+ "anyhow",
  "n0-error-macros",
  "spez",
 ]

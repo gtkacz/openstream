@@ -14,6 +14,7 @@ brp-codec = { path = "crates/codec" }
 brp-capture = { path = "crates/capture" }
 brp-net = { path = "crates/net" }
 brp-pipeline = { path = "crates/pipeline" }
+brp-room = { path = "crates/room" }
 serde = { version = "1.0", features = ["derive"] }
 postcard = { version = "1.1", features = ["alloc"] }
 thiserror = "2.0"
@@ -23,7 +24,10 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "ti
 iroh-base = { version = "1.1", features = ["key"] }
 iroh = { version = "1.1", default-features = false, features = ["tls-ring", "portmapper"] }
 iroh-tickets = "1.0"
+iroh-gossip = "0.101"
+n0-future = "0.3"
 rand = "0.10"
+bytes = "1.12"
 ffmpeg-sys-next = { version = "9.0", default-features = false, features = ["avcodec", "swscale"] }
 ashpd = { version = "0.13", features = ["screencast"] }
 pipewire = "0.10"

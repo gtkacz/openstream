@@ -1,0 +1,23 @@
+[package]
+name = "brp-room"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brp-proto.workspace = true
+brp-net.workspace = true
+brp-pipeline.workspace = true
+brp-codec.workspace = true
+brp-capture.workspace = true
+iroh.workspace = true
+iroh-gossip.workspace = true
+n0-future.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
