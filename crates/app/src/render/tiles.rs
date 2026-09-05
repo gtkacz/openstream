@@ -1,31 +1,55 @@
+//! Draws every watched live as a letterboxed NV12 quad in its own viewport. One pipeline and
+//! sampler are shared; each tile owns its planes, its fit uniform, and its bind group.
+
+use std::collections::HashMap;
+
 use brp_codec::RawFrame;
 use bytemuck::{Pod, Zeroable};
+use iroh::PublicKey;
 use wgpu::util::DeviceExt;
 
-use super::tiles::fit_scale;
+use super::grid::PixelRect;
 
 const SHADER: &str = include_str!("nv12.wgsl");
+
+/// A watched live: publisher and live id. Tiles, watch handles, and per-tile UI choices share it.
+pub type TileKey = (PublicKey, u32);
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Fit {
     scale: [f32; 2],
     _pad: [f32; 2],
 }
-struct Planes {
+
+struct Tile {
     width: u32,
     height: u32,
     y: wgpu::Texture,
     uv: wgpu::Texture,
+    fit: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
-pub struct VideoRenderer {
+
+pub struct TileRenderer {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    fit: wgpu::Buffer,
-    planes: Option<Planes>,
+    tiles: HashMap<TileKey, Tile>,
 }
-impl VideoRenderer {
+
+/// Clip-space scale that letterboxes or pillarboxes `video` inside `viewport`.
+pub fn fit_scale(video: (u32, u32), viewport: (u32, u32)) -> [f32; 2] {
+    let va = video.0 as f32 / video.1.max(1) as f32;
+    let wa = viewport.0.max(1) as f32 / viewport.1.max(1) as f32;
+    if va > wa {
+        [1., wa / va]
+    } else {
+        [va / wa, 1.]
+    }
+}
+
+impl TileRenderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nv12"),
@@ -64,14 +88,14 @@ impl VideoRenderer {
                 },
             ],
         });
-        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nv12-pipeline-layout"),
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("nv12-pipeline"),
-            layout: Some(&pl),
+            layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
@@ -100,34 +124,33 @@ impl VideoRenderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let fit = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("nv12-fit"),
-            contents: bytemuck::bytes_of(&Fit {
-                scale: [1.; 2],
-                _pad: [0.; 2],
-            }),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
         Self {
             pipeline,
             layout,
             sampler,
-            fit,
-            planes: None,
+            tiles: HashMap::new(),
         }
     }
-    pub fn video_size(&self) -> Option<(u32, u32)> {
-        self.planes.as_ref().map(|p| (p.width, p.height))
-    }
-    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &RawFrame) {
-        if self
-            .planes
-            .as_ref()
-            .is_none_or(|p| (p.width, p.height) != (frame.width, frame.height))
-        {
-            self.planes = Some(self.allocate(device, frame.width, frame.height));
+
+    /// Uploads a decoded frame, reallocating the tile's planes when the size changes.
+    pub fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: TileKey,
+        frame: &RawFrame,
+    ) {
+        let needs_alloc = self
+            .tiles
+            .get(&key)
+            .is_none_or(|t| (t.width, t.height) != (frame.width, frame.height));
+        if needs_alloc {
+            let tile = self.allocate(device, frame.width, frame.height);
+            self.tiles.insert(key, tile);
         }
-        let p = self.planes.as_ref().unwrap();
+        let Some(tile) = self.tiles.get(&key) else {
+            return;
+        };
         let copy = |texture| wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
@@ -135,7 +158,7 @@ impl VideoRenderer {
             aspect: wgpu::TextureAspect::All,
         };
         queue.write_texture(
-            copy(&p.y),
+            copy(&tile.y),
             &frame.y,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
@@ -149,7 +172,7 @@ impl VideoRenderer {
             },
         );
         queue.write_texture(
-            copy(&p.uv),
+            copy(&tile.uv),
             &frame.uv,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
@@ -163,26 +186,45 @@ impl VideoRenderer {
             },
         );
     }
-    pub fn update_fit(&self, queue: &wgpu::Queue, viewport: (u32, u32)) {
-        if let Some(size) = self.video_size() {
-            queue.write_buffer(
-                &self.fit,
-                0,
-                bytemuck::bytes_of(&Fit {
-                    scale: fit_scale(size, viewport),
+
+    /// Drops planes for watches that no longer exist.
+    pub fn retain(&mut self, keep: impl Fn(&TileKey) -> bool) {
+        self.tiles.retain(|key, _| keep(key));
+    }
+
+    /// Writes each placed tile's letterbox scale. Call before the render pass is recorded.
+    pub fn update_fits(&self, queue: &wgpu::Queue, placements: &[(TileKey, PixelRect)]) {
+        for (key, rect) in placements {
+            if let Some(tile) = self.tiles.get(key) {
+                let fit = Fit {
+                    scale: fit_scale(
+                        (tile.width, tile.height),
+                        (rect.width as u32, rect.height as u32),
+                    ),
                     _pad: [0.; 2],
-                }),
-            );
+                };
+                queue.write_buffer(&tile.fit, 0, bytemuck::bytes_of(&fit));
+            }
         }
     }
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>) {
-        if let Some(p) = &self.planes {
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &p.bind_group, &[]);
+
+    /// Draws every placed tile that has received a frame. Tiles without a frame stay black.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, placements: &[(TileKey, PixelRect)]) {
+        pass.set_pipeline(&self.pipeline);
+        for (key, rect) in placements {
+            let Some(tile) = self.tiles.get(key) else {
+                continue;
+            };
+            if rect.width < 1.0 || rect.height < 1.0 {
+                continue;
+            }
+            pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
+            pass.set_bind_group(0, &tile.bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
     }
-    fn allocate(&self, device: &wgpu::Device, width: u32, height: u32) -> Planes {
+
+    fn allocate(&self, device: &wgpu::Device, width: u32, height: u32) -> Tile {
         let make = |label, w, h, format| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -206,19 +248,27 @@ impl VideoRenderer {
             height.div_ceil(2),
             wgpu::TextureFormat::Rg8Unorm,
         );
-        let yv = y.create_view(&Default::default());
-        let uvv = uv.create_view(&Default::default());
+        let fit = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("nv12-fit"),
+            contents: bytemuck::bytes_of(&Fit {
+                scale: [1.; 2],
+                _pad: [0.; 2],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let y_view = y.create_view(&Default::default());
+        let uv_view = uv.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nv12-bind-group"),
             layout: &self.layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&yv),
+                    resource: wgpu::BindingResource::TextureView(&y_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&uvv),
+                    resource: wgpu::BindingResource::TextureView(&uv_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -226,16 +276,35 @@ impl VideoRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.fit.as_entire_binding(),
+                    resource: fit.as_entire_binding(),
                 },
             ],
         });
-        Planes {
+        Tile {
             width,
             height,
             y,
             uv,
+            fit,
             bind_group,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_scale;
+    #[test]
+    fn wide_video_in_tall_window_letterboxes() {
+        assert_eq!(fit_scale((1920, 1080), (1000, 1000)), [1., 0.5625]);
+    }
+    #[test]
+    fn tall_video_in_wide_window_pillarboxes() {
+        let [x, y] = fit_scale((1080, 1920), (1920, 1080));
+        assert!((x - 0.3164).abs() < 0.001 && y == 1.0);
+    }
+    #[test]
+    fn matching_aspect_fills_window() {
+        assert_eq!(fit_scale((1280, 720), (1920, 1080)), [1., 1.]);
     }
 }
