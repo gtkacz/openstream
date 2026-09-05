@@ -11,8 +11,6 @@ pub enum AppError {
     Preset(#[from] brp_proto::PresetError),
     #[error("invalid ticket: {0}")]
     Ticket(#[from] iroh_tickets::ParseError),
-    #[error("the ticket lists no bootstrap peer")]
-    EmptyTicket,
     #[error("identity file: {0}")]
     Identity(String),
     #[error("window system: {0}")]

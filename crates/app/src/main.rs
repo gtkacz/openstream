@@ -1,6 +1,6 @@
 //! brp: peer-to-peer screen sharing.
 use brp_app::cli::{Cli, Command};
-use brp_app::{publish, watch};
+use brp_app::{participant, publish};
 use clap::Parser;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
@@ -24,7 +24,8 @@ fn main() -> ExitCode {
     };
     let result = match cli.command {
         Command::Publish(args) => runtime.block_on(publish::run(args)),
-        Command::Watch(args) => watch::run(&runtime, args),
+        Command::Create(args) => participant::run(&runtime, None, args.window),
+        Command::Join(args) => participant::run(&runtime, Some(args.ticket), args.window),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

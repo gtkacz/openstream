@@ -9,8 +9,12 @@ pub struct Cli {
 }
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Share one live headlessly and print the ticket.
     Publish(PublishArgs),
-    Watch(WatchArgs),
+    /// Open a new room in the participant window.
+    Create(CreateArgs),
+    /// Join a room with a ticket in the participant window.
+    Join(JoinArgs),
 }
 #[derive(Args, Debug)]
 pub struct PublishArgs {
@@ -32,12 +36,26 @@ pub struct PublishArgs {
     pub nickname: Option<String>,
 }
 #[derive(Args, Debug)]
-pub struct WatchArgs {
-    pub ticket: String,
-    #[arg(long)]
-    pub no_relay: bool,
+pub struct WindowArgs {
+    /// Shown to other participants. Defaults to the short peer id.
     #[arg(long)]
     pub nickname: Option<String>,
+    /// Capture ceiling for lives shared from the window; each live's presets can go lower.
+    #[arg(long, default_value_t = 60)]
+    pub fps: u32,
+    #[arg(long)]
+    pub no_relay: bool,
+}
+#[derive(Args, Debug)]
+pub struct CreateArgs {
+    #[command(flatten)]
+    pub window: WindowArgs,
+}
+#[derive(Args, Debug)]
+pub struct JoinArgs {
+    pub ticket: String,
+    #[command(flatten)]
+    pub window: WindowArgs,
 }
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum CodecArg {

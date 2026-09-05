@@ -2,7 +2,6 @@
 pub mod grid;
 pub mod tiles;
 pub mod ui;
-pub mod video;
 use crate::error::AppError;
 use std::sync::Arc;
 use winit::event_loop::ActiveEventLoop;
