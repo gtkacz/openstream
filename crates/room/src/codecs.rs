@@ -1,0 +1,146 @@
+//! Where encoders and decoders come from. The room only knows these traits, so tests swap in fakes.
+
+use brp_capture::SourceInfo;
+use brp_codec::ffmpeg::SwsConverter;
+use brp_codec::{
+    CodecError, EncoderConfig, FrameConverter, VideoDecoder, VideoEncoder, open_decoder,
+    open_encoder,
+};
+use brp_proto::{CodecParams, PixelFormat, Preset};
+
+pub struct EncoderParts {
+    pub converter: Box<dyn FrameConverter>,
+    pub encoder: Box<dyn VideoEncoder>,
+}
+
+pub trait EncoderFactory: Send + Sync + 'static {
+    fn open(
+        &self,
+        source: SourceInfo,
+        source_format: PixelFormat,
+        preset: &Preset,
+    ) -> Result<EncoderParts, CodecError>;
+}
+
+pub trait DecoderFactory: Send + Sync + 'static {
+    fn open(&self, params: &CodecParams) -> Result<Box<dyn VideoDecoder>, CodecError>;
+}
+
+fn config_for(preset: &Preset) -> EncoderConfig {
+    EncoderConfig {
+        width: preset.width,
+        height: preset.height,
+        fps: preset.fps,
+        bitrate_kbps: preset.bitrate_kbps,
+        codec: preset.codec,
+    }
+}
+
+/// The production factory: swscale for conversion, the spec's probe order for encoders,
+/// hardware-first decoding.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FfmpegCodecs;
+
+impl EncoderFactory for FfmpegCodecs {
+    fn open(
+        &self,
+        source: SourceInfo,
+        source_format: PixelFormat,
+        preset: &Preset,
+    ) -> Result<EncoderParts, CodecError> {
+        let converter = SwsConverter::new(
+            source.width,
+            source.height,
+            source_format,
+            preset.width,
+            preset.height,
+        )?;
+        let encoder = open_encoder(&config_for(preset))?;
+        Ok(EncoderParts {
+            converter: Box::new(converter),
+            encoder,
+        })
+    }
+}
+
+impl DecoderFactory for FfmpegCodecs {
+    fn open(&self, params: &CodecParams) -> Result<Box<dyn VideoDecoder>, CodecError> {
+        open_decoder(params)
+    }
+}
+
+pub mod fake {
+    use brp_codec::fake::{FakeDecoder, FakeEncoder, SolidConverter};
+
+    use super::*;
+
+    /// Keyframe every 30 frames, like a real encoder asked for periodic refresh.
+    const FAKE_KEYFRAME_INTERVAL: u32 = 30;
+
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct FakeCodecs;
+
+    impl EncoderFactory for FakeCodecs {
+        fn open(
+            &self,
+            _source: SourceInfo,
+            _format: PixelFormat,
+            preset: &Preset,
+        ) -> Result<EncoderParts, CodecError> {
+            Ok(EncoderParts {
+                converter: Box::new(SolidConverter::new(preset.width, preset.height)),
+                encoder: Box::new(FakeEncoder::new(config_for(preset), FAKE_KEYFRAME_INTERVAL)),
+            })
+        }
+    }
+
+    impl DecoderFactory for FakeCodecs {
+        fn open(&self, _params: &CodecParams) -> Result<Box<dyn VideoDecoder>, CodecError> {
+            Ok(Box::new(FakeDecoder))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brp_capture::SourceInfo;
+    use brp_codec::RawFrame;
+    use brp_proto::{Codec, PixelFormat, Preset};
+
+    use super::*;
+
+    #[test]
+    fn fake_factory_builds_a_working_pair_for_the_preset() {
+        let preset = Preset {
+            id: 2,
+            name: "720p".into(),
+            width: 1280,
+            height: 720,
+            fps: 30,
+            bitrate_kbps: 5_000,
+            codec: Codec::Av1,
+        };
+        let parts = EncoderFactory::open(
+            &fake::FakeCodecs,
+            SourceInfo {
+                width: 1920,
+                height: 1080,
+                fps: 60,
+            },
+            PixelFormat::Bgra,
+            &preset,
+        )
+        .unwrap();
+        let mut encoder = parts.encoder;
+        let params = encoder.params();
+        assert_eq!(
+            (params.width, params.height, params.fps, params.codec),
+            (1280, 720, 30, Codec::Av1)
+        );
+        let packets = encoder
+            .encode(&RawFrame::black(1280, 720, 9), false)
+            .unwrap();
+        let mut decoder = DecoderFactory::open(&fake::FakeCodecs, &params).unwrap();
+        assert_eq!(decoder.decode(&packets[0]).unwrap()[0].capture_ts_us, 9);
+    }
+}
