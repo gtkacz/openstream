@@ -37,3 +37,6 @@ pub const NICKNAME_MAX_LEN: usize = 32;
 /// QUIC application close code the media server uses for callers outside the room.
 pub const REFUSED_NOT_MEMBER: u32 = 1;
 pub const SOURCE_PRESET_ID: u32 = 1;
+/// Compositor capture timestamps jitter by well under a millisecond; a frame this close to its
+/// slot is treated as on time rather than skipped.
+pub const PACER_JITTER_TOLERANCE: Duration = Duration::from_millis(1);
