@@ -29,7 +29,7 @@ pub fn run(runtime: &Runtime, args: WatchArgs) -> Result<(), AppError> {
         RelaySetting::Default
     };
     let (endpoint, client, subscription) = runtime.block_on(async {
-        let endpoint = bind_endpoint(identity::load_or_create()?, relay).await?;
+        let endpoint = bind_endpoint(identity::load_or_create()?, relay, vec![]).await?;
         let client = MediaClient::connect(&endpoint, bootstrap).await?;
         let subscription = client.subscribe(LIVE_ID, PRESET_ID).await?;
         Ok::<_, AppError>((endpoint, client, subscription))

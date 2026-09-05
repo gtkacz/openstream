@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use brp_proto::constants::MAX_CONTROL_BYTES;
+use brp_proto::constants::{MAX_CONTROL_BYTES, REFUSED_NOT_MEMBER};
 use brp_proto::{EncodedFrame, FrameHeader, FrameKind, PublisherMessage, ViewerMessage};
 use iroh::endpoint::{Connection, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
@@ -10,16 +10,18 @@ use tokio::task::JoinHandle;
 
 use crate::error::NetError;
 use crate::framing::{read_msg, write_msg};
+use crate::policy::ConnectionPolicy;
 use crate::source::LiveSource;
 
 #[derive(Clone)]
 pub struct MediaServer {
     source: Arc<dyn LiveSource>,
+    policy: Arc<dyn ConnectionPolicy>,
 }
 
 impl MediaServer {
-    pub fn new(source: Arc<dyn LiveSource>) -> Self {
-        Self { source }
+    pub fn new(source: Arc<dyn LiveSource>, policy: Arc<dyn ConnectionPolicy>) -> Self {
+        Self { source, policy }
     }
 }
 
@@ -32,6 +34,11 @@ impl fmt::Debug for MediaServer {
 impl ProtocolHandler for MediaServer {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
+        if !self.policy.allows(peer) {
+            tracing::info!(peer = %peer.fmt_short(), "refusing media connection from a non-member");
+            connection.close(REFUSED_NOT_MEMBER.into(), b"not a member");
+            return Ok(());
+        }
         tracing::info!(peer = %peer.fmt_short(), "media connection accepted");
         // Each bidirectional stream is one subscription; keep accepting until the peer closes.
         while let Ok((send, recv)) = connection.accept_bi().await {

@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use brp_net::{
-    LiveSource, MediaClient, MediaServer, NetError, RelaySetting, SubscribeRejected, Subscription,
-    bind_endpoint,
+    AllowAll, LiveSource, MediaClient, MediaServer, NetError, PathKind, RelaySetting,
+    SubscribeRejected, Subscription, bind_endpoint,
 };
 use brp_proto::constants::MEDIA_ALPN;
 use brp_proto::{Codec, CodecParams, EncodedFrame, FrameKind, ViewerMessage};
@@ -62,13 +62,16 @@ async fn frames_travel_from_source_to_viewer_over_loopback() {
         keyframe_requests: AtomicUsize::new(0),
     });
 
-    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled)
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
         .await
         .unwrap();
     let router = Router::builder(server_ep.clone())
-        .accept(MEDIA_ALPN, MediaServer::new(source.clone()))
+        .accept(
+            MEDIA_ALPN,
+            MediaServer::new(source.clone(), Arc::new(AllowAll)),
+        )
         .spawn();
-    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled)
+    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
         .await
         .unwrap();
 
@@ -77,6 +80,7 @@ async fn frames_travel_from_source_to_viewer_over_loopback() {
         .unwrap();
     let mut sub = client.subscribe(1, 1).await.unwrap();
     assert_eq!(sub.params, params());
+    assert_eq!(client.path_kind(), PathKind::Direct);
 
     for seq in 0..5u64 {
         let frame = EncodedFrame {
@@ -130,4 +134,52 @@ async fn frames_travel_from_source_to_viewer_over_loopback() {
     client.close();
     router.shutdown().await.unwrap();
     client_ep.close().await;
+}
+
+#[tokio::test]
+async fn strangers_are_refused_before_any_subscription() {
+    let (_tx, rx) = mpsc::channel(8);
+    let source = Arc::new(ScriptedSource {
+        params: params(),
+        frames: Mutex::new(Some(rx)),
+        keyframe_requests: AtomicUsize::new(0),
+    });
+    let member_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let stranger_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let member_id = member_ep.id();
+    let policy = Arc::new(move |peer: iroh::EndpointId| peer == member_id);
+
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let router = Router::builder(server_ep.clone())
+        .accept(MEDIA_ALPN, MediaServer::new(source, policy))
+        .spawn();
+
+    let stranger = MediaClient::connect(&stranger_ep, server_ep.addr())
+        .await
+        .unwrap();
+    let refused = tokio::time::timeout(Duration::from_secs(5), stranger.subscribe(1, 1))
+        .await
+        .expect("refusal arrives promptly");
+    assert!(
+        matches!(
+            refused,
+            Err(NetError::Stream(_)) | Err(NetError::Connection(_))
+        ),
+        "{refused:?}"
+    );
+
+    let member = MediaClient::connect(&member_ep, server_ep.addr())
+        .await
+        .unwrap();
+    assert!(member.subscribe(1, 1).await.is_ok());
+
+    router.shutdown().await.unwrap();
+    member_ep.close().await;
+    stranger_ep.close().await;
 }

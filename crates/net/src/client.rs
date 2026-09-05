@@ -18,6 +18,13 @@ pub struct MediaClient {
     routes: Routes,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    Direct,
+    Relayed,
+    Unknown,
+}
+
 #[derive(Debug)]
 pub struct ViewerSubscription {
     pub params: CodecParams,
@@ -39,6 +46,16 @@ impl MediaClient {
 
     pub fn remote_id(&self) -> iroh::EndpointId {
         self.conn.remote_id()
+    }
+
+    /// Whether media currently flows peer to peer or through a relay.
+    pub fn path_kind(&self) -> PathKind {
+        let paths = self.conn.paths();
+        match paths.iter().find(|p| p.is_selected()) {
+            Some(p) if p.is_ip() => PathKind::Direct,
+            Some(p) if p.is_relay() => PathKind::Relayed,
+            _ => PathKind::Unknown,
+        }
     }
 
     pub async fn subscribe(

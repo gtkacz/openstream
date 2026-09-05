@@ -19,7 +19,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     } else {
         RelaySetting::Default
     };
-    let endpoint = bind_endpoint(identity::load_or_create()?, relay).await?;
+    let endpoint = bind_endpoint(identity::load_or_create()?, relay, vec![]).await?;
     let slot: Arc<brp_pipeline::LatestSlot<Arc<brp_capture::CaptureFrame>>> =
         brp_pipeline::LatestSlot::new();
     let sink_slot = slot.clone();
@@ -62,7 +62,10 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     let converter = SwsConverter::new(info.width, info.height, PixelFormat::Bgrx, width, height)?;
     let publisher = Publisher::start(LIVE_ID, PRESET_ID, slot, Box::new(converter), encoder);
     let router = Router::builder(endpoint.clone())
-        .accept(MEDIA_ALPN, MediaServer::new(Arc::new(publisher.clone())))
+        .accept(
+            MEDIA_ALPN,
+            MediaServer::new(Arc::new(publisher.clone()), Arc::new(brp_net::AllowAll)),
+        )
         .spawn();
     if relay == RelaySetting::Default
         && tokio::time::timeout(RELAY_ONLINE_TIMEOUT, endpoint.online())
