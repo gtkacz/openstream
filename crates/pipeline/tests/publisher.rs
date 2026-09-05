@@ -43,6 +43,7 @@ async fn subscriber_receives_a_keyframe_first_then_ordered_frames() {
         slot,
         Box::new(SolidConverter::new(32, 16)),
         Box::new(FakeEncoder::new(cfg(), 30)),
+        None,
     );
     assert_eq!(publisher.encoder_name(), "fake");
     assert_eq!(
@@ -96,6 +97,7 @@ async fn static_screen_still_serves_a_late_subscriber_a_keyframe() {
         slot.clone(),
         Box::new(SolidConverter::new(8, 8)),
         Box::new(FakeEncoder::new(cfg(), 1_000)),
+        None,
     );
     slot.put(Arc::new(CaptureFrame {
         width: 8,

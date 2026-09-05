@@ -12,6 +12,7 @@ use brp_proto::CodecParams;
 use brp_proto::constants::IDLE_KEYFRAME_RETRY;
 
 use crate::fanout::{FanOut, KeyframeRequest};
+use crate::pacer::Pacer;
 use crate::slot::{LatestSlot, SlotWait};
 
 #[derive(Default)]
@@ -45,6 +46,7 @@ impl Publisher {
         slot: Arc<LatestSlot<Arc<CaptureFrame>>>,
         converter: Box<dyn FrameConverter>,
         encoder: Box<dyn VideoEncoder>,
+        pacer: Option<Pacer>,
     ) -> Self {
         let keyframe = KeyframeRequest::new();
         let inner = Arc::new(Inner {
@@ -62,7 +64,7 @@ impl Publisher {
         let worker = inner.clone();
         let handle = thread::Builder::new()
             .name(format!("brp-encode-{live_id}-{preset_id}"))
-            .spawn(move || encode_loop(worker, converter, encoder))
+            .spawn(move || encode_loop(worker, converter, encoder, pacer))
             .expect("spawning a thread only fails when the system is out of resources");
         *lock(&inner.thread) = Some(handle);
         Self { inner }
@@ -125,11 +127,19 @@ fn encode_loop(
     inner: Arc<Inner>,
     mut converter: Box<dyn FrameConverter>,
     mut encoder: Box<dyn VideoEncoder>,
+    mut pacer: Option<Pacer>,
 ) {
     let mut last: Option<Arc<CaptureFrame>> = None;
     while !inner.stop.load(Ordering::Relaxed) {
         let frame = match inner.slot.take_timeout(IDLE_KEYFRAME_RETRY) {
             SlotWait::Value(frame) => {
+                // Skipped frames never become `last`: an idle keyframe retry re-encodes an admitted one.
+                if pacer
+                    .as_mut()
+                    .is_some_and(|pacer| !pacer.admit(frame.capture_ts_us))
+                {
+                    continue;
+                }
                 last = Some(frame);
                 last.as_deref()
             }

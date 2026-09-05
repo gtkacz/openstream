@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use brp_capture::{CaptureFrame, CaptureSession};
 use brp_net::{LiveSource, SubscribeRejected, Subscription};
-use brp_pipeline::{LatestSlot, Publisher};
+use brp_pipeline::{LatestSlot, Pacer, Publisher};
 use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, MAX_PRESETS_PER_LIVE};
 use brp_proto::{LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
 
@@ -320,12 +320,16 @@ impl LiveSource for LiveRegistry {
             match self.encoders.open(source, format, &state.preset) {
                 Ok(parts) => {
                     let slot = fan.attach();
+                    // Presets at the source rate pass every frame; only slower presets are paced.
+                    let pacer =
+                        (state.preset.fps < source.fps).then(|| Pacer::new(state.preset.fps));
                     let publisher = Publisher::start(
                         live_id,
                         preset_id,
                         slot.clone(),
                         parts.converter,
                         parts.encoder,
+                        pacer,
                     );
                     state.running = Some(RunningEncoder {
                         publisher,
