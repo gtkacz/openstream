@@ -11,4 +11,8 @@ pub enum ProtoError {
     FrameTooLarge(u32),
     #[error("ticket is malformed: {0}")]
     Ticket(String),
+    #[error("signature does not match the author")]
+    BadSignature,
+    #[error("invalid message: {0}")]
+    Invalid(String),
 }

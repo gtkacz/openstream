@@ -21,3 +21,19 @@ pub const RELAY_ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const STATS_LOG_INTERVAL: Duration = Duration::from_secs(2);
 /// The compositor negotiates the stream format within a frame or two; this covers a slow first connection.
 pub const PORTAL_FORMAT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const PRESENCE_HEARTBEAT: Duration = Duration::from_secs(5);
+/// Four missed heartbeats before a peer vanishes from the room.
+pub const MEMBER_EXPIRY: Duration = Duration::from_secs(20);
+/// Keeps a presence message under gossip's 4 KB default cap.
+pub const MAX_LIVES_PER_PARTICIPANT: usize = 8;
+pub const MAX_PRESETS_PER_LIVE: usize = 6;
+/// Bounds how late an idle encoder is noticed relative to the stop grace.
+pub const REGISTRY_HOUSEKEEPING: Duration = Duration::from_secs(1);
+/// Three heartbeats to reach the first neighbour before a join is reported failed.
+pub const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Derived preset heights offered when smaller than the source.
+pub const TEMPLATE_HEIGHTS: [u32; 3] = [1080, 720, 480];
+pub const NICKNAME_MAX_LEN: usize = 32;
+/// QUIC application close code the media server uses for callers outside the room.
+pub const REFUSED_NOT_MEMBER: u32 = 1;
+pub const SOURCE_PRESET_ID: u32 = 1;
