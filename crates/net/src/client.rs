@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use brp_proto::constants::{MAX_CONTROL_BYTES, MAX_FRAME_BYTES, MEDIA_ALPN, RECEIVE_QUEUE_FRAMES};
-use brp_proto::{CodecParams, FrameHeader, PublisherMessage, ViewerMessage};
+use brp_proto::constants::{
+    AUDIO_PRESET_ID, AUDIO_SENDER_BACKLOG_PACKETS, MAX_CONTROL_BYTES, MAX_FRAME_BYTES, MEDIA_ALPN,
+    RECEIVE_QUEUE_FRAMES,
+};
+use brp_proto::{AudioParams, CodecParams, FrameHeader, PublisherMessage, ViewerMessage};
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -25,12 +28,20 @@ pub enum PathKind {
     Unknown,
 }
 
+/// Opus packets for one subscription, routed under the audio preset id.
+#[derive(Debug)]
+pub struct AudioStream {
+    pub params: AudioParams,
+    pub packets: Receiver<ReceivedFrame>,
+}
+
 #[derive(Debug)]
 pub struct ViewerSubscription {
     pub params: CodecParams,
     pub frames: Receiver<ReceivedFrame>,
     pub control: Sender<ViewerMessage>,
     pub events: Receiver<PublisherMessage>,
+    pub audio: Option<AudioStream>,
 }
 
 impl MediaClient {
@@ -62,6 +73,7 @@ impl MediaClient {
         &self,
         live_id: u32,
         preset_id: u32,
+        want_audio: bool,
     ) -> Result<ViewerSubscription, NetError> {
         let (mut send, mut recv) = self.conn.open_bi().await.map_err(NetError::connection)?;
         write_msg(
@@ -69,21 +81,34 @@ impl MediaClient {
             &ViewerMessage::Subscribe {
                 live_id,
                 preset_id,
-                want_audio: false,
+                want_audio,
             },
         )
         .await?;
-        let params = match read_msg::<PublisherMessage>(&mut recv, MAX_CONTROL_BYTES).await? {
-            PublisherMessage::SubscribeAck { video, .. } => video,
-            PublisherMessage::SubscribeError { reason } => return Err(NetError::Rejected(reason)),
-            _ => return Err(NetError::Protocol("expected SubscribeAck")),
-        };
+        let (params, audio_params) =
+            match read_msg::<PublisherMessage>(&mut recv, MAX_CONTROL_BYTES).await? {
+                PublisherMessage::SubscribeAck { video, audio } => (video, audio),
+                PublisherMessage::SubscribeError { reason } => {
+                    return Err(NetError::Rejected(reason));
+                }
+                _ => return Err(NetError::Protocol("expected SubscribeAck")),
+            };
 
         let (frame_tx, frame_rx) = mpsc::channel(RECEIVE_QUEUE_FRAMES);
-        self.routes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert((live_id, preset_id), frame_tx);
+        let audio = audio_params.map(|params| {
+            let (tx, rx) = mpsc::channel(AUDIO_SENDER_BACKLOG_PACKETS);
+            (params, tx, rx)
+        });
+        {
+            let mut routes = self
+                .routes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            routes.insert((live_id, preset_id), frame_tx);
+            if let Some((_, tx, _)) = &audio {
+                routes.insert((live_id, AUDIO_PRESET_ID), tx.clone());
+            }
+        }
 
         let (control_tx, mut control_rx) = mpsc::channel::<ViewerMessage>(16);
         tokio::spawn(async move {
@@ -105,10 +130,11 @@ impl MediaClient {
                     break;
                 }
             }
-            routes
+            let mut routes = routes
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&(live_id, preset_id));
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            routes.remove(&(live_id, preset_id));
+            routes.remove(&(live_id, AUDIO_PRESET_ID));
         });
 
         Ok(ViewerSubscription {
@@ -116,6 +142,7 @@ impl MediaClient {
             frames: frame_rx,
             control: control_tx,
             events: events_rx,
+            audio: audio.map(|(params, _, packets)| AudioStream { params, packets }),
         })
     }
 

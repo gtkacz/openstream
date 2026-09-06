@@ -172,7 +172,7 @@ async fn a_stranger_is_refused_by_the_media_server() {
         .unwrap();
     let refused = tokio::time::timeout(
         Duration::from_secs(5),
-        client.subscribe(1, SOURCE_PRESET_ID),
+        client.subscribe(1, SOURCE_PRESET_ID, false),
     )
     .await
     .expect("refusal is prompt");

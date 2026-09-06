@@ -252,7 +252,7 @@ impl Watcher {
             let attempt = async {
                 let client = self.client_for(publisher).await?;
                 client
-                    .subscribe(live_id, preset_id)
+                    .subscribe(live_id, preset_id, false)
                     .await
                     .map_err(RoomError::from)
             };
