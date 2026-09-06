@@ -203,17 +203,18 @@ impl App {
             self.next_repaint = repaint_deadline(Instant::now(), ui_frame.repaint_delay);
         }
 
+        let had_commands = !output.commands.is_empty();
         if let Some(action) = start_action
             && let Some(intent) = self.start.submit(action)
         {
             self.open(intent);
         }
         if let Phase::Room(view) = &mut self.phase
-            && !output.commands.is_empty()
+            && had_commands
         {
             view.apply(output.commands, &self.runtime, &self.proxy, &mut self.state);
         }
-        if start_action.is_some()
+        if (start_action.is_some() || had_commands)
             && let Some(window) = &self.window
         {
             window.request_redraw();
