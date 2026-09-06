@@ -3,11 +3,12 @@
 
 use brp_capture::SourceId;
 use brp_proto::{Preset, SourceKind};
+use iroh::PublicKey;
 
 use crate::render::tiles::TileKey;
 
 /// A command a panel wants applied to the room, queued and drained after the egui pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RoomCommand {
     /// Starts a watch, or switches its preset when the key is already watched.
     Watch { key: TileKey, preset_id: u32 },
@@ -23,4 +24,10 @@ pub enum RoomCommand {
     StopLive(u32),
     /// Replaces the preset list offered for a live.
     SetPresets { live_id: u32, presets: Vec<Preset> },
+    /// Turns this participant's audio on or off for every live at once.
+    SetAudio(bool),
+    /// Sets how loud one publisher plays, 0 to 1.
+    SetVolume { publisher: PublicKey, gain: f32 },
+    /// Silences all playback without touching the per-publisher gains.
+    SetMasterMute(bool),
 }

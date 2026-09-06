@@ -112,6 +112,20 @@ fn overlay(
                     commands.push(RoomCommand::Watch { key, preset_id });
                 }
             }
+            if watch.audio {
+                let gain = snapshot
+                    .members
+                    .iter()
+                    .find(|m| m.id == key.0)
+                    .map(|m| m.gain)
+                    .unwrap_or(1.0);
+                if let Some(gain) = super::volume_control(ui, ("tile-volume", key), gain) {
+                    commands.push(RoomCommand::SetVolume {
+                        publisher: key.0,
+                        gain,
+                    });
+                }
+            }
             let mut stats = state.stats_visible.contains(&key);
             if ui.toggle_value(&mut stats, "stats").changed() {
                 if stats {

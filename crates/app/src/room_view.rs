@@ -120,6 +120,18 @@ impl RoomView {
                     }
                     Err(error) => Err(error),
                 },
+                RoomCommand::SetAudio(enabled) => {
+                    self.room.set_audio(enabled);
+                    Ok(())
+                }
+                RoomCommand::SetVolume { publisher, gain } => {
+                    self.room.set_volume(publisher, gain);
+                    Ok(())
+                }
+                RoomCommand::SetMasterMute(muted) => {
+                    self.room.set_master_mute(muted);
+                    Ok(())
+                }
             };
             if let Err(error) = result {
                 state.status = error.to_string();

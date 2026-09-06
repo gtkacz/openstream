@@ -39,7 +39,7 @@ pub fn draw(
     state: &mut UiState,
 ) -> UiOutput {
     let mut commands = Vec::new();
-    status::draw(ui, snapshot, ticket, state);
+    status::draw(ui, snapshot, ticket, state, &mut commands);
     own_lives::draw(ui, snapshot, state, &mut commands);
     members::draw(ui, snapshot, state, &mut commands);
     let tile_rects = tiles::draw(ui, snapshot, state, &mut commands);
@@ -47,5 +47,39 @@ pub fn draw(
     UiOutput {
         commands,
         tile_rects,
+    }
+}
+
+/// A volume slider with a mute toggle. Returns the new gain when the user changed it. Mute sets
+/// the gain to zero and unmute restores full volume; the room remembers nothing else.
+pub fn volume_control(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    gain: f32,
+) -> Option<f32> {
+    let mut value = gain;
+    ui.push_id(id_salt, |ui| {
+        ui.add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(false));
+        let mut muted = gain == 0.0;
+        if ui.toggle_value(&mut muted, "mute").changed() {
+            value = toggled_gain(muted);
+        }
+    });
+    (value != gain).then_some(value)
+}
+
+/// Mute is gain zero; unmute is full volume.
+pub fn toggled_gain(muted: bool) -> f32 {
+    if muted { 0.0 } else { 1.0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toggled_gain;
+
+    #[test]
+    fn mute_is_silence_and_unmute_is_full_volume() {
+        assert_eq!(toggled_gain(true), 0.0);
+        assert_eq!(toggled_gain(false), 1.0);
     }
 }

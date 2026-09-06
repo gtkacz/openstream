@@ -31,6 +31,15 @@ pub fn draw(
                     ui.strong(member.nickname.as_str());
                     ui.weak(member.id.fmt_short().to_string());
                     ui.weak(path_badge(member.path));
+                    if member.has_audio
+                        && let Some(gain) =
+                            super::volume_control(ui, ("member-volume", member.id), member.gain)
+                    {
+                        commands.push(RoomCommand::SetVolume {
+                            publisher: member.id,
+                            gain,
+                        });
+                    }
                 });
                 for live in &member.lives {
                     let key = (member.id, live.id);

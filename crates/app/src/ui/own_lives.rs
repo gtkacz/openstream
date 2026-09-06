@@ -3,7 +3,7 @@
 
 use brp_proto::constants::{MAX_BITRATE_KBPS, MAX_LIVES_PER_PARTICIPANT, MIN_BITRATE_KBPS};
 use brp_proto::{Codec, SourceKind};
-use brp_room::{OwnLiveView, RoomSnapshot};
+use brp_room::{AudioCaptureState, OwnLiveView, RoomSnapshot};
 
 use super::state::UiState;
 use crate::commands::RoomCommand;
@@ -45,6 +45,28 @@ pub fn draw(
                 }
                 if state.share_pending {
                     ui.weak("starting the share");
+                }
+                ui.separator();
+                let mut share_audio = snapshot.own_audio.enabled;
+                if ui.checkbox(&mut share_audio, "Share audio").changed() {
+                    commands.push(RoomCommand::SetAudio(share_audio));
+                }
+                match &snapshot.own_audio.state {
+                    AudioCaptureState::Off => {}
+                    AudioCaptureState::Idle => {
+                        ui.weak("waiting for a listener");
+                    }
+                    AudioCaptureState::Capturing => {
+                        let n = snapshot.own_audio.subscribers;
+                        let plural = if n == 1 { "" } else { "s" };
+                        ui.weak(format!("capturing · {n} listener{plural}"));
+                    }
+                    AudioCaptureState::Failed(error) => {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            format!("audio failed: {error}"),
+                        );
+                    }
                 }
             });
             egui::ScrollArea::vertical().show(ui, |ui| {
