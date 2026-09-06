@@ -1,4 +1,5 @@
 //! Capture, codec, and transport pipelines.
+pub mod audio_publisher;
 pub mod error;
 pub mod fanout;
 pub mod pacer;
@@ -6,6 +7,7 @@ pub mod publisher;
 pub mod reorder;
 pub mod slot;
 pub mod viewer;
+pub use audio_publisher::{AudioPublisher, AudioPublisherStats, FrameAssembler};
 pub use error::PipelineError;
 pub use fanout::{FanOut, KeyframeRequest, PushOutcome};
 pub use pacer::Pacer;

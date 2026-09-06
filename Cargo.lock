@@ -564,6 +564,7 @@ dependencies = [
 name = "brp-pipeline"
 version = "0.1.0"
 dependencies = [
+ "brp-audio",
  "brp-capture",
  "brp-codec",
  "brp-net",
