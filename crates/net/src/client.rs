@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use brp_proto::constants::{
-    AUDIO_PRESET_ID, AUDIO_SENDER_BACKLOG_PACKETS, MAX_CONTROL_BYTES, MAX_FRAME_BYTES, MEDIA_ALPN,
-    RECEIVE_QUEUE_FRAMES,
+    AUDIO_PRESET_ID, AUDIO_SENDER_BACKLOG_PACKETS, MAX_AUDIO_PACKET_BYTES, MAX_CONTROL_BYTES,
+    MAX_FRAME_BYTES, MEDIA_ALPN, RECEIVE_QUEUE_FRAMES,
 };
-use brp_proto::{AudioParams, CodecParams, FrameHeader, PublisherMessage, ViewerMessage};
+use brp_proto::{
+    AudioParams, CodecParams, FrameHeader, FrameKind, PublisherMessage, ViewerMessage,
+};
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -165,10 +168,28 @@ impl MediaClient {
     }
 }
 
+/// Audio frames have their own, much smaller, ceiling than video ones.
+pub(crate) fn check_payload_len(kind: FrameKind, len: usize) -> bool {
+    match kind {
+        FrameKind::Audio => len <= MAX_AUDIO_PACKET_BYTES,
+        FrameKind::Video => len <= MAX_FRAME_BYTES,
+    }
+}
+
+/// Routes are keyed by preset id and the audio preset is reserved, so the audio route carries
+/// audio frames and the video routes carry video. Anything else is a peer sending what we did not
+/// subscribe to.
+pub(crate) fn kind_matches_route(kind: FrameKind, preset_id: u32) -> bool {
+    (kind == FrameKind::Audio) == (preset_id == AUDIO_PRESET_ID)
+}
+
 /// Reads each frame stream independently so a large keyframe cannot delay later frames.
 async fn receive_frames(conn: Connection, routes: Routes) {
+    // Malformed frames are a peer misbehaving, not an event per packet: one warning says it.
+    let warned = Arc::new(AtomicBool::new(false));
     while let Ok(mut stream) = conn.accept_uni().await {
         let routes = routes.clone();
+        let warned = warned.clone();
         tokio::spawn(async move {
             let bytes = match stream.read_to_end(MAX_FRAME_BYTES).await {
                 Ok(bytes) => bytes,
@@ -184,6 +205,19 @@ async fn receive_frames(conn: Connection, routes: Routes) {
                     return;
                 }
             };
+            if !check_payload_len(header.kind, header.len as usize)
+                || !kind_matches_route(header.kind, header.preset_id)
+            {
+                if !warned.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        kind = ?header.kind,
+                        preset_id = header.preset_id,
+                        len = header.len,
+                        "dropping a frame this route cannot carry; further ones are silent"
+                    );
+                }
+                return;
+            }
             let route = routes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -206,5 +240,29 @@ async fn receive_frames(conn: Connection, routes: Routes) {
                 ),
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_audio_route_takes_only_small_audio_frames() {
+        assert!(check_payload_len(FrameKind::Audio, MAX_AUDIO_PACKET_BYTES));
+        assert!(!check_payload_len(
+            FrameKind::Audio,
+            MAX_AUDIO_PACKET_BYTES + 1
+        ));
+        assert!(check_payload_len(FrameKind::Video, MAX_FRAME_BYTES));
+        assert!(!check_payload_len(FrameKind::Video, MAX_FRAME_BYTES + 1));
+    }
+
+    #[test]
+    fn a_frame_whose_kind_contradicts_its_route_is_refused() {
+        assert!(kind_matches_route(FrameKind::Audio, AUDIO_PRESET_ID));
+        assert!(kind_matches_route(FrameKind::Video, 1));
+        assert!(!kind_matches_route(FrameKind::Video, AUDIO_PRESET_ID));
+        assert!(!kind_matches_route(FrameKind::Audio, 1));
     }
 }

@@ -62,6 +62,10 @@ pub const JITTER_MAX_DEPTH: Duration = Duration::from_millis(200);
 pub const JITTER_SHRINK_AFTER: Duration = Duration::from_secs(10);
 /// Room for the jitter maximum plus decode scheduling slack.
 pub const MIXER_TRACK_CAPACITY: Duration = Duration::from_millis(500);
+/// Opus's largest single-frame packet is 1275 bytes, so this is generous. Without it an audio
+/// route would accept `MAX_FRAME_BYTES`, and a peer could park gigabytes in one subscription's
+/// channel and jitter buffer.
+pub const MAX_AUDIO_PACKET_BYTES: usize = 4096;
 /// How long a platform audio backend has to report its capture ready, and how long the PipeWire
 /// backend waits for its own stream to become linkable before calling the capture dead. Long
 /// enough for a busy daemon, short enough that a wedged one does not hold a subscriber forever.

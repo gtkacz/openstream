@@ -220,6 +220,11 @@ fn interleaved_samples(frame: &ff::AVFrame) -> Result<Vec<f32>, CodecError> {
             "decoder produced {channels} channels"
         )));
     }
+    if samples > AUDIO_FRAME_SAMPLES {
+        return Err(CodecError::InvalidFrame(format!(
+            "decoder produced {samples} samples per channel, more than one 20 ms frame"
+        )));
+    }
     let mut out = vec![0.0f32; samples * channels];
     unsafe {
         if frame.format == ff::AVSampleFormat::AV_SAMPLE_FMT_FLT as c_int {

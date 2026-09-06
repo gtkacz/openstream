@@ -225,7 +225,7 @@ mod tests {
         mixer.render(&mut out);
         assert!(out.iter().all(|s| *s == 0.0), "packet 0 is silence");
         mixer.render(&mut out);
-        assert!((out[0] - 0.1).abs() < 1e-6, "packet 1 follows");
+        assert!((out[0] - 0.1).abs() < 1e-3, "packet 1 follows");
         assert_eq!(stats.packets_received.load(Ordering::Relaxed), 6);
         drop(tx);
         viewer.stop();
@@ -275,7 +275,7 @@ mod tests {
             }
             while renders < due_renders(elapsed) {
                 mixer.render(&mut out);
-                audible |= out.iter().all(|s| (*s - 0.5).abs() < 1e-6);
+                audible |= out.iter().all(|s| (*s - 0.5).abs() < 1e-3);
                 renders += 1;
             }
             if warm.is_none() && elapsed >= WARM_UP {

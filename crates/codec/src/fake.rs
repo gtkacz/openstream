@@ -61,8 +61,8 @@ impl FrameConverter for SolidConverter {
     }
 }
 
-/// Carries the float samples through as bytes so integration tests can assert on what reaches
-/// the output.
+/// Carries the samples through as 16-bit PCM so integration tests can assert on what reaches the
+/// output. A frame of raw `f32` would be 7680 bytes, over the wire's `MAX_AUDIO_PACKET_BYTES`.
 #[derive(Default)]
 pub struct FakeAudioEncoder {
     next: u64,
@@ -76,11 +76,16 @@ impl AudioEncoder for FakeAudioEncoder {
     }
     fn encode(&mut self, f: &AudioFrame) -> Result<Vec<EncodedFrame>, CodecError> {
         f.validate()?;
+        let mut data = Vec::with_capacity(f.samples.len() * 2);
+        for sample in &f.samples {
+            let scaled = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+            data.extend_from_slice(&scaled.to_le_bytes());
+        }
         let p = EncodedFrame {
             seq: self.next,
             capture_ts_us: f.capture_ts_us,
             keyframe: true,
-            data: postcard::to_allocvec(f)?,
+            data,
         };
         self.next += 1;
         Ok(vec![p])
@@ -89,7 +94,20 @@ impl AudioEncoder for FakeAudioEncoder {
 pub struct FakeAudioDecoder;
 impl AudioDecoder for FakeAudioDecoder {
     fn decode(&mut self, p: &EncodedFrame) -> Result<Vec<AudioFrame>, CodecError> {
-        Ok(vec![postcard::from_bytes(&p.data)?])
+        let (pairs, rest) = p.data.as_chunks::<2>();
+        if !rest.is_empty() || pairs.len() != AudioFrame::FRAME_LEN {
+            return Err(CodecError::InvalidFrame(format!(
+                "fake audio packet holds {} bytes, not one frame",
+                p.data.len()
+            )));
+        }
+        Ok(vec![AudioFrame {
+            samples: pairs
+                .iter()
+                .map(|b| f32::from(i16::from_le_bytes(*b)) / f32::from(i16::MAX))
+                .collect(),
+            capture_ts_us: p.capture_ts_us,
+        }])
     }
 }
 
@@ -170,7 +188,8 @@ mod tests {
         let mut dec = FakeAudioDecoder;
         for i in 0..3u64 {
             let mut frame = AudioFrame::silence(i * 20_000);
-            frame.samples[0] = i as f32;
+            frame.samples[0] = i as f32 / 4.0;
+            frame.samples[1] = -(i as f32) / 4.0;
             let packets = enc.encode(&frame).unwrap();
             assert_eq!(packets.len(), 1);
             assert_eq!(
@@ -181,9 +200,31 @@ mod tests {
                 ),
                 (i, i * 20_000, true)
             );
-            assert_eq!(dec.decode(&packets[0]).unwrap(), vec![frame]);
+            assert!(
+                packets[0].data.len() <= brp_proto::constants::MAX_AUDIO_PACKET_BYTES,
+                "a fake packet must fit the wire's audio cap"
+            );
+            let back = dec.decode(&packets[0]).unwrap();
+            assert_eq!(back.len(), 1);
+            assert_eq!(back[0].capture_ts_us, i * 20_000);
+            assert!((back[0].samples[0] - i as f32 / 4.0).abs() < 1e-3);
+            assert!((back[0].samples[1] + i as f32 / 4.0).abs() < 1e-3);
+            assert!(back[0].samples[2..].iter().all(|s| *s == 0.0));
         }
         assert_eq!(enc.params(), brp_proto::AudioParams::STANDARD);
+    }
+
+    #[test]
+    fn the_fake_audio_decoder_refuses_a_packet_that_is_not_one_frame() {
+        assert!(matches!(
+            FakeAudioDecoder.decode(&EncodedFrame {
+                seq: 0,
+                capture_ts_us: 0,
+                keyframe: true,
+                data: vec![0; 8],
+            }),
+            Err(CodecError::InvalidFrame(_))
+        ));
     }
 
     #[test]
