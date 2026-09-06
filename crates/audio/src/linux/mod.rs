@@ -3,8 +3,7 @@
 
 pub mod graph;
 
-use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
 use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -22,11 +21,9 @@ use pw::spa::sys::{SPA_AUDIO_CHANNEL_FL, SPA_AUDIO_CHANNEL_FR, SPA_AUDIO_MAX_CHA
 use pw::spa::utils::{Direction, SpaTypes};
 use pw::types::ObjectType;
 
-use self::graph::{Graph, Input, LinkPlan, Node, Port};
+use self::graph::{Graph, Input, LinkPlan, Node, NodeVerdict, OWN_STREAM_NAME, Port};
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
 use crate::error::AudioError;
-
-const STREAM_NAME: &str = "brp-audio-capture";
 
 pub struct PipeWireCapture {
     process_id: u32,
@@ -98,16 +95,11 @@ struct State {
     core: pw::core::CoreRc,
     graph: RefCell<Graph>,
     /// Our capture stream's node id. `Stream::node_id` is unassigned until the stream is paused,
-    /// so it is learned from the registry instead: the node named `STREAM_NAME` from our process.
+    /// so it is learned from the registry instead, via `Graph`'s `NodeVerdict::Own`.
     stream_node: RefCell<Option<u32>>,
     inputs: RefCell<Inputs>,
     /// Links we created, kept alive by holding the proxies.
     links: RefCell<Vec<pw::link::Link>>,
-    /// `client.id` to the client's kernel-verified pid (`pipewire.sec.pid`). A node's own
-    /// `application.process.id` is filled in late by the session manager and is absent from the
-    /// registry's initial snapshot, but every client's `pipewire.sec.pid` is there from the start,
-    /// so nodes are identified through the client that owns them instead.
-    client_pids: RefCell<BTreeMap<u32, u32>>,
 }
 
 #[derive(Default)]
@@ -132,7 +124,7 @@ fn run(
 
     let stream = pw::stream::StreamBox::new(
         &core,
-        STREAM_NAME,
+        OWN_STREAM_NAME,
         pw::properties::properties! {
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_CATEGORY => "Capture",
@@ -140,7 +132,7 @@ fn run(
             *pw::keys::NODE_AUTOCONNECT => "false",
             // The `name` argument above only fills in `media.name`; `node.name` must be set
             // explicitly for the registry lookup below to recognise our own stream.
-            *pw::keys::NODE_NAME => STREAM_NAME,
+            *pw::keys::NODE_NAME => OWN_STREAM_NAME,
         },
     )
     .map_err(pw_error)?;
@@ -197,7 +189,6 @@ fn run(
         stream_node: RefCell::new(None),
         inputs: RefCell::new(Inputs::default()),
         links: RefCell::new(Vec::new()),
-        client_pids: RefCell::new(BTreeMap::new()),
     });
     let on_global = state.clone();
     let on_remove = state.clone();
@@ -207,13 +198,41 @@ fn run(
         .global_remove(move |id| on_remove.remove(id))
         .register();
 
+    // Distinguishes a deliberate `Session::stop()`/`Drop` (expected exit, `Ok`) from the mainloop
+    // returning for any other reason (daemon disconnect, core error) — the latter must surface
+    // through the registry's `error()` poll, so it is reported as a failure.
+    let quit_requested = Rc::new(Cell::new(false));
+    let core_error = Rc::new(RefCell::new(None::<String>));
+    let _core_listener = {
+        let mainloop = mainloop.clone();
+        let core_error = core_error.clone();
+        core.add_listener_local()
+            .error(move |id, seq, res, message| {
+                tracing::warn!(id, seq, res, message, "PipeWire core reported an error");
+                *core_error.borrow_mut() = Some(message.to_string());
+                mainloop.quit();
+            })
+            .register()
+    };
+
     let _ = ready.send(Ok(()));
     let _quit = quit.attach(mainloop.loop_(), {
         let mainloop = mainloop.clone();
-        move |_| mainloop.quit()
+        let quit_requested = quit_requested.clone();
+        move |_| {
+            quit_requested.set(true);
+            mainloop.quit();
+        }
     });
     mainloop.run();
-    Ok(())
+
+    if quit_requested.get() {
+        return Ok(());
+    }
+    Err(match core_error.borrow_mut().take() {
+        Some(message) => AudioError::PipeWire(message),
+        None => AudioError::PipeWire("the PipeWire loop exited unexpectedly".into()),
+    })
 }
 
 impl State {
@@ -221,31 +240,39 @@ impl State {
         let Some(props) = global.props else { return };
         match global.type_ {
             ObjectType::Client => {
-                if let Some(pid) = props
+                let pid = props
                     .get(*pw::keys::SEC_PID)
-                    .and_then(|pid| pid.parse().ok())
-                {
-                    self.client_pids.borrow_mut().insert(global.id, pid);
-                }
+                    .and_then(|pid| pid.parse().ok());
+                self.graph.borrow_mut().add_client(global.id, pid);
             }
             ObjectType::Node => {
-                if props.get(*pw::keys::NODE_NAME) == Some(STREAM_NAME) {
-                    *self.stream_node.borrow_mut() = Some(global.id);
-                    return;
-                }
-                let process_id = props
-                    .get(*pw::keys::CLIENT_ID)
-                    .and_then(|id| id.parse::<u32>().ok())
-                    .and_then(|client| self.client_pids.borrow().get(&client).copied());
+                let id = global.id;
+                let name = props.get(*pw::keys::NODE_NAME).map(str::to_string);
                 let node = Node {
-                    id: global.id,
+                    id,
                     media_class: props.get(*pw::keys::MEDIA_CLASS).unwrap_or("").to_string(),
-                    process_id,
+                    name: name.clone(),
+                    client: props.get(*pw::keys::CLIENT_ID).and_then(|c| c.parse().ok()),
                 };
-                if self.graph.borrow_mut().add_node(node) {
-                    for plan in self.graph.borrow().pending_links(global.id) {
-                        self.link(plan);
+                let verdict = self.graph.borrow_mut().add_node(node);
+                match verdict {
+                    NodeVerdict::Own => {
+                        *self.stream_node.borrow_mut() = Some(id);
                     }
+                    NodeVerdict::Linked => {
+                        let plans = self.graph.borrow().pending_links(id);
+                        for plan in plans {
+                            self.link(plan);
+                        }
+                    }
+                    NodeVerdict::Unresolved => {
+                        tracing::warn!(
+                            node = id,
+                            name = name.as_deref().unwrap_or(""),
+                            "could not resolve the pid owning this audio output node; leaving it unlinked"
+                        );
+                    }
+                    NodeVerdict::Ignored => {}
                 }
             }
             ObjectType::Port => {
@@ -296,7 +323,6 @@ impl State {
 
     fn remove(&self, id: u32) {
         self.graph.borrow_mut().remove(id);
-        self.client_pids.borrow_mut().remove(&id);
         // Links to a removed node die with it on the server; dropping our proxies just tidies up.
     }
 
