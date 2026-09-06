@@ -79,9 +79,8 @@ pub struct Room {
     version: Arc<AtomicU64>,
     notify: ChangeNotify,
     mixer: Mixer,
-    /// Kept alive for the room's lifetime; dropping it stops playback. Mutex only so `Room` stays
-    /// `Sync` across `.await` points elsewhere: the session type itself promises only `Send`.
-    _audio_output: Mutex<Option<Box<dyn AudioOutputSession>>>,
+    /// Kept alive for the room's lifetime; dropping it stops playback.
+    _audio_output: Option<Box<dyn AudioOutputSession>>,
     audio_output_error: Option<String>,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -223,7 +222,7 @@ impl Room {
             version,
             notify,
             mixer,
-            _audio_output: Mutex::new(audio_output),
+            _audio_output: audio_output,
             audio_output_error,
             tasks,
         })

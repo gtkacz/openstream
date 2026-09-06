@@ -30,4 +30,4 @@ pub trait AudioOutput: Send + Sync {
 }
 
 /// Dropping the session stops playback.
-pub trait AudioOutputSession: Send {}
+pub trait AudioOutputSession: Send + Sync {}
