@@ -143,6 +143,8 @@ fn encode_loop(
     mut encoder: Box<dyn AudioEncoder>,
 ) {
     let mut assembler = FrameAssembler::default();
+    // A codec that starts failing usually keeps failing, fifty times a second.
+    let mut warned = false;
     // Five packet durations (100 ms): long enough not to spin on an idle line, short enough that
     // an explicit `stop()` is noticed quickly.
     let poll = Duration::from_millis(AUDIO_PACKET_DURATION.as_millis() as u64 * 5);
@@ -164,7 +166,13 @@ fn encode_loop(
                         lock(&inner.fanout).push(Arc::new(packet));
                     }
                 }
-                Err(error) => tracing::error!(%error, "audio encode failed"),
+                Err(error) => {
+                    tracing::debug!(%error, "audio encode failed");
+                    if !warned {
+                        warned = true;
+                        tracing::warn!(%error, "audio encoding is failing; the rest log at debug");
+                    }
+                }
             }
         }
     }

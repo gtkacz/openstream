@@ -75,4 +75,3 @@ pub const AUDIO_CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(5);
 /// packet underruns: this covers a 1024-frame quantum (21 ms, PipeWire's stock default) plus the
 /// scheduling jitter of the decode thread.
 pub const MIXER_TRACK_CUSHION: Duration = Duration::from_millis(80);
-pub const AUDIO_IDLE_STOP_GRACE: Duration = ENCODER_IDLE_STOP_GRACE;

@@ -1,5 +1,5 @@
 use crate::{
-    constants::{MAX_BITRATE_KBPS, MIN_BITRATE_KBPS},
+    constants::{AUDIO_PRESET_ID, MAX_BITRATE_KBPS, MIN_BITRATE_KBPS},
     error::ProtoError,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -35,9 +35,14 @@ pub enum PresetError {
     FasterThanSource,
     #[error("bitrate must be between {MIN_BITRATE_KBPS} and {MAX_BITRATE_KBPS} kbps")]
     BitrateOutOfRange,
+    #[error("preset id {AUDIO_PRESET_ID} is reserved for audio frames")]
+    ReservedId,
 }
 impl Preset {
     pub fn validate(&self, w: u32, h: u32, f: u32) -> Result<(), PresetError> {
+        if self.id == AUDIO_PRESET_ID {
+            return Err(PresetError::ReservedId);
+        }
         if self.width == 0
             || self.height == 0
             || !self.width.is_multiple_of(2)
@@ -169,6 +174,23 @@ mod tests {
             codec: Codec::Hevc,
         };
         assert!(preset.validate(2560, 1440, 60).is_ok());
+    }
+
+    #[test]
+    fn preset_validation_rejects_the_audio_preset_id() {
+        let reserved = Preset {
+            id: AUDIO_PRESET_ID,
+            name: "Source".into(),
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_kbps: 20_000,
+            codec: Codec::H264,
+        };
+        assert_eq!(
+            reserved.validate(1920, 1080, 60),
+            Err(PresetError::ReservedId)
+        );
     }
 
     #[test]

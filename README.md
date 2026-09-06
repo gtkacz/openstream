@@ -76,7 +76,7 @@ that member in the members panel, and the status bar has a "mute all" for
 every publisher at once. On Linux, capture links to every application's
 PipeWire output except brp's own; on Windows, WASAPI process loopback in
 exclude mode does the same, requiring Windows 10 version 2004. The Windows
-audio path is compiled and tested on CI but has not run on hardware.
+audio path is compiled and linted on CI but has not run on hardware.
 
 On Windows the binary opens no console window. Started from a terminal with
 arguments it prints to that terminal, but the shell does not wait for it, so
@@ -223,9 +223,10 @@ written to logs.
    the duplication fallback, Windows hardware codecs and D3D11VA decode,
    bundled FFmpeg, Windows CI, the in-app picker, and a start screen so the
    app needs no terminal.
-4. **Audio** — done, Windows pending hardware: everything the machine plays
-   except brp itself, Opus over the existing frame streams, one stream per
-   publisher, per-publisher volume and a master mute.
+4. **Audio** — done on Linux pending the manual two-instance check; Windows
+   pending hardware: everything the machine plays except brp itself, Opus over
+   the existing frame streams, one stream per publisher, per-publisher volume
+   and a master mute.
 5. **Window management and polish** — planned: pop-outs, fullscreen, settings
    UI and persistence, release packaging.
 

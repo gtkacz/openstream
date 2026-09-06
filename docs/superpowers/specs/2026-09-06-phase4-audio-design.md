@@ -166,7 +166,7 @@ Audio packets have their own sequence space starting at zero per audio subscript
 
 **View.** The client's receive task routes audio frames to the subscription's audio receiver. The audio viewer thread feeds the jitter buffer and, on its 20 ms cadence, decodes one slot into the publisher's mixer track. The cpal callback renders the mix into the device buffer.
 
-**Latency.** Audio trails the newest video frame by roughly the jitter-buffer depth, 60 ms at rest. There is no synchronisation logic and none is planned for this phase; game sharing tolerates this margin.
+**Latency.** Audio trails the newest video frame by roughly the jitter-buffer depth plus the mixer track's cushion: about 140 ms at rest, 60 ms of jitter depth and an 80 ms cushion ahead of the device (section 13). There is no synchronisation logic and none is planned for this phase; game sharing tolerates this margin.
 
 ## 8. User interface
 
@@ -207,7 +207,11 @@ Audio packets have their own sequence space starting at zero per audio subscript
 | `JITTER_MAX_DEPTH` | 200 ms | Beyond this the delay is more annoying than the dropouts it prevents |
 | `JITTER_SHRINK_AFTER` | 10 s | Long enough that a burst of lateness does not oscillate the depth |
 | `MIXER_TRACK_CAPACITY` | 500 ms | Room for the jitter maximum plus decode scheduling slack |
-| `AUDIO_IDLE_STOP_GRACE` | equals `ENCODER_IDLE_STOP_GRACE` | Same lifecycle as encoders |
+| `MIXER_TRACK_CUSHION` | 80 ms | Silence pre-rolled into a track ahead of its first packet, so a device quantum larger than one packet does not underrun every callback: a 1024-frame quantum plus scheduling jitter |
+| `AUDIO_CAPTURE_START_TIMEOUT` | 5 s | Bounds a platform backend's ready wait, and the PipeWire backend's wait for its own stream to become linkable |
+| `MAX_AUDIO_PACKET_BYTES` | 4096 | Opus's largest single-frame packet is 1275 bytes; without this an audio route would accept `MAX_FRAME_BYTES` |
+
+The audio capture reuses `ENCODER_IDLE_STOP_GRACE` through `RoomTimings::encoder_grace`; no separate constant exists.
 
 ## 12. References
 
@@ -231,3 +235,8 @@ Verified on 2026-09-06:
 - **Registry (5.8).** Capture and encoder threads are stopped after the registry lock is released, not while held. `views()` re-derives `has_audio` the same way `live_infos()` does, rather than relying on a stored value that could go stale.
 - **Audio output trait (5.3).** `AudioOutputSession` is `Send + Sync`, not just `Send`, so the room stays `Sync`.
 - **Windows (5.5).** Buffers flagged `AUDCLNT_BUFFERFLAGS_SILENT` are zeroed before reaching the sink rather than passed through undefined, and draining keeps byte alignment to whole stereo frames so a partial frame cannot swap channels for the rest of the session.
+- **Mixer track cushion (5.6).** The decode loop pushes one 20 ms slot per 20 ms tick, so a track that starts empty holds less than a device callback larger than one packet ever asks for, and every callback underruns. The first packet of each run — the initial prime and every re-prime after the jitter buffer runs dry — pre-rolls `MIXER_TRACK_CUSHION` of silence. A short track now contributes what it holds and the rest stays silent instead of being cleared, a decode that yields no frames still pushes one frame of silence, and `render` only tries each track's buffer lock. Playout latency is therefore about 140 ms rather than the 60 ms of section 7's original wording.
+- **Carrier re-acquisition (5.8).** Spec 5.8's migration applies to every path that loses a carrier, not only `unwatch`: a watch that ends, an audio decode thread that finishes under a live watch, and a publisher whose presence turns `has_audio` back on. The watcher's `reacquire_audio` picks the publisher's lowest watched live id, skipping ended watches, and re-watches it through the preset-switch path. A publisher that stops sharing goes quiet rather than closing anything the viewer can observe — an idle publisher sends nothing either — so presence is also what clears a stale carrier flag. The presence loop carries both directions on an `audio_changed` channel beside `expired`.
+- **Capture start (5.8).** `subscribe_audio` opens the encoder and starts the platform capture with the registry lock released, serialised by a lock of its own, so `Room::snapshot` and every presence broadcast stay quick while a daemon is slow; a second subscriber waits there and then finds the capture installed. Both backends bound their ready wait with `AUDIO_CAPTURE_START_TIMEOUT` and quit their thread on a timeout.
+- **Audio payload cap (5.7).** The client drops an audio frame larger than `MAX_AUDIO_PACKET_BYTES`, and any frame whose `kind` contradicts the route its preset id selects, warning once per connection. `interleaved_samples` rejects a decoded frame longer than `AUDIO_FRAME_SAMPLES` per channel. The fake audio codec carries 16-bit PCM so its packets fit the same cap.
+- **PipeWire linkability deadline (5.4).** Every link plan waits for our own node and both of its input ports. If the graph has not produced them `AUDIO_CAPTURE_START_TIMEOUT` after the loop starts, the thread records "capture stream never became linkable" in the error slot, warns once, and quits, so housekeeping drops `has_audio` instead of advertising a capture that can never link.
