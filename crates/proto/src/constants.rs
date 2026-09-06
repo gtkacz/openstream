@@ -62,6 +62,10 @@ pub const JITTER_MAX_DEPTH: Duration = Duration::from_millis(200);
 pub const JITTER_SHRINK_AFTER: Duration = Duration::from_secs(10);
 /// Room for the jitter maximum plus decode scheduling slack.
 pub const MIXER_TRACK_CAPACITY: Duration = Duration::from_millis(500);
+/// How long a platform audio backend has to report its capture ready, and how long the PipeWire
+/// backend waits for its own stream to become linkable before calling the capture dead. Long
+/// enough for a busy daemon, short enough that a wedged one does not hold a subscriber forever.
+pub const AUDIO_CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(5);
 /// Silence pushed ahead of a track's first packet. The decoder produces 20 ms per 20 ms tick, so
 /// a track that starts empty never builds a reserve and every device callback larger than one
 /// packet underruns: this covers a 1024-frame quantum (21 ms, PipeWire's stock default) plus the

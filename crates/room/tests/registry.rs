@@ -299,6 +299,48 @@ async fn a_failing_capture_clears_has_audio_and_rejects_until_retoggled() {
     assert!(registry.live_infos()[0].has_audio);
 }
 
+/// A backend whose `start` blocks, as a busy PipeWire daemon does.
+struct SlowCapture;
+
+impl AudioCapture for SlowCapture {
+    fn start(&self, sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+        std::thread::sleep(Duration::from_millis(300));
+        SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }
+        .start(sink)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_capture_start_does_not_hold_the_registry_lock() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(SlowCapture),
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let live = synthetic_live(&registry, "desk").await;
+    let subscriber = {
+        let registry = registry.clone();
+        std::thread::spawn(move || registry.subscribe_audio(live))
+    };
+    // Long enough that the subscriber is inside the backend's start, well short of its 300 ms.
+    std::thread::sleep(Duration::from_millis(50));
+
+    let started = Instant::now();
+    let infos = registry.live_infos();
+    let blocked_for = started.elapsed();
+
+    assert!(
+        blocked_for < Duration::from_millis(100),
+        "live_infos waited {blocked_for:?} on a capture that was still starting"
+    );
+    assert!(infos[0].has_audio);
+    assert!(subscriber.join().unwrap().is_ok());
+}
+
 struct DyingCapture;
 
 struct DeadSession;

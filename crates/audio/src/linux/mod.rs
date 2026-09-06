@@ -6,11 +6,11 @@ pub mod graph;
 use std::cell::{Cell, RefCell};
 use std::io::Cursor;
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use brp_proto::constants::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+use brp_proto::constants::{AUDIO_CAPTURE_START_TIMEOUT, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use brp_proto::monotonic_us;
 use pipewire as pw;
 use pw::spa::param::ParamType;
@@ -60,9 +60,23 @@ impl AudioCapture for PipeWireCapture {
             .map_err(|e| {
                 AudioError::PipeWire(format!("failed to spawn the PipeWire thread: {e}"))
             })?;
-        ready_rx.recv().map_err(|_| {
-            AudioError::PipeWire("PipeWire thread exited before connecting".into())
-        })??;
+        // The registry starts capture with its lock released, but a wedged daemon must not hold
+        // the subscriber that asked for it either.
+        match ready_rx.recv_timeout(AUDIO_CAPTURE_START_TIMEOUT) {
+            Ok(result) => result?,
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = quit_tx.send(());
+                let _ = thread.join();
+                return Err(AudioError::PipeWire(format!(
+                    "the capture stream did not become ready within {AUDIO_CAPTURE_START_TIMEOUT:?}"
+                )));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(AudioError::PipeWire(
+                    "PipeWire thread exited before connecting".into(),
+                ));
+            }
+        }
         Ok(Box::new(Session {
             quit: quit_tx,
             error,
@@ -220,6 +234,27 @@ fn run(
             .register()
     };
 
+    // Our own node and both of its input ports come from the registry, and every link plan waits
+    // for them. If the graph never gives us that verdict nothing is ever linked, no chunk ever
+    // flows, and the session would otherwise report itself healthy for ever.
+    let not_linkable = Rc::new(Cell::new(false));
+    let _linkable_timer = {
+        let quit_loop = mainloop.clone();
+        let state = state.clone();
+        let not_linkable = not_linkable.clone();
+        let timer = mainloop.loop_().add_timer(move |_| {
+            if !state.linkable() {
+                not_linkable.set(true);
+                quit_loop.quit();
+            }
+        });
+        timer
+            .update_timer(Some(AUDIO_CAPTURE_START_TIMEOUT), None)
+            .into_result()
+            .map_err(|e| AudioError::PipeWire(format!("could not arm the link deadline: {e}")))?;
+        timer
+    };
+
     let _ = ready.send(Ok(()));
     let _quit = quit.attach(mainloop.loop_(), {
         let mainloop = mainloop.clone();
@@ -233,6 +268,13 @@ fn run(
 
     if quit_requested.get() {
         return Ok(());
+    }
+    if not_linkable.get() {
+        let message = "capture stream never became linkable";
+        tracing::warn!(
+            "no PipeWire link could be made within {AUDIO_CAPTURE_START_TIMEOUT:?}; stopping audio capture"
+        );
+        return Err(AudioError::PipeWire(message.into()));
     }
     Err(match core_error.borrow_mut().take() {
         Some(message) => AudioError::PipeWire(message),
@@ -305,6 +347,13 @@ impl State {
             }
             _ => {}
         }
+    }
+
+    /// True once our own node and both of its input ports are known, which is what every link
+    /// plan waits for.
+    fn linkable(&self) -> bool {
+        let inputs = self.inputs.borrow();
+        self.stream_node.borrow().is_some() && inputs.left.is_some() && inputs.right.is_some()
     }
 
     fn own_port(&self, id: u32, direction_out: bool, channel: &str) {

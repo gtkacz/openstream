@@ -3,11 +3,11 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use brp_proto::constants::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+use brp_proto::constants::{AUDIO_CAPTURE_START_TIMEOUT, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use brp_proto::monotonic_us;
 use wasapi::{AudioClient, Direction, SampleType, StreamMode, WaveFormat, initialize_mta};
 
@@ -49,9 +49,23 @@ impl AudioCapture for ProcessLoopbackCapture {
                 }
             })
             .map_err(|e| AudioError::Windows(format!("failed to spawn the WASAPI thread: {e}")))?;
-        ready_rx
-            .recv()
-            .map_err(|_| AudioError::Windows("WASAPI thread exited before reporting".into()))??;
+        // The registry starts capture with its lock released, but a wedged device must not hold
+        // the subscriber that asked for it either.
+        match ready_rx.recv_timeout(AUDIO_CAPTURE_START_TIMEOUT) {
+            Ok(result) => result?,
+            Err(RecvTimeoutError::Timeout) => {
+                stop.store(true, Ordering::Relaxed);
+                let _ = thread.join();
+                return Err(AudioError::Windows(format!(
+                    "the capture client did not become ready within {AUDIO_CAPTURE_START_TIMEOUT:?}"
+                )));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(AudioError::Windows(
+                    "WASAPI thread exited before reporting".into(),
+                ));
+            }
+        }
         Ok(Box::new(Session {
             stop,
             error,

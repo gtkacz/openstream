@@ -99,6 +99,10 @@ struct Inner {
 
 pub struct LiveRegistry {
     inner: Mutex<Inner>,
+    /// Held across a capture start, which can block for `AUDIO_CAPTURE_START_TIMEOUT`, so the
+    /// registry lock stays free for `live_infos` and the snapshot. A second subscriber waits here
+    /// and then finds the capture already installed.
+    audio_start: Mutex<()>,
     encoders: Arc<dyn EncoderFactory>,
     audio_capture: Arc<dyn AudioCapture>,
     grace: Duration,
@@ -113,6 +117,7 @@ impl LiveRegistry {
         on_change: ChangeNotify,
     ) -> Arc<Self> {
         Arc::new(Self {
+            audio_start: Mutex::new(()),
             inner: Mutex::new(Inner {
                 lives: BTreeMap::new(),
                 next_live_id: 1,
@@ -460,6 +465,48 @@ impl LiveSource for LiveRegistry {
     }
 
     fn subscribe_audio(&self, live_id: u32) -> Result<AudioSubscription, SubscribeRejected> {
+        if let Some(subscription) = self.attach_audio(live_id)? {
+            return Ok(subscription);
+        }
+        // Opening the encoder and starting the platform capture both block; neither runs under the
+        // registry lock, which `Room::snapshot` and every presence broadcast need to stay quick.
+        let _starting = lock(&self.audio_start);
+        if let Some(subscription) = self.attach_audio(live_id)? {
+            return Ok(subscription);
+        }
+        let running = match self.start_audio() {
+            Ok(running) => running,
+            Err(message) => {
+                lock(&self.inner).audio.last_error = Some(message.clone());
+                tracing::warn!(%message, "audio capture failed to start");
+                (self.on_change)();
+                return Err(SubscribeRejected::NoAudio);
+            }
+        };
+        let subscription = {
+            let mut inner = lock(&self.inner);
+            if !inner.audio.advertises() {
+                // Share audio was turned off while the capture was starting.
+                drop(inner);
+                stop_audio(running);
+                return Err(SubscribeRejected::NoAudio);
+            }
+            let running = inner.audio.running.insert(running);
+            running.idle_since = None;
+            AudioSubscription {
+                params: running.publisher.params(),
+                packets: running.publisher.subscribe(),
+            }
+        };
+        (self.on_change)();
+        Ok(subscription)
+    }
+}
+
+impl LiveRegistry {
+    /// Subscribes to a capture that is already running. `None` means one has to be started, which
+    /// happens off the lock.
+    fn attach_audio(&self, live_id: u32) -> Result<Option<AudioSubscription>, SubscribeRejected> {
         let mut inner = lock(&self.inner);
         if !inner.lives.contains_key(&live_id) {
             return Err(SubscribeRejected::UnknownLive(live_id));
@@ -467,53 +514,32 @@ impl LiveSource for LiveRegistry {
         if !inner.audio.advertises() {
             return Err(SubscribeRejected::NoAudio);
         }
-        let mut started = false;
-        if inner.audio.running.is_none() {
-            // A capture-start failure hands its publisher back so it can be stopped (which joins
-            // its encode thread) after the guard below drops, not while the registry is locked.
-            let outcome: Result<RunningAudio, (String, Option<AudioPublisher>)> = self
-                .encoders
-                .open_audio()
-                .map_err(|e| (e.to_string(), None))
-                .and_then(|encoder| {
-                    let publisher = AudioPublisher::start(encoder);
-                    match self.audio_capture.start(publisher.sink()) {
-                        Ok(session) => Ok(RunningAudio {
-                            session,
-                            publisher,
-                            idle_since: None,
-                        }),
-                        Err(error) => Err((error.to_string(), Some(publisher))),
-                    }
-                });
-            match outcome {
-                Ok(running) => {
-                    inner.audio.running = Some(running);
-                    started = true;
-                }
-                Err((message, publisher)) => {
-                    inner.audio.last_error = Some(message.clone());
-                    drop(inner);
-                    if let Some(publisher) = publisher {
-                        publisher.stop();
-                    }
-                    tracing::warn!(%message, "audio capture failed to start");
-                    (self.on_change)();
-                    return Err(SubscribeRejected::NoAudio);
-                }
-            }
-        }
-        let running = inner.audio.running.as_mut().expect("set above");
+        let Some(running) = inner.audio.running.as_mut() else {
+            return Ok(None);
+        };
         running.idle_since = None;
-        let subscription = AudioSubscription {
+        Ok(Some(AudioSubscription {
             params: running.publisher.params(),
             packets: running.publisher.subscribe(),
-        };
-        drop(inner);
-        if started {
-            (self.on_change)();
+        }))
+    }
+
+    /// Opens the encoder and starts the platform capture with the registry unlocked. A failure
+    /// stops the publisher it already built, which joins its encode thread.
+    fn start_audio(&self) -> Result<RunningAudio, String> {
+        let encoder = self.encoders.open_audio().map_err(|e| e.to_string())?;
+        let publisher = AudioPublisher::start(encoder);
+        match self.audio_capture.start(publisher.sink()) {
+            Ok(session) => Ok(RunningAudio {
+                session,
+                publisher,
+                idle_since: None,
+            }),
+            Err(error) => {
+                publisher.stop();
+                Err(error.to_string())
+            }
         }
-        Ok(subscription)
     }
 }
 
