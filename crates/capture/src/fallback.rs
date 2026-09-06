@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn two_silent_attempts_are_both_named_in_the_error() {
+    fn a_silent_primary_and_a_failing_fallback_are_both_named_in_the_error() {
         let (primary, fallback) = (Probe::new(), Probe::new());
         let error = start_with_fallback(
             TIMEOUT,
@@ -243,5 +243,23 @@ mod tests {
         assert!(text.contains("desktop duplication"), "{text}");
         assert!(text.contains("no output for monitor"), "{text}");
         assert!(primary.stopped());
+    }
+
+    #[test]
+    fn two_silent_attempts_are_both_named_in_the_error() {
+        let (primary, fallback) = (Probe::new(), Probe::new());
+        let error = start_with_fallback(
+            TIMEOUT,
+            primary.starting("graphics capture", Ok(None)),
+            Some(fallback.starting("desktop duplication", Ok(None))),
+        )
+        .err()
+        .expect("no session without a frame");
+        let text = error.to_string();
+        assert!(text.contains("graphics capture"), "{text}");
+        assert!(text.contains("desktop duplication"), "{text}");
+        assert_eq!(text.matches("no frame within").count(), 2, "{text}");
+        assert!(primary.stopped());
+        assert!(fallback.stopped());
     }
 }
