@@ -41,3 +41,4 @@ egui-wgpu = "0.36"
 egui-winit = "0.36"
 pollster = "1.0"
 bytemuck = { version = "1.25", features = ["derive"] }
+windows-capture = "2.0"

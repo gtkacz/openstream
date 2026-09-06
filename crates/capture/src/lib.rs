@@ -13,3 +13,8 @@ pub mod linux;
 pub use linux::PortalCapture;
 #[cfg(target_os = "linux")]
 pub use linux::PortalCapture as PlatformCapture;
+
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+pub use windows::WindowsCapture as PlatformCapture;
