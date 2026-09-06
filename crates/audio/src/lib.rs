@@ -7,7 +7,7 @@ pub mod fake_output;
 pub mod synthetic;
 
 pub use chunk::*;
-pub use cpal_output::CpalOutput;
+pub use cpal_output::{CpalOutput, OutputDevice, output_devices};
 pub use error::AudioError;
 pub use fake_output::{FakeOutput, FakeOutputHandle};
 pub use synthetic::SyntheticTone;

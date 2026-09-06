@@ -31,7 +31,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         target_fps: args.fps,
         capture: Arc::new(PlatformCapture),
         audio_capture: Arc::new(PlatformAudioCapture::new(std::process::id())),
-        audio_output: Arc::new(CpalOutput),
+        audio_output: Arc::new(CpalOutput::new(None)),
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(|| {}),
