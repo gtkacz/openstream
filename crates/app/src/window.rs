@@ -1,6 +1,7 @@
 //! The participant window: a winit loop that shows the start screen until a room is open, then
 //! draws the tile grid under the egui panels and hands panel commands to the room view.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -166,7 +167,13 @@ impl App {
             .run(&main.window, [size.0, size.1], |root| match &self.phase {
                 Phase::Start => start_action = start::draw(root, &mut self.start),
                 Phase::Room(view) => {
-                    output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state);
+                    output = ui::draw(
+                        root,
+                        &view.snapshot,
+                        &view.ticket,
+                        &mut self.state,
+                        &HashSet::new(),
+                    );
                 }
             });
         let pixels_per_point = ui_frame.screen.pixels_per_point;

@@ -1,49 +1,82 @@
 //! Central panel: reserves one rect per watched live for the video renderer and draws the hover
-//! overlay and status text on top. The panel frame is transparent so the tiles show through.
+//! overlay and status text on top. The panel frame is transparent so the tiles show through. The
+//! overlay is shared with pop-out windows, which place one live over their whole panel.
+
+use std::collections::HashSet;
 
 use brp_room::{RoomSnapshot, WatchState, WatchView};
 
 use super::members::{offered_preset, preset_selector};
-use super::state::{UiState, ordered_watches};
-use crate::commands::RoomCommand;
+use super::state::{UiState, live_title, visible_watches};
+use crate::commands::{RoomCommand, WindowCommand};
 use crate::render::grid;
 use crate::render::tiles::TileKey;
 
-/// Draws the tile grid, returning where the video renderer should place each watched live's
-/// frame, in egui points.
+/// Where an overlay is drawn, which decides its window buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// A cell of the main window's grid: offers pop out and fullscreen.
+    Grid,
+    /// A pop-out window: offers the fullscreen toggle and a return to the grid.
+    PopOut { fullscreen: bool },
+}
+
+/// Draws the tile grid without the popped-out lives, returning where the video renderer should
+/// place each drawn live's frame, in egui points.
 pub fn draw(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
     state: &mut UiState,
+    popped: &HashSet<TileKey>,
     commands: &mut Vec<RoomCommand>,
+    window_commands: &mut Vec<WindowCommand>,
 ) -> Vec<(TileKey, egui::Rect)> {
     let mut placements = Vec::new();
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {
-            let watches = ordered_watches(snapshot);
+            let watches = visible_watches(snapshot, popped);
             if watches.is_empty() {
-                ui.centered_and_justified(|ui| ui.weak("Tick a live on the left to watch it"));
+                let hint = if popped.is_empty() {
+                    "Tick a live on the left to watch it"
+                } else {
+                    "Every watched live is in its own window"
+                };
+                ui.centered_and_justified(|ui| ui.weak(hint));
                 return;
             }
             let rects = grid::layout(ui.max_rect(), watches.len());
             for (watch, rect) in watches.iter().zip(rects) {
                 let key = (watch.publisher, watch.live_id);
                 placements.push((key, rect));
-                overlay(ui, snapshot, state, commands, watch, key, rect);
+                tile_overlay(
+                    ui,
+                    snapshot,
+                    state,
+                    commands,
+                    window_commands,
+                    watch,
+                    key,
+                    rect,
+                    Placement::Grid,
+                );
             }
         });
     placements
 }
 
-fn overlay(
+/// Status text, the stats readout, and the hover bar for one live drawn in `rect`.
+#[allow(clippy::too_many_arguments)]
+pub fn tile_overlay(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
+    window_commands: &mut Vec<WindowCommand>,
     watch: &WatchView,
     key: TileKey,
     rect: egui::Rect,
+    placement: Placement,
 ) {
     let response = ui.allocate_rect(rect, egui::Sense::hover());
     let live = snapshot
@@ -51,9 +84,7 @@ fn overlay(
         .iter()
         .find(|m| m.id == key.0)
         .and_then(|m| m.lives.iter().find(|l| l.id == key.1));
-    let title = live
-        .map(|l| l.title.clone())
-        .unwrap_or_else(|| "publisher left".to_string());
+    let title = live_title(snapshot, key).unwrap_or_else(|| "publisher left".to_string());
     let status = match watch.state {
         WatchState::Connecting => Some("connecting"),
         WatchState::Reconnecting => Some("reconnecting"),
@@ -132,6 +163,25 @@ fn overlay(
                     state.stats_visible.insert(key);
                 } else {
                     state.stats_visible.remove(&key);
+                }
+            }
+            match placement {
+                Placement::Grid => {
+                    if ui.small_button("pop out").clicked() {
+                        window_commands.push(WindowCommand::PopOut(key));
+                    }
+                    if ui.small_button("fullscreen").clicked() {
+                        window_commands.push(WindowCommand::PopOutFullscreen(key));
+                    }
+                }
+                Placement::PopOut { fullscreen } => {
+                    let label = if fullscreen { "windowed" } else { "fullscreen" };
+                    if ui.small_button(label).clicked() {
+                        window_commands.push(WindowCommand::ToggleFullscreen(key));
+                    }
+                    if ui.small_button("back to grid").clicked() {
+                        window_commands.push(WindowCommand::ReturnToGrid(key));
+                    }
                 }
             }
             if ui.small_button("close").clicked() {

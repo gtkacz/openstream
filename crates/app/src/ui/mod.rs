@@ -4,10 +4,13 @@
 pub mod members;
 pub mod own_lives;
 pub mod picker;
+pub mod popout;
 pub mod start;
 pub mod state;
 pub mod status;
 pub mod tiles;
+
+use std::collections::HashSet;
 
 use brp_room::RoomSnapshot;
 
@@ -31,6 +34,8 @@ pub struct UiOutput {
 /// the [`egui::Context`] itself: egui 0.36 attaches top-level panels to a [`egui::Ui`], not a
 /// [`egui::Context`].
 ///
+/// `popped` lists the lives shown in their own windows, which the grid skips.
+///
 /// egui may run the closure that calls this more than once per frame; the caller keeps the last
 /// output, so commands from an earlier pass are discarded.
 pub fn draw(
@@ -38,16 +43,25 @@ pub fn draw(
     snapshot: &RoomSnapshot,
     ticket: &str,
     state: &mut UiState,
+    popped: &HashSet<TileKey>,
 ) -> UiOutput {
     let mut commands = Vec::new();
+    let mut window_commands = Vec::new();
     status::draw(ui, snapshot, ticket, state, &mut commands);
     own_lives::draw(ui, snapshot, state, &mut commands);
     members::draw(ui, snapshot, state, &mut commands);
-    let tile_rects = tiles::draw(ui, snapshot, state, &mut commands);
+    let tile_rects = tiles::draw(
+        ui,
+        snapshot,
+        state,
+        popped,
+        &mut commands,
+        &mut window_commands,
+    );
     picker::draw(ui.ctx(), state, &mut commands);
     UiOutput {
         commands,
-        window_commands: Vec::new(),
+        window_commands,
         tile_rects,
     }
 }
