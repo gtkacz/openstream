@@ -208,9 +208,14 @@ fn run(
         let core_error = core_error.clone();
         core.add_listener_local()
             .error(move |id, seq, res, message| {
-                tracing::warn!(id, seq, res, message, "PipeWire core reported an error");
-                *core_error.borrow_mut() = Some(message.to_string());
-                mainloop.quit();
+                tracing::warn!(id, seq, res, message, "PipeWire object reported an error");
+                // Per-object errors are routine (e.g. a link target vanished between the
+                // registry announcing it and our `create_object` racing it); only the core's
+                // own error means the daemon connection itself is gone.
+                if id == pw::core::PW_ID_CORE {
+                    *core_error.borrow_mut() = Some(message.to_string());
+                    mainloop.quit();
+                }
             })
             .register()
     };
