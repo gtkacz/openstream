@@ -35,7 +35,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) { choco install llvm -y --no-progress }
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) {
+            # choco is a native command: the error preference does not see its exit code.
+            choco install llvm -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Install FFmpeg (BtbN LGPL shared, pinned)
         shell: pwsh
         run: |
