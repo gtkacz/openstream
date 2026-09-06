@@ -16,12 +16,12 @@ use brp_proto::constants::{
 use brp_proto::{PublisherMessage, ViewerMessage};
 use iroh::{Endpoint, EndpointAddr, PublicKey};
 use tokio::runtime::Handle;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::codecs::DecoderFactory;
 use crate::error::RoomError;
 use crate::gossip::lock;
-use crate::membership::Membership;
+use crate::membership::{Member, Membership};
 use crate::registry::ChangeNotify;
 use crate::snapshot::{WatchState, WatchView};
 
@@ -181,8 +181,9 @@ impl Watcher {
             successor
         };
         if let Some((live_id, preset_id)) = successor {
-            // Replacing the survivor resubscribes it with audio: the preset-switch path.
-            self.watch(publisher, live_id, preset_id)?;
+            // Replacing the survivor resubscribes it with audio: the preset-switch path. Losing
+            // the audio must not fail the unwatch the caller actually asked for.
+            self.move_audio_to(publisher, live_id, preset_id);
         }
         (self.on_change)();
         Ok(())
@@ -198,6 +199,49 @@ impl Watcher {
         drop(inner);
         self.mixer.remove_track(&track_key(&id));
         (self.on_change)();
+    }
+
+    /// Puts a publisher's audio back on one of its watches when nothing carries it any more.
+    /// Spec 5.8 asks for this on every path that loses a carrier, not only `unwatch`: a live that
+    /// ended, an audio stream the publisher closed, and a publisher that turned sharing back on.
+    pub fn reacquire_audio(self: &Arc<Self>, publisher: PublicKey) {
+        let advertised = lock(&self.membership)
+            .get(&publisher)
+            .is_some_and(Member::has_audio);
+        if !advertised {
+            // A publisher that stops sharing just goes quiet, exactly as one with nothing playing
+            // does, so presence is the only notice its carrier ever gets.
+            self.drop_carrier(publisher);
+            return;
+        }
+        let candidate = audio_candidate(&lock(&self.inner), publisher, advertised, self.output_ok);
+        if let Some((live_id, preset_id)) = candidate {
+            self.move_audio_to(publisher, live_id, preset_id);
+        }
+    }
+
+    /// Clears the carrier flag on every watch of a publisher whose audio is gone, so the next
+    /// advertisement finds a watch free to take it.
+    fn drop_carrier(&self, publisher: PublicKey) {
+        let mut inner = lock(&self.inner);
+        let mut cleared = false;
+        for ((p, _), entry) in inner.watches.iter_mut() {
+            if *p == publisher && entry.audio {
+                entry.audio = false;
+                cleared = true;
+            }
+        }
+        drop(inner);
+        if cleared {
+            (self.on_change)();
+        }
+    }
+
+    /// Re-watches one live through the preset-switch path, which subscribes it with audio.
+    fn move_audio_to(self: &Arc<Self>, publisher: PublicKey, live_id: u32, preset_id: u32) {
+        if let Err(error) = self.watch(publisher, live_id, preset_id) {
+            tracing::debug!(%error, live_id, "could not move the publisher's audio");
+        }
     }
 
     pub fn path_kind(&self, publisher: &PublicKey) -> PathKind {
@@ -244,6 +288,14 @@ impl Watcher {
             (self.on_change)();
         }
         applied
+    }
+
+    /// Ends a watch for good. The audio flag is cleared before the state so no snapshot shows a
+    /// dead carrier, and before the hand-over so the successor rule sees no carrier at all.
+    fn end_watch(self: &Arc<Self>, task: WatchTask, preset_id: u32) {
+        self.set_audio_granted(task, false);
+        self.set_state(task, preset_id, WatchState::Ended);
+        self.reacquire_audio(task.key.0);
     }
 
     /// Records whether the request actually got audio, under the same generation check as
@@ -310,8 +362,7 @@ impl Watcher {
         let mut backoff = RESUBSCRIBE_BACKOFF_INITIAL;
         loop {
             if !lock(&self.membership).is_member(&publisher) {
-                self.set_state(task, preset_id, WatchState::Ended);
-                self.set_audio_granted(task, false);
+                self.end_watch(task, preset_id);
                 return;
             }
             let attempt = async {
@@ -332,8 +383,7 @@ impl Watcher {
                     if let Some(fallback) = self.fallback_preset(publisher, live_id, preset_id) {
                         preset_id = fallback;
                     } else if !self.live_exists(publisher, live_id) {
-                        self.set_state(task, preset_id, WatchState::Ended);
-                        self.set_audio_granted(task, false);
+                        self.end_watch(task, preset_id);
                         return;
                     }
                     if !self
@@ -363,8 +413,7 @@ impl Watcher {
                 Err(error) => {
                     tracing::error!(%error, "no decoder for this live");
                     let _ = subscription.control.send(ViewerMessage::Unsubscribe).await;
-                    self.set_state(task, preset_id, WatchState::Ended);
-                    self.set_audio_granted(task, false);
+                    self.end_watch(task, preset_id);
                     return;
                 }
             };
@@ -380,7 +429,7 @@ impl Watcher {
                 decoder,
                 sink,
             );
-            let audio_viewer = subscription.audio.take().and_then(|audio| {
+            let mut audio_viewer = subscription.audio.take().and_then(|audio| {
                 match self.decoders.open_audio(&audio.params) {
                     Ok(decoder) => Some(AudioViewer::start(
                         self.runtime.clone(),
@@ -395,6 +444,7 @@ impl Watcher {
                     }
                 }
             });
+            let mut audio_ended = audio_viewer.as_mut().and_then(AudioViewer::take_ended);
             self.set_audio_granted(task, audio_viewer.is_some());
             if !self.set_state(task, preset_id, WatchState::Live) {
                 stop_viewer(viewer).await;
@@ -407,6 +457,16 @@ impl Watcher {
             let outcome = loop {
                 tokio::select! {
                     _ = &mut cancel => break Outcome::Cancelled,
+                    _ = audio_stream_end(&mut audio_ended) => {
+                        // The publisher's audio stream closed while the video watch is healthy:
+                        // the publisher toggled sharing off, or its capture died. Drop the carrier
+                        // flag and let spec 5.8's rule find the audio again if it is still there.
+                        audio_ended = None;
+                        stop_audio_viewer(audio_viewer.take()).await;
+                        self.set_audio_granted(task, false);
+                        (self.on_change)();
+                        self.reacquire_audio(publisher);
+                    }
                     event = events.recv() => match event {
                         Some(PublisherMessage::LiveEnded) => break Outcome::Ended,
                         Some(_) => continue,
@@ -427,8 +487,7 @@ impl Watcher {
                     if let Some(fallback) = self.fallback_preset(publisher, live_id, preset_id) {
                         preset_id = fallback;
                     } else if !self.live_exists(publisher, live_id) {
-                        self.set_state(task, preset_id, WatchState::Ended);
-                        self.set_audio_granted(task, false);
+                        self.end_watch(task, preset_id);
                         return;
                     }
                 }
@@ -489,6 +548,16 @@ async fn stop_audio_viewer(viewer: Option<AudioViewer>) {
     }
 }
 
+/// Completes once the audio decode thread has finished; never, for a watch without audio.
+async fn audio_stream_end(ended: &mut Option<mpsc::Receiver<()>>) {
+    match ended {
+        Some(rx) => {
+            let _ = rx.recv().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// One stream per publisher: a watch asks for audio only when nothing else of that publisher does.
 pub(crate) fn wants_audio(
     mut entries: impl Iterator<Item = (PublicKey, bool)>,
@@ -512,6 +581,34 @@ fn carrier_successor(
         .watches
         .iter()
         .filter(|((p, _), _)| *p == publisher)
+        .map(|((_, live_id), entry)| (*live_id, entry.preset_id))
+        .min()
+}
+
+/// Which watch should take a publisher's audio over when none of them carries it: the lowest live
+/// id still watched. Nothing is chosen while a carrier exists, the publisher does not advertise
+/// audio, or the output is broken.
+fn audio_candidate(
+    inner: &Inner,
+    publisher: PublicKey,
+    advertised: bool,
+    output_ok: bool,
+) -> Option<(u32, u32)> {
+    if !advertised || !output_ok {
+        return None;
+    }
+    if inner
+        .watches
+        .iter()
+        .any(|((p, _), entry)| *p == publisher && entry.audio)
+    {
+        return None;
+    }
+    inner
+        .watches
+        .iter()
+        // An ended watch carries nothing, and re-watching it would only end again.
+        .filter(|((p, _), entry)| *p == publisher && entry.state != WatchState::Ended)
         .map(|((_, live_id), entry)| (*live_id, entry.preset_id))
         .min()
 }
@@ -583,6 +680,54 @@ mod tests {
             None,
             "a non-carrier moves nothing"
         );
+    }
+
+    #[test]
+    fn a_publisher_without_a_carrier_hands_its_audio_to_the_lowest_live_watched() {
+        let a = key(1);
+        let mut inner = Inner::default();
+        inner.watches.insert((a, 4), entry(1, 1));
+        inner.watches.insert((a, 2), entry(2, 3));
+        inner.watches.insert((key(2), 1), entry(3, 1));
+        assert_eq!(audio_candidate(&inner, a, true, true), Some((2, 3)));
+        assert_eq!(
+            audio_candidate(&inner, a, false, true),
+            None,
+            "the publisher stopped advertising audio"
+        );
+        assert_eq!(
+            audio_candidate(&inner, a, true, false),
+            None,
+            "the output device failed at room start"
+        );
+        assert_eq!(
+            audio_candidate(&inner, key(3), true, true),
+            None,
+            "nothing of that publisher is watched"
+        );
+    }
+
+    #[test]
+    fn nothing_is_re_acquired_while_a_carrier_holds_the_audio() {
+        let a = key(1);
+        let mut inner = Inner::default();
+        let mut carrier = entry(1, 1);
+        carrier.audio = true;
+        inner.watches.insert((a, 4), carrier);
+        inner.watches.insert((a, 2), entry(2, 3));
+        assert_eq!(audio_candidate(&inner, a, true, true), None);
+    }
+
+    #[test]
+    fn an_ended_watch_is_never_asked_to_carry_the_audio() {
+        let a = key(1);
+        let mut inner = Inner::default();
+        let mut ended = entry(1, 1);
+        ended.state = WatchState::Ended;
+        inner.watches.insert((a, 2), ended);
+        assert_eq!(audio_candidate(&inner, a, true, true), None);
+        inner.watches.insert((a, 5), entry(2, 1));
+        assert_eq!(audio_candidate(&inner, a, true, true), Some((5, 1)));
     }
 
     #[test]

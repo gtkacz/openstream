@@ -527,6 +527,60 @@ async fn turning_share_audio_off_ends_the_packets_and_the_flag_in_presence() {
     a.leave().await;
 }
 
+/// Spec 9 sells the share-audio toggle as the retry path: turning it off must end the packets and
+/// turning it back on must get the carrier resubscribed without touching the viewer.
+#[tokio::test]
+async fn toggling_share_audio_off_and_on_gets_the_carrier_back() {
+    let a = Room::create(config("alice")).await.unwrap();
+    let (bob_cfg, output) = config_with_output("bob");
+    let b = Room::join(bob_cfg, a.ticket()).await.unwrap();
+    wait_until("mutual presence", Duration::from_secs(5), || {
+        a.snapshot().members.len() == 1 && b.snapshot().members.len() == 1
+    })
+    .await;
+    let live = a
+        .start_live(SourceKind::Monitor, None, "desk".into())
+        .await
+        .unwrap();
+    wait_until("catalog", Duration::from_secs(5), || {
+        b.snapshot().members[0].lives.len() == 1
+    })
+    .await;
+    b.watch(a.id(), live, SOURCE_PRESET_ID).unwrap();
+    wait_until("audible", Duration::from_secs(5), || {
+        is_audible(&output.render(1024))
+    })
+    .await;
+
+    a.set_audio(false);
+    wait_until(
+        "the carrier lost its audio",
+        Duration::from_secs(10),
+        || !b.snapshot().members[0].has_audio && b.snapshot().watches.iter().all(|w| !w.audio),
+    )
+    .await;
+    wait_until("silence", Duration::from_secs(5), || {
+        !is_audible(&output.render(1024))
+    })
+    .await;
+
+    a.set_audio(true);
+    wait_until("the carrier came back", Duration::from_secs(10), || {
+        b.snapshot()
+            .watches
+            .iter()
+            .any(|w| w.audio && w.state == WatchState::Live)
+    })
+    .await;
+    wait_until("audible again", Duration::from_secs(10), || {
+        is_audible(&output.render(1024))
+    })
+    .await;
+
+    b.leave().await;
+    a.leave().await;
+}
+
 #[tokio::test]
 async fn master_mute_and_a_broken_output_are_reported_in_the_snapshot() {
     struct BrokenOutput;

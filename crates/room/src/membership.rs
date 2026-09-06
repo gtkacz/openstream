@@ -14,6 +14,13 @@ pub struct Member {
     pub last_seen: Instant,
 }
 
+impl Member {
+    /// Every live of a publisher carries the same flag, so any of them answers for the member.
+    pub fn has_audio(&self) -> bool {
+        self.presence.lives.iter().any(|l| l.has_audio)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Applied {
     Inserted,

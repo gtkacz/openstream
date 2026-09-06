@@ -14,7 +14,7 @@ use n0_future::StreamExt;
 use tokio::sync::{Notify, mpsc};
 
 use crate::error::RoomError;
-use crate::membership::{Applied, Membership};
+use crate::membership::{Applied, Member, Membership};
 use crate::registry::{ChangeNotify, LiveRegistry};
 
 pub(crate) async fn join(
@@ -48,6 +48,9 @@ pub(crate) struct PresenceLoop {
     pub heartbeat: Duration,
     pub on_change: ChangeNotify,
     pub expired: mpsc::Sender<PublicKey>,
+    /// Publishers whose presence just changed its audio flag. A publisher that stops sharing goes
+    /// quiet rather than closing anything, so presence is the viewer's only notice either way.
+    pub audio_changed: mpsc::Sender<PublicKey>,
 }
 
 impl PresenceLoop {
@@ -63,7 +66,7 @@ impl PresenceLoop {
                 }
                 _ = self.dirty.notified() => self.broadcast().await,
                 event = self.receiver.next() => match event {
-                    Some(Ok(Event::Received(message))) => self.receive(me, &message.content),
+                    Some(Ok(Event::Received(message))) => self.receive(me, &message.content).await,
                     Some(Ok(Event::Lagged)) => tracing::warn!("gossip lagged; the next heartbeat repairs the catalog"),
                     Some(Ok(other)) => tracing::debug!(?other, "gossip neighbour event"),
                     Some(Err(error)) => {
@@ -106,7 +109,7 @@ impl PresenceLoop {
         }
     }
 
-    fn receive(&self, me: PublicKey, content: &[u8]) {
+    async fn receive(&self, me: PublicKey, content: &[u8]) {
         let signed: Signed = match decode(content) {
             Ok(signed) => signed,
             Err(error) => {
@@ -128,9 +131,23 @@ impl PresenceLoop {
         if signed.author == me {
             return;
         }
-        match lock(&self.membership).apply(signed.author, presence, Instant::now()) {
+        let (applied, audio_changed) = {
+            let mut membership = lock(&self.membership);
+            let before = membership
+                .get(&signed.author)
+                .is_some_and(Member::has_audio);
+            let applied = membership.apply(signed.author, presence, Instant::now());
+            let after = membership
+                .get(&signed.author)
+                .is_some_and(Member::has_audio);
+            (applied, after != before)
+        };
+        match applied {
             Applied::Inserted | Applied::Updated => (self.on_change)(),
             Applied::Refreshed | Applied::Stale => {}
+        }
+        if audio_changed {
+            let _ = self.audio_changed.send(signed.author).await;
         }
     }
 }

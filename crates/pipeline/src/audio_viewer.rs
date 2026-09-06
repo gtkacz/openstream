@@ -26,6 +26,7 @@ pub struct AudioViewerStats {
 
 pub struct AudioViewer {
     stop: Arc<AtomicBool>,
+    ended: Option<Receiver<()>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -38,6 +39,7 @@ impl AudioViewer {
         stats: Arc<AudioViewerStats>,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
+        let (ended_tx, ended_rx) = tokio::sync::mpsc::channel(1);
         let worker = DecodeLoop {
             runtime,
             packets,
@@ -45,6 +47,7 @@ impl AudioViewer {
             track,
             stats,
             stop: stop.clone(),
+            _ended: ended_tx,
         };
         let thread = thread::Builder::new()
             .name("brp-audio-decode".into())
@@ -52,8 +55,16 @@ impl AudioViewer {
             .expect("spawning a thread only fails when the system is out of resources");
         Self {
             stop,
+            ended: Some(ended_rx),
             thread: Some(thread),
         }
+    }
+
+    /// Closes once the decode thread has exited. Before `stop`, that means the publisher's packet
+    /// stream closed, which is how a watch learns its audio is gone. Yields `None` after the first
+    /// call, since the channel is handed to whoever waits on it.
+    pub fn take_ended(&mut self) -> Option<Receiver<()>> {
+        self.ended.take()
     }
 
     pub fn stop(mut self) {
@@ -71,6 +82,8 @@ struct DecodeLoop {
     track: Track,
     stats: Arc<AudioViewerStats>,
     stop: Arc<AtomicBool>,
+    /// Never sent on: dropping it with the thread is what signals the end.
+    _ended: tokio::sync::mpsc::Sender<()>,
 }
 
 impl DecodeLoop {

@@ -151,6 +151,7 @@ impl Room {
         .await?;
 
         let (expired_tx, mut expired_rx) = mpsc::channel::<PublicKey>(16);
+        let (audio_changed_tx, mut audio_changed_rx) = mpsc::channel::<PublicKey>(16);
         let presence = PresenceLoop {
             secret: config.secret,
             nickname: nickname.clone(),
@@ -162,6 +163,7 @@ impl Room {
             heartbeat: config.timings.heartbeat,
             on_change: notify.clone(),
             expired: expired_tx,
+            audio_changed: audio_changed_tx,
         };
         let housekeeping = {
             let registry = registry.clone();
@@ -201,10 +203,19 @@ impl Room {
                 }
             }
         };
+        let audio_consumer = {
+            let watcher = watcher.clone();
+            async move {
+                while let Some(id) = audio_changed_rx.recv().await {
+                    watcher.reacquire_audio(id);
+                }
+            }
+        };
         let tasks = vec![
             tokio::spawn(presence.run()),
             tokio::spawn(housekeeping),
             tokio::spawn(expiry_consumer),
+            tokio::spawn(audio_consumer),
         ];
 
         Ok(Self {
@@ -264,7 +275,7 @@ impl Room {
             .map(|m| MemberView {
                 id: m.id,
                 nickname: m.presence.nickname.clone(),
-                has_audio: m.presence.lives.iter().any(|l| l.has_audio),
+                has_audio: m.has_audio(),
                 lives: m.presence.lives.clone(),
                 seen_ago_ms: now.duration_since(m.last_seen).as_millis() as u64,
                 path: self.watcher.path_kind(&m.id),
