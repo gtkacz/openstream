@@ -42,7 +42,7 @@ impl JitterBuffer {
     }
 
     pub fn push(&mut self, packet: EncodedFrame, now: Instant) {
-        if self.started && packet.seq < self.next_seq {
+        if packet.seq < self.next_seq {
             self.late += 1;
             self.target = (self.target + JITTER_STEP).min(JITTER_MAX_DEPTH);
             self.quiet_since = now;
@@ -231,5 +231,28 @@ mod tests {
         jb.push(packet(5), t0);
         assert_eq!(seq_of(jb.pop(t0)), Some(3));
         assert_eq!(jb.late(), 0);
+    }
+
+    #[test]
+    fn a_late_packet_arriving_while_re_priming_is_dropped_not_replayed() {
+        let t0 = Instant::now();
+        let mut jb = JitterBuffer::new(t0);
+        for seq in 0..3 {
+            jb.push(packet(seq), t0);
+        }
+        for _ in 0..3 {
+            jb.pop(t0);
+        }
+        assert!(matches!(jb.pop(t0), Slot::Silence));
+        // Slot 1 was already played; its delayed arrival during re-prime must not be replayed.
+        jb.push(packet(1), t0);
+        assert_eq!(jb.late(), 1);
+        assert_eq!(jb.target(), JITTER_INITIAL_DEPTH + JITTER_STEP);
+        // Growing the target to 80 ms means priming now needs four packets, not three.
+        jb.push(packet(3), t0);
+        jb.push(packet(4), t0);
+        jb.push(packet(5), t0);
+        jb.push(packet(6), t0);
+        assert_eq!(seq_of(jb.pop(t0)), Some(3));
     }
 }
