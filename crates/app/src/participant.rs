@@ -46,14 +46,23 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
 
     ticker.abort();
     let shutdown = app.finish();
-    // Abort only requests cancellation; wait for every task so its Arc<Room> clone is gone
+    // Abort only requests cancellation; wait for every share task so its Arc<Room> clone is gone
     // before the room is unwrapped (a cancelled JoinError is expected).
     let _ = runtime.block_on(ticker);
     for task in shutdown.tasks {
         task.abort();
         let _ = runtime.block_on(task);
     }
-    if let Some(room) = shutdown.room {
+    let mut rooms = shutdown.room.into_iter().collect::<Vec<_>>();
+    // An open still in flight is awaited, not aborted: aborting after the room exists would drop
+    // it without a leave. Closing the window during a doomed join therefore waits out the join
+    // and relay timeouts before the process exits.
+    if let Some(open) = shutdown.pending_open
+        && let Ok(Ok(room)) = runtime.block_on(open)
+    {
+        rooms.push(room);
+    }
+    for room in rooms {
         match Arc::try_unwrap(room) {
             Ok(room) => runtime.block_on(room.leave()),
             Err(_) => tracing::warn!("room still referenced at exit; skipping the orderly leave"),

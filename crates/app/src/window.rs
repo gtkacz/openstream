@@ -48,10 +48,13 @@ enum Phase {
     Room(Box<RoomView>),
 }
 
-/// What must be torn down after the loop ends: tasks still holding room handles, then the room.
+/// What must be torn down after the loop ends: share tasks still holding room handles, an open
+/// that may still be producing a room, and the room itself.
 pub struct Shutdown {
     pub room: Option<Arc<Room>>,
     pub tasks: Vec<JoinHandle<()>>,
+    /// Awaited, never aborted: a room it produces after the window closed must still be left.
+    pub pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
 }
 
 /// The winit `ApplicationHandler` for the participant window: owns the phase, the window-local UI
@@ -63,7 +66,7 @@ pub struct App {
     start: StartState,
     phase: Phase,
     state: UiState,
-    pending_open: Option<JoinHandle<()>>,
+    pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
     /// When egui asked for the next frame; `about_to_wait` sleeps until then instead of forever.
     next_repaint: Option<Instant>,
     window: Option<Arc<Window>>,
@@ -104,15 +107,15 @@ impl App {
     }
 
     pub fn finish(self) -> Shutdown {
-        let mut tasks: Vec<JoinHandle<()>> = self.pending_open.into_iter().collect();
-        let room = match self.phase {
-            Phase::Room(view) => {
-                tasks.extend(view.pending_share);
-                Some(view.room)
-            }
-            Phase::Start => None,
+        let (room, tasks) = match self.phase {
+            Phase::Room(view) => (Some(view.room), view.pending_share.into_iter().collect()),
+            Phase::Start => (None, Vec::new()),
         };
-        Shutdown { room, tasks }
+        Shutdown {
+            room,
+            tasks,
+            pending_open: self.pending_open,
+        }
     }
 
     fn open(&mut self, intent: Intent) {
@@ -124,7 +127,10 @@ impl App {
             let outcome = launch::open_room(&launch, intent, &nickname, room_events)
                 .await
                 .map_err(|error| error.to_string());
-            let _ = done.send_event(AppEvent::RoomOpened(outcome));
+            // The window learns of the outcome through the event; the task output is for the
+            // shutdown path, which must leave a room that opened after the window closed.
+            let _ = done.send_event(AppEvent::RoomOpened(outcome.clone()));
+            outcome
         }));
     }
 
