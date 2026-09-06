@@ -26,7 +26,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         .unwrap_or_else(|| secret.public().fmt_short().to_string());
     let config = RoomConfig {
         secret,
-        relay,
+        relay: relay.clone(),
         nickname,
         target_fps: args.fps,
         capture: Arc::new(PlatformCapture),

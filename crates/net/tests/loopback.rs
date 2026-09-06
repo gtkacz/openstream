@@ -399,3 +399,13 @@ async fn a_stale_subscriptions_teardown_does_not_evict_a_newer_one() {
     router.shutdown().await.unwrap();
     client_ep.close().await;
 }
+
+#[tokio::test]
+async fn an_endpoint_binds_with_a_custom_relay_url() {
+    // Binding does not contact the relay, so an unreachable host is fine here.
+    let url: iroh::RelayUrl = "https://relay.example.invalid/".parse().unwrap();
+    let endpoint = bind_endpoint(SecretKey::generate(), RelaySetting::Custom(url), vec![])
+        .await
+        .expect("bind with a custom relay map");
+    endpoint.close().await;
+}

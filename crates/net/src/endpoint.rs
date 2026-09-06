@@ -2,13 +2,16 @@ use crate::NetError;
 use brp_proto::constants::MEDIA_ALPN;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
-/// Controls whether the endpoint uses iroh's relay infrastructure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
+
+/// Controls which relay infrastructure the endpoint uses for hole punching and fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelaySetting {
-    /// Use the library's public relays for hole punching and fallback.
+    /// The library's public relays.
     Default,
-    /// Disable relays for LAN and directly reachable peers.
+    /// One self-hosted relay instead of the public ones.
+    Custom(RelayUrl),
+    /// No relays: LAN and directly reachable peers only.
     Disabled,
 }
 
@@ -27,6 +30,9 @@ pub async fn bind_endpoint(
     }
     let builder = match relay {
         RelaySetting::Default => Endpoint::builder(presets::N0),
+        RelaySetting::Custom(url) => {
+            Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(RelayMap::from(url)))
+        }
         RelaySetting::Disabled => {
             Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled)
         }

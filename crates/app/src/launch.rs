@@ -70,7 +70,7 @@ pub async fn open_room(
     let change_proxy = proxy.clone();
     let config = RoomConfig {
         secret,
-        relay: launch.relay,
+        relay: launch.relay.clone(),
         nickname,
         target_fps: launch.fps,
         capture: Arc::new(PlatformCapture),
