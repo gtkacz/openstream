@@ -45,7 +45,7 @@ mod portal {
                 .chunks_exact(frame.stride)
                 .take(frame.height as usize)
             {
-                for pixel in row[..frame.width as usize * 4].chunks_exact(4) {
+                for pixel in row[..frame.width as usize * 4].as_chunks::<4>().0.iter() {
                     let rgb = match frame.format {
                         PixelFormat::Bgra | PixelFormat::Bgrx => [pixel[2], pixel[1], pixel[0]],
                         PixelFormat::Rgba | PixelFormat::Rgbx => [pixel[0], pixel[1], pixel[2]],

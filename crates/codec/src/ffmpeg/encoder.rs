@@ -122,7 +122,7 @@ impl FfmpegEncoder {
                         let uv = &src.uv[row * src.uv_stride..row * src.uv_stride + width];
                         let u = f.data[1].add(row * f.linesize[1] as usize);
                         let v = f.data[2].add(row * f.linesize[2] as usize);
-                        for (i, pair) in uv.chunks_exact(2).enumerate() {
+                        for (i, pair) in uv.as_chunks::<2>().0.iter().enumerate() {
                             *u.add(i) = pair[0];
                             *v.add(i) = pair[1];
                         }

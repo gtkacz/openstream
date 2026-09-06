@@ -245,7 +245,7 @@ fn raw_from_avframe(frame: &ff::AVFrame) -> Result<RawFrame, CodecError> {
                 let u = frame.data[1].add(row * frame.linesize[1] as usize);
                 let v = frame.data[2].add(row * frame.linesize[2] as usize);
                 let dst = &mut output.uv[row * output.uv_stride..row * output.uv_stride + width];
-                for (index, pair) in dst.chunks_exact_mut(2).enumerate() {
+                for (index, pair) in dst.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                     pair[0] = *u.add(index);
                     pair[1] = *v.add(index);
                 }
