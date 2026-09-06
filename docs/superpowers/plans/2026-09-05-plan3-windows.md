@@ -2060,3 +2060,1187 @@ Repeat until green. The phase closes on CI evidence; runtime checks stay deferre
 - Spec coverage: 5.1 → Task 1; 5.2 and 5.3 → Tasks 2, 5; 5.4 → Task 4; 5.5 → Tasks 3, 6; 5.6 → Task 7; section 9 error texts → Task 5 `sources.rs`, `mod.rs`, and Task 6 status line via `RoomError` display; section 10 hardware-free tests → Tasks 2, 3, 4, 6; section 11 constant → Task 1; deferred checks stated in Task 7 step 4.
 - Type consistency: `Started::wait_first_frame` returns `Result<Option<SourceInfo>, CaptureError>` in Task 2 and both Task 5 implementations; `Attempt.start` returns `Result<Box<dyn Started>, CaptureError>` everywhere; `RoomCommand::Share { kind, source }` in Tasks 6 only, `start_live(kind, source, title)` from Task 3 onward; `SharedSink` is `Arc<Mutex<FrameSink>>` across the three Windows modules.
 - The one thing this plan cannot prove locally is the windows-capture generic bound on `start_free_threaded`, `T: TryInto<GraphicsCaptureItemType> + Send + 'static`, being satisfied by `Monitor` and `Window`; both are `Copy + Send` and implement the conversion, and the cross-check in Task 5 step 6 verifies it before CI does.
+
+---
+
+## Addendum: launch without a terminal (spec section 13, approved 2026-09-06)
+
+Tasks 8 to 10 implement spec section 13. They come after Task 7; the Windows CI job is green at their start. The Global Constraints above still apply; the app crate cannot be cross-checked locally, so Windows-only code in it is verified by the CI job in Task 10.
+
+Additional verified facts: egui 0.36.1 `Ui::{text_edit_singleline, add_enabled, colored_label, heading, weak, label, separator, horizontal, vertical_centered}`, `TextEdit::singleline(&mut String).hint_text(..).desired_width(f32)`, `Color32::LIGHT_RED`, `CentralPanel::default().show(ui, ..)` as used in `crates/app/src/ui/tiles.rs`; winit 0.30 `Window::set_title(&str)`, `EventLoop::build` errors with `RecreationAttempt` on a second call; windows-sys 0.61 `Win32::System::Console::{AttachConsole, SetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE}` with `HANDLE = *mut c_void` and `BOOL = i32`; `brp_proto::RoomTicket: FromStr + Display + Clone + PartialEq`, `RoomTicket::new(topic, bootstrap)`; `brp_net::RelaySetting: Copy + PartialEq`; `Room::snapshot().nickname`.
+
+### File Structure (addendum)
+
+```
+crates/app/src/launch.rs          Intent, Launch (from WindowArgs), default_nickname, open_room
+crates/app/src/ui/start.rs        StartAction, StartState (+ tests), draw
+crates/app/src/ui/mod.rs          + pub mod start
+crates/app/src/room_view.rs       RoomView: room, snapshot, ticket, watch handles, share task; refresh/upload/apply
+crates/app/src/window.rs          App with Phase::{Start, Room(RoomView)}, RoomOpened event, finish()
+crates/app/src/participant.rs     no pre-open; passes Option<Intent>; teardown via App::finish
+crates/app/src/cli.rs             Option<Command>, DEFAULT_FPS, Default for WindowArgs
+crates/app/src/main.rs            no-subcommand dispatch, console attach, windows_subsystem
+crates/app/src/console.rs         attach_parent_console (Windows), no-op elsewhere
+crates/app/src/lib.rs             + pub mod console; pub mod launch; pub mod room_view
+crates/app/Cargo.toml             + windows-sys under [target.'cfg(windows)'.dependencies]
+Cargo.toml                        + windows-sys workspace dependency
+README.md                         Usage rewritten for the start screen; Windows section notes
+```
+
+---
+
+### Task 8: Start-screen state and the shared room open
+
+**Files:**
+- Create: `crates/app/src/launch.rs`
+- Create: `crates/app/src/ui/start.rs`
+- Modify: `crates/app/src/ui/mod.rs`
+- Modify: `crates/app/src/lib.rs`
+- Modify: `crates/app/src/participant.rs`
+
+**Interfaces:**
+- Consumes: `WindowArgs`, `identity::load_or_create`, `AppEvent::{RoomChanged, NewFrame}`, `RoomConfig`.
+- Produces: `launch::{Intent::{Create, Join(RoomTicket)}, Launch { nickname: Option<String>, fps: u32, relay: RelaySetting }, default_nickname(&Launch) -> Result<String, AppError>, open_room(&Launch, Intent, nickname: &str, EventLoopProxy<AppEvent>) -> Result<Arc<Room>, AppError>}`; `ui::start::{StartAction::{Create, Join}, StartState { nickname, ticket, connecting, error }, StartState::{new, submit, failed}, draw(&mut egui::Ui, &mut StartState) -> Option<StartAction>}`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `crates/app/src/ui/start.rs` with the tests and `todo!()` bodies:
+
+```rust
+//! The start screen: nickname and ticket entry with Create and Join, shown until a room is open.
+
+use std::str::FromStr;
+
+use brp_proto::RoomTicket;
+
+use crate::launch::Intent;
+
+/// Which button the user clicked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartAction {
+    Create,
+    Join,
+}
+
+/// The form's fields, whether an open is in flight, and the last error to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartState {
+    pub nickname: String,
+    pub ticket: String,
+    pub connecting: bool,
+    pub error: String,
+}
+
+impl StartState {
+    pub fn new(nickname: String) -> Self {
+        Self {
+            nickname,
+            ticket: String::new(),
+            connecting: false,
+            error: String::new(),
+        }
+    }
+
+    /// Turns a click into an intent, or refuses it: nothing while an open is in flight, and a join
+    /// needs a ticket that parses. On success the screen is marked connecting.
+    pub fn submit(&mut self, action: StartAction) -> Option<Intent> {
+        todo!()
+    }
+
+    /// The open failed: back to the form with the reason shown.
+    pub fn failed(&mut self, message: String) {
+        todo!()
+    }
+}
+
+/// Draws the start screen and returns the button clicked, if any.
+pub fn draw(ui: &mut egui::Ui, state: &mut StartState) -> Option<StartAction> {
+    todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use iroh::{EndpointAddr, SecretKey};
+
+    use super::*;
+
+    fn valid_ticket() -> RoomTicket {
+        let id = SecretKey::from_bytes(&[7u8; 32]).public();
+        let addr = EndpointAddr::new(id).with_ip_addr(SocketAddr::from(([192, 168, 1, 10], 4433)));
+        RoomTicket::new([1u8; 32], vec![addr])
+    }
+
+    #[test]
+    fn create_yields_the_create_intent_and_marks_connecting() {
+        let mut state = StartState::new("alice".into());
+        assert_eq!(state.submit(StartAction::Create), Some(Intent::Create));
+        assert!(state.connecting);
+        assert!(state.error.is_empty());
+    }
+
+    #[test]
+    fn join_with_garbage_shows_an_error_and_stays_on_the_form() {
+        let mut state = StartState::new("alice".into());
+        state.ticket = "not a ticket".into();
+        assert_eq!(state.submit(StartAction::Join), None);
+        assert!(!state.connecting);
+        assert!(state.error.starts_with("invalid ticket"), "{}", state.error);
+    }
+
+    #[test]
+    fn join_with_a_valid_ticket_yields_the_join_intent() {
+        let ticket = valid_ticket();
+        let mut state = StartState::new("alice".into());
+        state.ticket = format!("  {ticket}\n");
+        assert_eq!(state.submit(StartAction::Join), Some(Intent::Join(ticket)));
+        assert!(state.connecting);
+    }
+
+    #[test]
+    fn nothing_is_accepted_while_connecting() {
+        let mut state = StartState::new("alice".into());
+        state.submit(StartAction::Create);
+        assert_eq!(state.submit(StartAction::Create), None);
+        assert_eq!(state.submit(StartAction::Join), None);
+    }
+
+    #[test]
+    fn a_failure_returns_to_the_form_with_the_message() {
+        let mut state = StartState::new("alice".into());
+        state.submit(StartAction::Create);
+        state.failed("no room member answered within the join timeout".into());
+        assert!(!state.connecting);
+        assert_eq!(state.error, "no room member answered within the join timeout");
+        assert_eq!(state.submit(StartAction::Create), Some(Intent::Create));
+    }
+}
+```
+
+`iroh` is already a dependency of the app crate; `EndpointAddr` and `SecretKey` are re-exported at its root (the proto crate's ticket tests use the same construction through `iroh_base`).
+
+Add `pub mod start;` to `crates/app/src/ui/mod.rs` (alphabetical, after `picker`) and `pub mod launch;` to `crates/app/src/lib.rs` (after `identity`).
+
+Create `crates/app/src/launch.rs`:
+
+```rust
+//! Opening a room from the window: the settings the command line provides, and the async open
+//! that the start screen and the `create`/`join` commands share.
+
+use std::sync::Arc;
+
+use brp_capture::PlatformCapture;
+use brp_net::RelaySetting;
+use brp_proto::RoomTicket;
+use brp_proto::constants::RELAY_ONLINE_TIMEOUT;
+use brp_room::codecs::FfmpegCodecs;
+use brp_room::{Room, RoomConfig, RoomTimings};
+use winit::event_loop::EventLoopProxy;
+
+use crate::cli::WindowArgs;
+use crate::error::AppError;
+use crate::identity;
+use crate::window::AppEvent;
+
+/// What the user asked for: a fresh room, or a seat in an existing one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Intent {
+    Create,
+    Join(RoomTicket),
+}
+
+/// Settings that apply to any room this window opens.
+#[derive(Debug, Clone)]
+pub struct Launch {
+    pub nickname: Option<String>,
+    pub fps: u32,
+    pub relay: RelaySetting,
+}
+
+impl From<WindowArgs> for Launch {
+    fn from(args: WindowArgs) -> Self {
+        Self {
+            nickname: args.nickname,
+            fps: args.fps,
+            relay: if args.no_relay {
+                RelaySetting::Disabled
+            } else {
+                RelaySetting::Default
+            },
+        }
+    }
+}
+
+/// The nickname the start screen offers: the `--nickname` flag, else the short peer id.
+pub fn default_nickname(launch: &Launch) -> Result<String, AppError> {
+    match &launch.nickname {
+        Some(nickname) => Ok(nickname.clone()),
+        None => Ok(identity::load_or_create()?.public().fmt_short().to_string()),
+    }
+}
+
+/// Creates or joins the room and waits briefly for the relay so the ticket works off the LAN.
+/// A blank `nickname` falls back to the short peer id. The ticket is not printed or logged.
+pub async fn open_room(
+    launch: &Launch,
+    intent: Intent,
+    nickname: &str,
+    proxy: EventLoopProxy<AppEvent>,
+) -> Result<Arc<Room>, AppError> {
+    let secret = identity::load_or_create()?;
+    let nickname = match nickname.trim() {
+        "" => secret.public().fmt_short().to_string(),
+        name => name.to_string(),
+    };
+    let change_proxy = proxy.clone();
+    let config = RoomConfig {
+        secret,
+        relay: launch.relay,
+        nickname,
+        target_fps: launch.fps,
+        capture: Arc::new(PlatformCapture),
+        encoders: Arc::new(FfmpegCodecs::default()),
+        decoders: Arc::new(FfmpegCodecs::default()),
+        on_change: Arc::new(move || {
+            let _ = change_proxy.send_event(AppEvent::RoomChanged);
+        }),
+        on_frame: Arc::new(move || {
+            let _ = proxy.send_event(AppEvent::NewFrame);
+        }),
+        timings: RoomTimings::default(),
+    };
+    let room = match intent {
+        Intent::Join(ticket) => Room::join(config, ticket).await?,
+        Intent::Create => Room::create(config).await?,
+    };
+    if launch.relay == RelaySetting::Default && !room.online(RELAY_ONLINE_TIMEOUT).await {
+        tracing::warn!(
+            "relay registration timed out; the ticket may only work on the local network"
+        );
+    }
+    Ok(Arc::new(room))
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cargo test -p brp start`
+Expected: five tests FAIL with `not yet implemented`.
+
+- [ ] **Step 3: Implement the state and the panel**
+
+Replace the three `todo!()` bodies in `crates/app/src/ui/start.rs`:
+
+```rust
+    pub fn submit(&mut self, action: StartAction) -> Option<Intent> {
+        if self.connecting {
+            return None;
+        }
+        let intent = match action {
+            StartAction::Create => Intent::Create,
+            StartAction::Join => match RoomTicket::from_str(self.ticket.trim()) {
+                Ok(ticket) => Intent::Join(ticket),
+                Err(error) => {
+                    self.error = format!("invalid ticket: {error}");
+                    return None;
+                }
+            },
+        };
+        self.error.clear();
+        self.connecting = true;
+        Some(intent)
+    }
+```
+
+```rust
+    pub fn failed(&mut self, message: String) {
+        self.connecting = false;
+        self.error = message;
+    }
+```
+
+```rust
+pub fn draw(ui: &mut egui::Ui, state: &mut StartState) -> Option<StartAction> {
+    let mut action = None;
+    egui::CentralPanel::default().show(ui, |ui| {
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() * 0.25);
+            ui.heading("brp");
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                ui.label("Nickname");
+                ui.add_enabled(
+                    !state.connecting,
+                    egui::TextEdit::singleline(&mut state.nickname).desired_width(240.0),
+                );
+            });
+            ui.add_space(8.0);
+            if ui
+                .add_enabled(!state.connecting, egui::Button::new("Create room"))
+                .clicked()
+            {
+                action = Some(StartAction::Create);
+            }
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.add_enabled(
+                !state.connecting,
+                egui::TextEdit::singleline(&mut state.ticket)
+                    .hint_text("paste a ticket")
+                    .desired_width(480.0),
+            );
+            let can_join = !state.connecting && !state.ticket.trim().is_empty();
+            if ui
+                .add_enabled(can_join, egui::Button::new("Join room"))
+                .clicked()
+            {
+                action = Some(StartAction::Join);
+            }
+            ui.add_space(16.0);
+            if state.connecting {
+                ui.weak("connecting");
+            }
+            if !state.error.is_empty() {
+                ui.colored_label(egui::Color32::LIGHT_RED, &state.error);
+            }
+        });
+    });
+    action
+}
+```
+
+- [ ] **Step 4: Route the existing open through `launch`**
+
+In `crates/app/src/participant.rs`, replace the imports and the room block so the behaviour is unchanged but the code lives in `launch`:
+
+```rust
+use std::str::FromStr;
+use std::sync::Arc;
+
+use brp_proto::RoomTicket;
+use brp_proto::constants::STATS_LOG_INTERVAL;
+use tokio::runtime::Runtime;
+use winit::event_loop::EventLoop;
+
+use crate::cli::WindowArgs;
+use crate::error::AppError;
+use crate::launch::{self, Intent, Launch};
+use crate::window::{App, AppEvent};
+```
+
+```rust
+pub fn run(runtime: &Runtime, ticket: Option<String>, args: WindowArgs) -> Result<(), AppError> {
+    let intent = match ticket.as_deref().map(RoomTicket::from_str).transpose()? {
+        Some(ticket) => Intent::Join(ticket),
+        None => Intent::Create,
+    };
+    let launch = Launch::from(args);
+    let nickname = launch::default_nickname(&launch)?;
+
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
+        .build()
+        .map_err(|e| AppError::Window(e.to_string()))?;
+    let proxy = event_loop.create_proxy();
+
+    let room = runtime.block_on(launch::open_room(&launch, intent, &nickname, proxy.clone()))?;
+```
+
+Delete the `println!("Ticket:...")` line that followed: the ticket is copied from the status bar (spec section 13). The rest of the function (ticker, `App::new`, teardown) is unchanged in this task.
+
+- [ ] **Step 5: Run the tests and lints**
+
+Run: `cargo test --workspace && cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings`
+Expected: green, including the five start-screen tests. `ui::start::draw` is not yet called anywhere; because the `ui` module is public in a library crate, that is not a dead-code warning.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/app/src/launch.rs crates/app/src/ui/start.rs crates/app/src/ui/mod.rs crates/app/src/lib.rs crates/app/src/participant.rs
+git commit -m "feat: add the start-screen state and share the room open between window paths"
+```
+
+---
+
+### Task 9: One window, two phases
+
+**Files:**
+- Create: `crates/app/src/room_view.rs`
+- Modify: `crates/app/src/window.rs`
+- Modify: `crates/app/src/participant.rs`
+- Modify: `crates/app/src/cli.rs`
+- Modify: `crates/app/src/main.rs`
+- Modify: `crates/app/src/lib.rs`
+
+**Interfaces:**
+- Consumes: Task 8's `launch::{Intent, Launch, default_nickname, open_room}` and `ui::start::{StartAction, StartState, draw}`.
+- Produces: `AppEvent::RoomOpened(Result<Arc<Room>, String>)`; `App::new(runtime: Handle, proxy: EventLoopProxy<AppEvent>, launch: Launch, nickname: String, intent: Option<Intent>)`; `App::finish(self) -> Shutdown { room: Option<Arc<Room>>, tasks: Vec<JoinHandle<()>> }`; `participant::run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs)`; `cli::Cli { command: Option<Command> }`, `cli::DEFAULT_FPS`, `impl Default for WindowArgs`.
+
+There is no new unit test in this task: the phase switch is winit and egui wiring, verified by the manual check in step 5 and by the existing tests staying green. The room-specific code moves verbatim; do not change its behaviour.
+
+- [ ] **Step 1: Extract the room view**
+
+Create `crates/app/src/room_view.rs`:
+
+```rust
+//! Everything the window holds once a room is open: the room handle, its last snapshot, the
+//! watch handles that feed tiles, and the share in flight. The window delegates room commands here.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Instant;
+
+use brp_capture::{SourceId, SourceListing};
+use brp_proto::SourceKind;
+use brp_room::{Room, RoomSnapshot, WatchHandle};
+use tokio::runtime::Handle;
+use tokio::task::JoinHandle;
+use winit::event_loop::EventLoopProxy;
+
+use crate::commands::RoomCommand;
+use crate::render::GpuContext;
+use crate::render::tiles::{TileKey, TileRenderer};
+use crate::ui::state::UiState;
+use crate::window::AppEvent;
+
+pub struct RoomView {
+    pub room: Arc<Room>,
+    pub snapshot: RoomSnapshot,
+    pub ticket: String,
+    handles: HashMap<TileKey, WatchHandle>,
+    pub pending_share: Option<JoinHandle<()>>,
+}
+
+impl RoomView {
+    pub fn new(room: Arc<Room>) -> Self {
+        let snapshot = room.snapshot();
+        let ticket = room.ticket().to_string();
+        Self {
+            room,
+            snapshot,
+            ticket,
+            handles: HashMap::new(),
+            pending_share: None,
+        }
+    }
+
+    /// Re-snapshots when the room's version moved, drops handles and tiles of ended watches, and
+    /// refreshes the rate meters.
+    pub fn refresh(&mut self, state: &mut UiState, tiles: Option<&mut TileRenderer>) {
+        if self.room.version() != self.snapshot.version {
+            self.snapshot = self.room.snapshot();
+        }
+        // The relay address can arrive after the first snapshot without bumping the version.
+        self.ticket = self.room.ticket().to_string();
+        let live: HashSet<TileKey> = self
+            .snapshot
+            .watches
+            .iter()
+            .map(|w| (w.publisher, w.live_id))
+            .collect();
+        self.handles.retain(|key, _| live.contains(key));
+        if let Some(tiles) = tiles {
+            tiles.retain(|key| live.contains(key));
+        }
+        state.refresh_rates(&self.snapshot, Instant::now());
+    }
+
+    /// Uploads the newest decoded frame of every watched live.
+    pub fn upload_frames(&self, gpu: &GpuContext, tiles: &mut TileRenderer) {
+        for (key, handle) in &self.handles {
+            if let Some(frame) = handle.slot.try_take() {
+                tiles.upload(&gpu.device, &gpu.queue, *key, &frame);
+            }
+        }
+    }
+
+    /// Applies the commands one egui pass produced. Errors land in the status line.
+    pub fn apply(
+        &mut self,
+        commands: Vec<RoomCommand>,
+        runtime: &Handle,
+        proxy: &EventLoopProxy<AppEvent>,
+        state: &mut UiState,
+    ) {
+        if commands.is_empty() {
+            return;
+        }
+        // `Room::watch` spawns its task with `tokio::spawn`, which needs a runtime on this thread.
+        let _guard = runtime.enter();
+        state.status.clear();
+        for command in commands {
+            let result = match command {
+                RoomCommand::Watch { key, preset_id } => {
+                    self.room.watch(key.0, key.1, preset_id).map(|handle| {
+                        self.handles.insert(key, handle);
+                    })
+                }
+                RoomCommand::Unwatch(key) => self.room.unwatch(key.0, key.1).map(|()| {
+                    self.handles.remove(&key);
+                }),
+                RoomCommand::StopLive(live_id) => self.room.stop_live(live_id),
+                RoomCommand::SetPresets { live_id, presets } => {
+                    self.room.set_presets(live_id, presets)
+                }
+                RoomCommand::Share {
+                    kind,
+                    source: Some(source),
+                } => {
+                    self.share(kind, Some(source), runtime, proxy, state);
+                    Ok(())
+                }
+                RoomCommand::Share { kind, source: None } => match self.room.sources(kind) {
+                    Ok(SourceListing::PlatformPicker) => {
+                        self.share(kind, None, runtime, proxy, state);
+                        Ok(())
+                    }
+                    Ok(SourceListing::Choices(choices)) => {
+                        state.open_picker(kind, choices);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
+            };
+            if let Err(error) = result {
+                state.status = error.to_string();
+            }
+        }
+    }
+
+    fn share(
+        &mut self,
+        kind: SourceKind,
+        source: Option<SourceId>,
+        runtime: &Handle,
+        proxy: &EventLoopProxy<AppEvent>,
+        state: &mut UiState,
+    ) {
+        if self.pending_share.is_some() {
+            return;
+        }
+        let title = state.next_title(kind);
+        state.share_pending = true;
+        state.status.clear();
+        let room = self.room.clone();
+        let proxy = proxy.clone();
+        self.pending_share = Some(runtime.spawn(async move {
+            let outcome = room
+                .start_live(kind, source, title)
+                .await
+                .map(|_live_id| ())
+                .map_err(|error| error.to_string());
+            let _ = proxy.send_event(AppEvent::ShareFinished(outcome));
+        }));
+    }
+}
+```
+
+Add `pub mod room_view;` to `crates/app/src/lib.rs` (after `render`).
+
+- [ ] **Step 2: Rewrite the window around phases**
+
+Replace `crates/app/src/window.rs` entirely (the `repaint_deadline` helper and its test stay as they are at the bottom):
+
+```rust
+//! The participant window: a winit loop that shows the start screen until a room is open, then
+//! draws the tile grid under the egui panels and hands panel commands to the room view.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use brp_room::Room;
+use tokio::runtime::Handle;
+use tokio::task::JoinHandle;
+use winit::{
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
+    window::{Window, WindowId},
+};
+
+use crate::error::AppError;
+use crate::launch::{self, Intent, Launch};
+use crate::render::grid::{self, PixelRect};
+use crate::render::tiles::{TileKey, TileRenderer};
+use crate::render::{GpuContext, ui::EguiLayer};
+use crate::room_view::RoomView;
+use crate::ui::start::{self, StartState};
+use crate::ui::state::UiState;
+use crate::ui::{self, UiOutput};
+
+/// Wakes the winit event loop for a reason that does not arrive as a `WindowEvent`. Sent through
+/// the `EventLoopProxy` from other threads (the room's background tasks, the open and share tasks).
+pub enum AppEvent {
+    /// The room's version counter moved; re-snapshot on the next redraw.
+    RoomChanged,
+    /// A watched live decoded a frame.
+    NewFrame,
+    /// Periodic wake so counters refresh while nothing is watched.
+    Tick,
+    /// The share task finished: the live started, or the error to show.
+    ShareFinished(Result<(), String>),
+    /// The open task finished: the room to show, or the error for the start screen.
+    RoomOpened(Result<Arc<Room>, String>),
+}
+
+/// What the window shows: the start screen, or a room.
+enum Phase {
+    Start,
+    Room(RoomView),
+}
+
+/// What must be torn down after the loop ends: tasks still holding room handles, then the room.
+pub struct Shutdown {
+    pub room: Option<Arc<Room>>,
+    pub tasks: Vec<JoinHandle<()>>,
+}
+
+/// The winit `ApplicationHandler` for the participant window: owns the phase, the window-local UI
+/// state, and the GPU and egui state.
+pub struct App {
+    runtime: Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    launch: Launch,
+    start: StartState,
+    phase: Phase,
+    state: UiState,
+    pending_open: Option<JoinHandle<()>>,
+    /// When egui asked for the next frame; `about_to_wait` sleeps until then instead of forever.
+    next_repaint: Option<Instant>,
+    window: Option<Arc<Window>>,
+    gpu: Option<GpuContext>,
+    tiles: Option<TileRenderer>,
+    ui: Option<EguiLayer>,
+}
+
+impl App {
+    /// An `intent` from the command line opens the room at once behind the connecting start
+    /// screen; `None` waits for the user.
+    pub fn new(
+        runtime: Handle,
+        proxy: EventLoopProxy<AppEvent>,
+        launch: Launch,
+        nickname: String,
+        intent: Option<Intent>,
+    ) -> Self {
+        let mut app = Self {
+            runtime,
+            proxy,
+            launch,
+            start: StartState::new(nickname),
+            phase: Phase::Start,
+            state: UiState::new(),
+            pending_open: None,
+            next_repaint: None,
+            window: None,
+            gpu: None,
+            tiles: None,
+            ui: None,
+        };
+        if let Some(intent) = intent {
+            app.start.connecting = true;
+            app.open(intent);
+        }
+        app
+    }
+
+    pub fn finish(self) -> Shutdown {
+        let mut tasks: Vec<JoinHandle<()>> = self.pending_open.into_iter().collect();
+        let room = match self.phase {
+            Phase::Room(view) => {
+                tasks.extend(view.pending_share);
+                Some(view.room)
+            }
+            Phase::Start => None,
+        };
+        Shutdown { room, tasks }
+    }
+
+    fn open(&mut self, intent: Intent) {
+        let launch = self.launch.clone();
+        let nickname = self.start.nickname.clone();
+        let room_events = self.proxy.clone();
+        let done = self.proxy.clone();
+        self.pending_open = Some(self.runtime.spawn(async move {
+            let outcome = launch::open_room(&launch, intent, &nickname, room_events)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = done.send_event(AppEvent::RoomOpened(outcome));
+        }));
+    }
+
+    fn redraw(&mut self) {
+        if let Phase::Room(view) = &mut self.phase {
+            view.refresh(&mut self.state, self.tiles.as_mut());
+        }
+        let (Some(window), Some(gpu), Some(tiles), Some(ui)) = (
+            self.window.as_ref(),
+            self.gpu.as_mut(),
+            self.tiles.as_mut(),
+            self.ui.as_mut(),
+        ) else {
+            return;
+        };
+        if let Phase::Room(view) = &self.phase {
+            view.upload_frames(gpu, tiles);
+        }
+        let surface = match gpu.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return,
+        };
+        let target = surface.texture.create_view(&Default::default());
+        let size = (gpu.config.width, gpu.config.height);
+
+        let mut output = UiOutput::default();
+        let mut start_action = None;
+        let mut ui_frame = ui.run(window, [size.0, size.1], |root| match &self.phase {
+            Phase::Start => start_action = start::draw(root, &mut self.start),
+            Phase::Room(view) => {
+                output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state);
+            }
+        });
+        let pixels_per_point = ui_frame.screen.pixels_per_point;
+        let placements: Vec<(TileKey, PixelRect)> = output
+            .tile_rects
+            .iter()
+            .map(|(key, rect)| (*key, grid::to_pixels(*rect, pixels_per_point, size)))
+            .collect();
+        tiles.update_fits(&gpu.queue, &placements);
+
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        let buffers = ui.prepare(&gpu.device, &gpu.queue, &mut encoder, &mut ui_frame);
+        {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("tiles+ui"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            tiles.draw(&mut pass, &placements);
+            ui.paint(&mut pass, &ui_frame);
+        }
+        gpu.queue
+            .submit(buffers.into_iter().chain(std::iter::once(encoder.finish())));
+        ui.cleanup(&mut ui_frame);
+        window.pre_present_notify();
+        gpu.queue.present(surface);
+        if ui_frame.repaint_delay.is_zero() {
+            window.request_redraw();
+            self.next_repaint = None;
+        } else {
+            self.next_repaint = repaint_deadline(Instant::now(), ui_frame.repaint_delay);
+        }
+
+        if let Some(action) = start_action
+            && let Some(intent) = self.start.submit(action)
+        {
+            self.open(intent);
+        }
+        if let Phase::Room(view) = &mut self.phase
+            && !output.commands.is_empty()
+        {
+            view.apply(output.commands, &self.runtime, &self.proxy, &mut self.state);
+        }
+        if start_action.is_some()
+            && let Some(window) = &self.window
+        {
+            window.request_redraw();
+        }
+    }
+}
+
+impl ApplicationHandler<AppEvent> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let window = match event_loop.create_window(
+            Window::default_attributes()
+                .with_title("brp")
+                .with_inner_size(PhysicalSize::new(1280, 720)),
+        ) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                tracing::error!(%error, "could not create window");
+                event_loop.exit();
+                return;
+            }
+        };
+        let gpu = match GpuContext::new(event_loop, &window) {
+            Ok(gpu) => gpu,
+            Err(error) => {
+                let _: AppError = error;
+                event_loop.exit();
+                return;
+            }
+        };
+        self.tiles = Some(TileRenderer::new(&gpu.device, gpu.config.format));
+        self.ui = Some(EguiLayer::new(&window, &gpu.device, gpu.config.format));
+        self.gpu = Some(gpu);
+        self.window = Some(window);
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::RoomOpened(Ok(room)) => {
+                self.pending_open = None;
+                self.state = UiState::new();
+                if let Some(window) = &self.window {
+                    window.set_title(&format!("brp: {}", room.snapshot().nickname));
+                }
+                self.phase = Phase::Room(RoomView::new(room));
+            }
+            AppEvent::RoomOpened(Err(message)) => {
+                self.pending_open = None;
+                self.start.failed(message);
+            }
+            AppEvent::ShareFinished(outcome) => {
+                if let Phase::Room(view) = &mut self.phase {
+                    view.pending_share = None;
+                }
+                self.state.share_pending = false;
+                if let Err(message) = outcome {
+                    self.state.status = format!("share failed: {message}");
+                }
+            }
+            AppEvent::RoomChanged | AppEvent::NewFrame | AppEvent::Tick => {}
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        if let Some(ui) = self.ui.as_mut() {
+            let response = ui.on_window_event(&window, &event);
+            if response.repaint {
+                window.request_redraw();
+            }
+            if response.consumed {
+                return;
+            }
+        }
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(gpu) = self.gpu.as_mut() {
+                    gpu.resize(size.width, size.height);
+                }
+            }
+            WindowEvent::RedrawRequested => self.redraw(),
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        match self.next_repaint {
+            Some(deadline) if deadline <= Instant::now() => {
+                self.next_repaint = None;
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+}
+```
+
+Keep the existing `repaint_deadline` function and its `tests` module below this, unchanged.
+
+- [ ] **Step 3: The entry point and the command line**
+
+Replace `crates/app/src/participant.rs` from the imports down:
+
+```rust
+//! The participant window: `brp` with no arguments shows the start screen, `brp create` and
+//! `brp join` open a room at once. Owns the room's lifetime around the winit loop and leaves it
+//! in an orderly fashion when the window closes.
+
+use std::sync::Arc;
+
+use brp_proto::constants::STATS_LOG_INTERVAL;
+use tokio::runtime::Runtime;
+use winit::event_loop::EventLoop;
+
+use crate::cli::WindowArgs;
+use crate::error::AppError;
+use crate::launch::{self, Intent, Launch};
+use crate::window::{App, AppEvent};
+
+/// Runs the window to completion. `intent` from the command line opens the room immediately;
+/// `None` shows the start screen.
+pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Result<(), AppError> {
+    let launch = Launch::from(args);
+    let nickname = launch::default_nickname(&launch)?;
+
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
+        .build()
+        .map_err(|e| AppError::Window(e.to_string()))?;
+    let proxy = event_loop.create_proxy();
+
+    // Encoder byte counters and last-seen ages move without any frame arriving, so a slow tick
+    // keeps the status bar honest when nothing is watched.
+    let ticker = runtime.spawn({
+        let proxy = proxy.clone();
+        async move {
+            let mut tick = tokio::time::interval(STATS_LOG_INTERVAL);
+            loop {
+                tick.tick().await;
+                if proxy.send_event(AppEvent::Tick).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut app = App::new(runtime.handle().clone(), proxy, launch, nickname, intent);
+    let outcome = event_loop
+        .run_app(&mut app)
+        .map_err(|e| AppError::Window(e.to_string()));
+
+    ticker.abort();
+    let shutdown = app.finish();
+    // Abort only requests cancellation; wait for every task so its Arc<Room> clone is gone
+    // before the room is unwrapped (a cancelled JoinError is expected).
+    let _ = runtime.block_on(ticker);
+    for task in shutdown.tasks {
+        task.abort();
+        let _ = runtime.block_on(task);
+    }
+    if let Some(room) = shutdown.room {
+        match Arc::try_unwrap(room) {
+            Ok(room) => runtime.block_on(room.leave()),
+            Err(_) => tracing::warn!("room still referenced at exit; skipping the orderly leave"),
+        }
+    }
+    outcome
+}
+```
+
+In `crates/app/src/cli.rs`:
+
+```rust
+/// Capture ceiling when no `--fps` is given, and the start screen's default.
+pub const DEFAULT_FPS: u32 = 60;
+
+#[derive(Parser, Debug)]
+#[command(name = "brp", about = "Peer-to-peer screen sharing", version)]
+pub struct Cli {
+    /// Without a subcommand the participant window opens on its start screen.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+```
+
+Both `#[arg(long, default_value_t = 60)]` fps fields become `#[arg(long, default_value_t = DEFAULT_FPS)]`, and after `WindowArgs` add:
+
+```rust
+impl Default for WindowArgs {
+    fn default() -> Self {
+        Self {
+            nickname: None,
+            fps: DEFAULT_FPS,
+            no_relay: false,
+        }
+    }
+}
+```
+
+In `crates/app/src/main.rs`, change the imports and the dispatch:
+
+```rust
+use std::str::FromStr;
+
+use brp_app::cli::{Cli, Command, WindowArgs};
+use brp_app::error::AppError;
+use brp_app::launch::Intent;
+use brp_app::{participant, publish};
+use brp_proto::RoomTicket;
+```
+
+```rust
+    let result = match cli.command {
+        None => participant::run(&runtime, None, WindowArgs::default()),
+        Some(Command::Publish(args)) => runtime.block_on(publish::run(args)),
+        Some(Command::Create(args)) => participant::run(&runtime, Some(Intent::Create), args.window),
+        Some(Command::Join(args)) => match RoomTicket::from_str(&args.ticket) {
+            Ok(ticket) => participant::run(&runtime, Some(Intent::Join(ticket)), args.window),
+            Err(error) => Err(AppError::Ticket(error)),
+        },
+    };
+```
+
+`brp-proto` is already a dependency of the app crate.
+
+- [ ] **Step 4: Run the tests and lints**
+
+Run: `cargo test --workspace && cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings`
+Expected: green; no test changed.
+
+- [ ] **Step 5: Manual check on Linux**
+
+Run `cargo run -p brp` with no arguments: the window opens on the start screen with the short id in the nickname field. Type garbage into the ticket box and click Join room: an "invalid ticket" line appears in red, the form stays. Click Create room: "connecting" shows, then the participant panels appear and the title gains the nickname. Close the window; it exits cleanly with no panic. Run `cargo run -p brp -- create --no-relay`: the room opens without a visible form (the connecting screen may flash). If the display is unavailable, say so in the report and rely on the suite.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/app/src/room_view.rs crates/app/src/window.rs crates/app/src/participant.rs crates/app/src/cli.rs crates/app/src/main.rs crates/app/src/lib.rs
+git commit -m "feat: open the window on a start screen and switch to the room when it opens"
+```
+
+---
+
+### Task 10: GUI subsystem on Windows, console when asked, docs, CI
+
+**Files:**
+- Create: `crates/app/src/console.rs`
+- Modify: `crates/app/src/main.rs`
+- Modify: `crates/app/src/lib.rs`
+- Modify: `crates/app/Cargo.toml`
+- Modify: `Cargo.toml`
+- Modify: `README.md`
+
+**Interfaces:**
+- Produces: `console::attach_parent_console()`, a no-op off Windows.
+
+- [ ] **Step 1: Dependencies**
+
+Root `Cargo.toml`, `[workspace.dependencies]`:
+
+```toml
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+```
+
+`crates/app/Cargo.toml`, after `[dependencies]`:
+
+```toml
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+```
+
+- [ ] **Step 2: The console module and the subsystem**
+
+Create `crates/app/src/console.rs`:
+
+```rust
+//! On Windows the binary is a GUI-subsystem program so a double-click opens no console. Started
+//! from a terminal with arguments, it borrows that terminal's console so `publish`, `--help`, and
+//! errors still print. The shell does not wait for a GUI process, so output may follow the prompt.
+
+/// Attaches to the parent console when there are arguments and a parent console exists. Must run
+/// before anything prints. A no-op on other platforms and for a bare double-click.
+pub fn attach_parent_console() {
+    #[cfg(windows)]
+    {
+        use std::fs::OpenOptions;
+        use std::os::windows::io::IntoRawHandle;
+
+        use windows_sys::Win32::System::Console::{
+            ATTACH_PARENT_PROCESS, AttachConsole, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+            SetStdHandle,
+        };
+
+        if std::env::args_os().len() < 2 {
+            return;
+        }
+        // SAFETY: plain Win32 calls with constant arguments; failure only means there is no parent
+        // console, in which case output has nowhere to go anyway.
+        unsafe {
+            if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+                return;
+            }
+            // A GUI process attached late has no standard handles; open the console's output
+            // device and install it for both streams. The files are leaked on purpose so the
+            // handles stay valid for the life of the process.
+            for slot in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                if let Ok(file) = OpenOptions::new().write(true).open("CONOUT$") {
+                    SetStdHandle(slot, file.into_raw_handle());
+                }
+            }
+        }
+    }
+}
+```
+
+Add `pub mod console;` to `crates/app/src/lib.rs` (after `commands`).
+
+In `crates/app/src/main.rs`, add as the first line of the file, above the module doc comment:
+
+```rust
+#![cfg_attr(windows, windows_subsystem = "windows")]
+```
+
+and make the first statement of `main` a call to `brp_app::console::attach_parent_console();`, before the tracing subscriber is installed and before `Cli::parse()` (which prints help and errors).
+
+- [ ] **Step 3: README**
+
+In `README.md`, replace the "Usage" code block and the two paragraphs after it (up to and including the sentence about `--fps`) with:
+
+````markdown
+Run `brp` with no arguments, or double-click `brp.exe` on Windows, to open the
+start screen: pick a nickname, then Create room, or paste a ticket and Join
+room. The status bar's Copy ticket button gives you the ticket to hand to
+others. From a terminal the same window can be opened directly:
+
+```
+cargo build --release
+
+# Open a new room in the participant window
+./target/release/brp create [--nickname N] [--fps 60] [--no-relay]
+
+# Join a room in the participant window
+./target/release/brp join <ticket> [--nickname N] [--fps 60] [--no-relay]
+
+# Share one live headlessly and print the ticket, creating a room or joining one
+./target/release/brp publish --nickname alice [--ticket <ticket>] [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--no-relay]
+```
+
+On Windows, releases bundle the FFmpeg DLLs, so `brp.exe` runs without a global
+FFmpeg install, and the binary opens no console window. Started from a
+terminal with arguments it prints to that terminal, but the shell does not
+wait for it, so output can appear after the prompt.
+
+In the window, tick a live in the left panel to watch it and pick its preset;
+hover a tile for the preset selector and stats. The bottom panel lists your own
+lives with a frame-rate control, a codec selector, template checkboxes, and a
+bitrate per preset. `--fps` is the capture ceiling for lives shared from the
+window and defaults to 60.
+````
+
+Leave the paragraphs about tickets, members, and `--no-relay` that follow as they are.
+
+- [ ] **Step 4: Lints, commit, push, watch**
+
+Run: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+Expected: green (the console module compiles to an empty function on Linux).
+
+```bash
+git add Cargo.toml Cargo.lock crates/app/Cargo.toml crates/app/src/console.rs crates/app/src/main.rs crates/app/src/lib.rs README.md
+git commit -m "feat: run as a GUI program on Windows and borrow the console when started from one"
+git push
+```
+
+Watch the `ci` workflow run for both jobs (`gh run list --workflow ci --limit 1`, then `gh run watch <id> --exit-status`; the repository also has a CodeQL workflow, pick the `ci` run). Expected: both green and the `brp-windows-x86_64` artifact present. A Windows compile error in `console.rs` is fixed with a `fix:` commit against the windows-sys 0.61 signatures in `~/.cargo/registry/src/*/windows-sys-0.61*/src/Windows/Win32/System/Console/mod.rs`; three attempts maximum.
+
+Deferred, not done in this phase: on a Windows machine, double-click `brp.exe` and confirm no console appears; run `brp.exe --help` from PowerShell and confirm the help prints.

@@ -148,3 +148,21 @@ Verified on 2026-09-05:
 - `ffmpeg-sys-next` 9.0.0 links prebuilt libraries from `FFMPEG_DIR/lib` and reads headers from `FFMPEG_DIR/include` when the `build` feature is off.
 - BtbN FFmpeg-Builds release `autobuild-2026-09-05-13-10`, asset `ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip`: ships MSVC import libraries and DLLs for avcodec 62, avutil 60, swscale 9, swresample 6; its avcodec contains `hevc_nvenc`, `h264_nvenc`, `av1_nvenc`, `hevc_amf`, `h264_amf`, `av1_amf`, `hevc_qsv`, `h264_qsv`, `av1_qsv`, `hevc_mf`, `h264_mf`, `hevc_d3d11va`, `libsvtav1`, and `libdav1d`.
 - The dev machine has the `x86_64-pc-windows-msvc` Rust target installed but no Windows linker, so local verification is limited to `cargo check`.
+
+## 13. Amendment: launch without a terminal
+
+Approved 2026-09-06. Supersedes the section 3 decision that the Windows binary stays a console application, and brings the GUI subsystem forward from phase 5. Where this section is silent, the rest of the document applies.
+
+**Goal.** A Windows participant double-clicks `brp.exe` and never sees a terminal: no console window, no printed ticket, no command-line arguments.
+
+**Start screen.** `brp` with no arguments opens the window on a start screen: a nickname field prefilled with the `--nickname` value or the short peer id, a ticket text box, and two buttons, Create room and Join room. Either button opens the room in the background while the screen shows that it is connecting and disables both buttons. When the room is open, the participant view from slice 2 takes over the same native window and the title gains the nickname. A failure, including a ticket that does not parse, keeps the start screen and shows the reason as text.
+
+**One window, two phases.** winit allows one event loop per process, so the app owns a phase: start, then room. The room-specific state and command handling move out of the window module into a room view the window delegates to. `brp create` and `brp join <ticket>` keep working and skip the form by opening the room as soon as the window exists; a ticket that does not parse on the command line is still reported before any window opens. `brp publish` stays a headless console command and still prints its ticket.
+
+**Ticket.** The window paths no longer print the ticket; it is copied from the status bar as slice 2 designed. Tickets and secret keys still never appear in logs.
+
+**Windows subsystem.** The Windows build declares the GUI subsystem, so a double-click opens no console. When started from a terminal with at least one argument, it attaches to the parent console and points standard output and error at it, so `publish`, `--help`, and errors still print. A shell does not wait for a GUI-subsystem process, so that output can interleave with the prompt; the README says so. Linux is unchanged.
+
+**Testing.** Start-screen state transitions are unit-tested: create marks connecting and yields the create intent; join with a ticket that does not parse yields nothing and shows an error; join with a valid ticket yields the join intent; nothing is accepted while connecting; a failure clears connecting and shows the message. egui drawing is not unit-tested. Manual on Linux: launch with no arguments, create a room, join with garbage and see the error, `brp create` still opens a room directly. On Windows, deferred with the rest of section 10: the double-click launch shows no console, and a terminal launch with arguments still prints.
+
+**Out of scope.** A log file for GUI-only sessions, a relay checkbox, settings persistence, and installers stay in phase 5; the start screen is where they will land.
