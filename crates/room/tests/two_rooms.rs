@@ -1,7 +1,11 @@
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brp_capture::{CaptureBackend, FrameSink, SourceRequest, StartFuture, SyntheticSource};
+use brp_capture::{
+    CaptureBackend, CaptureError, FrameSink, SourceDescriptor, SourceId, SourceListing,
+    SourceRequest, StartFuture, SyntheticSource,
+};
 use brp_net::RelaySetting;
 use brp_proto::SourceKind;
 use brp_room::codecs::fake::FakeCodecs;
@@ -56,7 +60,7 @@ async fn two_rooms_see_each_other_and_the_catalog_propagates() {
     assert!(a.version() > 0);
 
     let live = a
-        .start_live(SourceKind::Monitor, "desk".into())
+        .start_live(SourceKind::Monitor, None, "desk".into())
         .await
         .unwrap();
     wait_until("catalog", Duration::from_secs(5), || {
@@ -105,7 +109,6 @@ use brp_net::{MediaClient, RelaySetting as Relay, bind_endpoint};
 use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID};
 use brp_proto::{Codec, Preset};
 use brp_room::WatchState;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 async fn joined_pair() -> (Room, Room) {
     let a = Room::create(config("alice")).await.unwrap();
@@ -121,7 +124,7 @@ async fn joined_pair() -> (Room, Room) {
 async fn watching_starts_the_encoder_and_unwatching_stops_it_after_the_grace() {
     let (a, b) = joined_pair().await;
     let live = a
-        .start_live(SourceKind::Monitor, "desk".into())
+        .start_live(SourceKind::Monitor, None, "desk".into())
         .await
         .unwrap();
     wait_until("catalog", Duration::from_secs(5), || {
@@ -182,7 +185,7 @@ async fn a_stranger_is_refused_by_the_media_server() {
 async fn stopping_the_live_ends_the_watch_and_leaving_expires_the_member() {
     let (a, b) = joined_pair().await;
     let live = a
-        .start_live(SourceKind::Window, "game".into())
+        .start_live(SourceKind::Window, None, "game".into())
         .await
         .unwrap();
     wait_until("catalog", Duration::from_secs(5), || {
@@ -216,7 +219,7 @@ async fn stopping_the_live_ends_the_watch_and_leaving_expires_the_member() {
 async fn preset_changes_propagate_and_a_removed_preset_falls_back_to_source() {
     let (a, b) = joined_pair().await;
     let live = a
-        .start_live(SourceKind::Monitor, "desk".into())
+        .start_live(SourceKind::Monitor, None, "desk".into())
         .await
         .unwrap();
     let mut presets = a.snapshot().own_lives[0].info.presets.clone();
@@ -294,15 +297,87 @@ async fn the_ninth_live_is_refused_before_capture_opens_a_session() {
     let room = Room::create(cfg).await.unwrap();
 
     for i in 0..MAX_LIVES_PER_PARTICIPANT {
-        room.start_live(SourceKind::Monitor, format!("l{i}"))
+        room.start_live(SourceKind::Monitor, None, format!("l{i}"))
             .await
             .unwrap();
     }
     let refused = room
-        .start_live(SourceKind::Monitor, "one too many".into())
+        .start_live(SourceKind::Monitor, None, "one too many".into())
         .await;
     assert!(matches!(refused, Err(brp_room::RoomError::TooManyLives)));
     assert_eq!(opened.load(Ordering::SeqCst), MAX_LIVES_PER_PARTICIPANT);
 
+    room.leave().await;
+}
+
+/// Records the request it was started with and answers `sources` with one fixed choice, so the
+/// tests can see what the room passes through without a real platform.
+struct RecordingCapture {
+    seen: Arc<Mutex<Option<SourceRequest>>>,
+    inner: SyntheticSource,
+}
+
+impl CaptureBackend for RecordingCapture {
+    fn sources(&self, kind: SourceKind) -> Result<SourceListing, CaptureError> {
+        Ok(SourceListing::Choices(vec![SourceDescriptor {
+            id: SourceId(42),
+            kind,
+            name: "Fake display".into(),
+            width: 64,
+            height: 32,
+        }]))
+    }
+
+    fn start(&self, request: SourceRequest, sink: FrameSink) -> StartFuture<'_> {
+        *self.seen.lock().unwrap() = Some(request);
+        self.inner.start(request, sink)
+    }
+}
+
+fn recording_config(seen: Arc<Mutex<Option<SourceRequest>>>) -> RoomConfig {
+    let mut cfg = config("alice");
+    cfg.capture = Arc::new(RecordingCapture {
+        seen,
+        inner: SyntheticSource {
+            width: 64,
+            height: 32,
+            fps: 30,
+        },
+    });
+    cfg
+}
+
+#[tokio::test]
+async fn start_live_passes_the_source_id_into_the_capture_request() {
+    let seen = Arc::new(Mutex::new(None));
+    let room = Room::create(recording_config(seen.clone())).await.unwrap();
+
+    room.start_live(SourceKind::Window, Some(SourceId(42)), "game".into())
+        .await
+        .unwrap();
+
+    let request = (*seen.lock().unwrap()).expect("capture was started");
+    assert_eq!(request.kind, SourceKind::Window);
+    assert_eq!(request.source, Some(SourceId(42)));
+    assert_eq!(request.target_fps, 30);
+    room.leave().await;
+}
+
+#[tokio::test]
+async fn sources_passes_the_backend_listing_through() {
+    let room = Room::create(recording_config(Arc::default()))
+        .await
+        .unwrap();
+
+    let listing = room.sources(SourceKind::Monitor).unwrap();
+
+    match listing {
+        SourceListing::Choices(choices) => {
+            assert_eq!(choices.len(), 1);
+            assert_eq!(choices[0].id, SourceId(42));
+            assert_eq!(choices[0].kind, SourceKind::Monitor);
+        }
+        SourceListing::PlatformPicker => panic!("the fake lists a choice"),
+    }
     room.leave().await;
 }

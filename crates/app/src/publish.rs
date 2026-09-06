@@ -45,7 +45,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         SourceKind::Monitor => "Monitor 1",
         SourceKind::Window => "Window 1",
     };
-    let live = room.start_live(kind, title.into()).await?;
+    let live = room.start_live(kind, None, title.into()).await?;
     if args.bitrate_kbps.is_some() || args.codec.is_some() {
         let mut presets = room
             .snapshot()

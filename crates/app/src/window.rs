@@ -224,7 +224,7 @@ impl App {
         let proxy = self.proxy.clone();
         self.pending_share = Some(self.runtime.spawn(async move {
             let outcome = room
-                .start_live(kind, title)
+                .start_live(kind, None, title)
                 .await
                 .map(|_live_id| ())
                 .map_err(|error| error.to_string());

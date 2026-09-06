@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brp_capture::{CaptureBackend, SourceRequest};
+use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::FrameNotify;
 use brp_proto::constants::{
@@ -255,7 +255,17 @@ impl Room {
         }
     }
 
-    pub async fn start_live(&self, kind: SourceKind, title: String) -> Result<u32, RoomError> {
+    /// Lists what the platform can share, or says that it picks for itself.
+    pub fn sources(&self, kind: SourceKind) -> Result<SourceListing, RoomError> {
+        Ok(self.capture.sources(kind)?)
+    }
+
+    pub async fn start_live(
+        &self,
+        kind: SourceKind,
+        source: Option<SourceId>,
+        title: String,
+    ) -> Result<u32, RoomError> {
         // Cheap check before capture opens a session (a portal permission dialog for real users),
         // so a session isn't opened only to be rejected once `add_live` re-checks the same cap.
         if self.registry.live_count() >= MAX_LIVES_PER_PARTICIPANT {
@@ -268,7 +278,7 @@ impl Room {
             .start(
                 SourceRequest {
                     kind,
-                    source: None,
+                    source,
                     target_fps: self.target_fps,
                 },
                 Box::new(move |frame| sink.push(frame)),
