@@ -99,13 +99,14 @@ impl MediaClient {
             let (tx, rx) = mpsc::channel(AUDIO_SENDER_BACKLOG_PACKETS);
             (params, tx, rx)
         });
+        let audio_tx = audio.as_ref().map(|(_, tx, _)| tx.clone());
         {
             let mut routes = self
                 .routes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            routes.insert((live_id, preset_id), frame_tx);
-            if let Some((_, tx, _)) = &audio {
+            routes.insert((live_id, preset_id), frame_tx.clone());
+            if let Some(tx) = &audio_tx {
                 routes.insert((live_id, AUDIO_PRESET_ID), tx.clone());
             }
         }
@@ -133,8 +134,21 @@ impl MediaClient {
             let mut routes = routes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            routes.remove(&(live_id, preset_id));
-            routes.remove(&(live_id, AUDIO_PRESET_ID));
+            // A resubscribe on the same live can already own these keys by the time this task's
+            // control stream ends; only evict the routes this subscription itself registered.
+            if routes
+                .get(&(live_id, preset_id))
+                .is_some_and(|tx| tx.same_channel(&frame_tx))
+            {
+                routes.remove(&(live_id, preset_id));
+            }
+            if let Some(audio_tx) = &audio_tx
+                && routes
+                    .get(&(live_id, AUDIO_PRESET_ID))
+                    .is_some_and(|tx| tx.same_channel(audio_tx))
+            {
+                routes.remove(&(live_id, AUDIO_PRESET_ID));
+            }
         });
 
         Ok(ViewerSubscription {

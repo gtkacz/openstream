@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,8 +15,8 @@ use tokio::sync::mpsc;
 
 struct ScriptedSource {
     params: CodecParams,
-    frames: Mutex<Option<mpsc::Receiver<Arc<EncodedFrame>>>>,
-    audio: Mutex<Option<mpsc::Receiver<Arc<EncodedFrame>>>>,
+    frames: Mutex<VecDeque<mpsc::Receiver<Arc<EncodedFrame>>>>,
+    audio: Mutex<VecDeque<mpsc::Receiver<Arc<EncodedFrame>>>>,
     keyframe_requests: AtomicUsize,
 }
 
@@ -27,16 +28,17 @@ impl LiveSource for ScriptedSource {
         if preset_id != 1 {
             return Err(SubscribeRejected::UnknownPreset(preset_id));
         }
-        let frames = self
-            .frames
+        self.frames
             .lock()
             .unwrap()
-            .take()
-            .expect("single subscription");
-        Ok(Subscription {
-            params: self.params.clone(),
-            frames,
-        })
+            .pop_front()
+            .map(|frames| Subscription {
+                params: self.params.clone(),
+                frames,
+            })
+            .ok_or_else(|| {
+                SubscribeRejected::EncoderFailed("scripted source ran out of video grants".into())
+            })
     }
 
     fn request_keyframe(&self, _live_id: u32, _preset_id: u32) {
@@ -50,7 +52,7 @@ impl LiveSource for ScriptedSource {
         self.audio
             .lock()
             .unwrap()
-            .take()
+            .pop_front()
             .map(|packets| AudioSubscription {
                 params: AudioParams::STANDARD,
                 packets,
@@ -74,8 +76,8 @@ async fn frames_travel_from_source_to_viewer_over_loopback() {
     let (tx, rx) = mpsc::channel(8);
     let source = Arc::new(ScriptedSource {
         params: params(),
-        frames: Mutex::new(Some(rx)),
-        audio: Mutex::new(None),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
     });
 
@@ -158,8 +160,8 @@ async fn strangers_are_refused_before_any_subscription() {
     let (_tx, rx) = mpsc::channel(8);
     let source = Arc::new(ScriptedSource {
         params: params(),
-        frames: Mutex::new(Some(rx)),
-        audio: Mutex::new(None),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
     });
     let member_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
@@ -208,8 +210,8 @@ async fn audio_packets_travel_on_their_own_route_when_asked_for() {
     let (audio_tx, audio_rx) = mpsc::channel(8);
     let source = Arc::new(ScriptedSource {
         params: params(),
-        frames: Mutex::new(Some(rx)),
-        audio: Mutex::new(Some(audio_rx)),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::from([audio_rx])),
         keyframe_requests: AtomicUsize::new(0),
     });
 
@@ -264,12 +266,10 @@ async fn audio_packets_travel_on_their_own_route_when_asked_for() {
         .unwrap();
     assert_eq!(video.header.kind, FrameKind::Video);
 
-    // A second subscription without audio gets none even though the source has it.
+    // The server refuses a second subscription cleanly (the scripted source has only one video
+    // channel to give out) and the client sees the rejection rather than a dropped connection.
     let plain = client.subscribe(1, 1, false).await;
-    assert!(
-        plain.is_err(),
-        "the scripted source allows one video subscription"
-    );
+    assert!(matches!(plain, Err(NetError::Rejected(_))), "{plain:?}");
 
     client.close();
     router.shutdown().await.unwrap();
@@ -281,8 +281,8 @@ async fn asking_for_audio_a_source_lacks_yields_video_only() {
     let (tx, rx) = mpsc::channel(8);
     let source = Arc::new(ScriptedSource {
         params: params(),
-        frames: Mutex::new(Some(rx)),
-        audio: Mutex::new(None),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
     });
 
@@ -307,6 +307,94 @@ async fn asking_for_audio_a_source_lacks_yields_video_only() {
     assert!(sub.audio.is_none());
 
     drop(tx);
+    client.close();
+    router.shutdown().await.unwrap();
+    client_ep.close().await;
+}
+
+#[tokio::test]
+async fn a_stale_subscriptions_teardown_does_not_evict_a_newer_one() {
+    let (tx_a, rx_a) = mpsc::channel(8);
+    let (_audio_tx_a, audio_rx_a) = mpsc::channel(8);
+    let (tx_b, rx_b) = mpsc::channel(8);
+    let (audio_tx_b, audio_rx_b) = mpsc::channel(8);
+    let source = Arc::new(ScriptedSource {
+        params: params(),
+        frames: Mutex::new(VecDeque::from([rx_a, rx_b])),
+        audio: Mutex::new(VecDeque::from([audio_rx_a, audio_rx_b])),
+        keyframe_requests: AtomicUsize::new(0),
+    });
+
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let router = Router::builder(server_ep.clone())
+        .accept(
+            MEDIA_ALPN,
+            MediaServer::new(source.clone(), Arc::new(AllowAll)),
+        )
+        .spawn();
+    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+
+    let client = MediaClient::connect(&client_ep, server_ep.addr())
+        .await
+        .unwrap();
+
+    // A subscribes first and is granted the same (live_id, preset_id) and audio-preset route keys
+    // that B will register next.
+    let mut sub_a = client.subscribe(1, 1, true).await.unwrap();
+    assert!(sub_a.audio.is_some());
+
+    // B subscribes to the same live afterwards, overwriting both of A's route table entries.
+    let mut sub_b = client.subscribe(1, 1, true).await.unwrap();
+    let audio_b = sub_b.audio.take().expect("audio granted");
+
+    // Ending A's video feed makes the server write LiveEnded on A's control stream, which drives
+    // A's route-cleanup task to run after B's routes are already installed.
+    drop(tx_a);
+    let ended = tokio::time::timeout(Duration::from_secs(5), sub_a.events.recv())
+        .await
+        .expect("event in time");
+    assert!(matches!(
+        ended,
+        Some(brp_proto::PublisherMessage::LiveEnded)
+    ));
+
+    // Give A's cleanup task a moment to run before checking that B's routes survived it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    audio_tx_b
+        .send(Arc::new(EncodedFrame {
+            seq: 0,
+            capture_ts_us: 5,
+            keyframe: true,
+            data: vec![7, 7, 7],
+        }))
+        .await
+        .unwrap();
+    let mut audio_packets = audio_b.packets;
+    let packet = tokio::time::timeout(Duration::from_secs(5), audio_packets.recv())
+        .await
+        .expect("B's audio still routes after A's stale teardown")
+        .unwrap();
+    assert_eq!(packet.payload, vec![7, 7, 7]);
+
+    tx_b.send(Arc::new(EncodedFrame {
+        seq: 0,
+        capture_ts_us: 5,
+        keyframe: true,
+        data: vec![8],
+    }))
+    .await
+    .unwrap();
+    let video = tokio::time::timeout(Duration::from_secs(5), sub_b.frames.recv())
+        .await
+        .expect("B's video still routes after A's stale teardown")
+        .unwrap();
+    assert_eq!(video.payload, vec![8]);
+
     client.close();
     router.shutdown().await.unwrap();
     client_ep.close().await;
