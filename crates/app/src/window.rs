@@ -73,8 +73,8 @@ pub struct Shutdown {
     pub pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
 }
 
-/// The winit `ApplicationHandler` for the participant windows: owns the phase, the window-local
-/// UI state, the shared GPU state, the main window, and the pop-outs.
+/// The winit `ApplicationHandler` for the participant windows: owns the phase, the UI state
+/// shared by every window, the shared GPU state, the main window, and the pop-outs.
 pub struct App {
     runtime: Handle,
     proxy: EventLoopProxy<AppEvent>,
@@ -235,10 +235,12 @@ impl App {
                 }
             });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
-        present(gpu, tiles, main, &mut ui_frame, &placements);
+        let presented = present(gpu, tiles, main, &mut ui_frame, &placements);
         let repaint_delay = ui_frame.repaint_delay;
         if repaint_delay.is_zero() {
-            main.window.request_redraw();
+            if presented {
+                main.window.request_redraw();
+            }
         } else {
             self.note_repaint(repaint_delay);
         }
@@ -286,10 +288,12 @@ impl App {
             output = popout::draw(root, &view.snapshot, &mut self.state, key, fullscreen);
         });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
-        present(gpu, tiles, surface, &mut ui_frame, &placements);
+        let presented = present(gpu, tiles, surface, &mut ui_frame, &placements);
         let repaint_delay = ui_frame.repaint_delay;
         if repaint_delay.is_zero() {
-            surface.window.request_redraw();
+            if presented {
+                surface.window.request_redraw();
+            }
         } else {
             self.note_repaint(repaint_delay);
         }
@@ -353,7 +357,8 @@ impl App {
         .unwrap_or_else(|| "live".to_string());
         let attributes = Window::default_attributes()
             .with_title(format!("brp: {title}"))
-            .with_inner_size(DEFAULT_WINDOW_SIZE);
+            .with_inner_size(DEFAULT_WINDOW_SIZE)
+            .with_visible(false);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -373,6 +378,8 @@ impl App {
                 .window
                 .set_fullscreen(Some(Fullscreen::Borderless(None)));
         }
+        // An unsupported format must not flash an empty window, so stay hidden until configured.
+        surface.window.set_visible(true);
         let id = surface.window.id();
         self.popouts.insert(id, key);
         surface.window.request_redraw();
@@ -530,14 +537,16 @@ fn pixel_placements(
 }
 
 /// Records and submits one window's frame: the placed tiles, then egui on top. A lost surface
-/// skips the frame; the next `Resized` reconfigures it.
+/// skips the frame; the next `Resized` reconfigures it. Returns whether the frame was presented,
+/// so a caller does not re-request its own redraw for a surface that has nothing to reconfigure
+/// it: that would spin until `Resized` arrives.
 fn present(
     gpu: &GpuContext,
     tiles: &TileRenderer,
     surface: &mut WindowSurface,
     ui_frame: &mut UiFrame,
     placements: &[(TileKey, PixelRect)],
-) {
+) -> bool {
     let Some(texture) = surface.acquire() else {
         // The frame's texture deltas must still be applied and freed or they assert on drop.
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
@@ -547,7 +556,7 @@ fn present(
         gpu.queue
             .submit(buffers.into_iter().chain(std::iter::once(encoder.finish())));
         surface.ui.cleanup(ui_frame);
-        return;
+        return false;
     };
     let target = texture.texture.create_view(&Default::default());
     tiles.update_fits(&gpu.queue, placements);
@@ -582,6 +591,7 @@ fn present(
     surface.ui.cleanup(ui_frame);
     surface.window.pre_present_notify();
     gpu.queue.present(texture);
+    true
 }
 
 /// The instant egui wants the next frame, or `None` when it asked for nothing: egui reports
