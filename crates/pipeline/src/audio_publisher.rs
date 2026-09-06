@@ -60,6 +60,10 @@ pub struct AudioPublisherStats {
 #[derive(Clone)]
 pub struct AudioPublisher {
     inner: Arc<Inner>,
+    // Held outside `Inner` so the worker thread's `Arc<Inner>` never keeps the sender alive:
+    // once every publisher clone and sink closure is gone, the receiver disconnects and the
+    // encode loop exits on its own.
+    chunks: SyncSender<AudioChunk>,
 }
 
 struct Inner {
@@ -68,7 +72,6 @@ struct Inner {
     fanout: Mutex<FanOut>,
     stop: AtomicBool,
     stats: AudioPublisherStats,
-    chunks: SyncSender<AudioChunk>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -81,7 +84,6 @@ impl AudioPublisher {
             fanout: Mutex::new(FanOut::new_audio()),
             stop: AtomicBool::new(false),
             stats: AudioPublisherStats::default(),
-            chunks: tx,
             thread: Mutex::new(None),
         });
         let worker = inner.clone();
@@ -90,15 +92,16 @@ impl AudioPublisher {
             .spawn(move || encode_loop(worker, rx, encoder))
             .expect("spawning a thread only fails when the system is out of resources");
         *lock(&inner.thread) = Some(handle);
-        Self { inner }
+        Self { inner, chunks: tx }
     }
 
     /// The closure a capture backend calls. Never blocks the capture thread: a full queue drops
     /// the chunk and counts it.
     pub fn sink(&self) -> AudioSink {
         let inner = self.inner.clone();
+        let chunks = self.chunks.clone();
         Box::new(move |chunk| {
-            if inner.chunks.try_send(chunk).is_err() {
+            if chunks.try_send(chunk).is_err() {
                 inner.stats.chunks_dropped.fetch_add(1, Ordering::Relaxed);
             }
         })
@@ -140,7 +143,8 @@ fn encode_loop(
     mut encoder: Box<dyn AudioEncoder>,
 ) {
     let mut assembler = FrameAssembler::default();
-    // Polling at the packet duration bounds how late a stop is noticed.
+    // Five packet durations (100 ms): long enough not to spin on an idle line, short enough that
+    // an explicit `stop()` is noticed quickly.
     let poll = Duration::from_millis(AUDIO_PACKET_DURATION.as_millis() as u64 * 5);
     while !inner.stop.load(Ordering::Relaxed) {
         let chunk = match chunks.recv_timeout(poll) {
@@ -174,6 +178,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc::error::TryRecvError;
+
     use super::*;
 
     fn chunk(len: usize, ts: u64, value: f32) -> AudioChunk {
@@ -232,5 +238,32 @@ mod tests {
         assert_eq!(publisher.stats().packets_encoded.load(Ordering::Relaxed), 3);
         assert_eq!(publisher.subscriber_count(), 1);
         publisher.stop();
+    }
+
+    #[test]
+    fn dropping_every_handle_disconnects_subscribers_without_an_explicit_stop() {
+        let publisher =
+            AudioPublisher::start(Box::new(brp_codec::fake::FakeAudioEncoder::default()));
+        let mut rx = publisher.subscribe();
+        let sink = publisher.sink();
+        // No `stop()`: the worker thread must end on its own once the last sender (here, this
+        // sink and the publisher's own `chunks` field) is gone.
+        drop(sink);
+        drop(publisher);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match rx.try_recv() {
+                Err(TryRecvError::Disconnected) => break,
+                Ok(_) => panic!("no packets were ever pushed"),
+                Err(TryRecvError::Empty) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "worker thread did not exit within the deadline"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
     }
 }
