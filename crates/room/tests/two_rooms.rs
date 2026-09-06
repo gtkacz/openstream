@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brp_audio::SyntheticTone;
+use brp_audio::{FakeOutput, FakeOutputHandle, SyntheticTone};
 use brp_capture::{
     CaptureBackend, CaptureError, FrameSink, SourceDescriptor, SourceId, SourceListing,
     SourceRequest, StartFuture, SyntheticSource,
@@ -28,6 +28,7 @@ pub fn config(nickname: &str) -> RoomConfig {
             frequency_hz: 440.0,
             amplitude: 0.5,
         }),
+        audio_output: Arc::new(FakeOutput::new().0),
         encoders: Arc::new(FakeCodecs),
         decoders: Arc::new(FakeCodecs),
         on_change: Arc::new(|| {}),
@@ -385,4 +386,155 @@ async fn sources_passes_the_backend_listing_through() {
         SourceListing::PlatformPicker => panic!("the fake lists a choice"),
     }
     room.leave().await;
+}
+
+fn config_with_output(nickname: &str) -> (RoomConfig, FakeOutputHandle) {
+    let (output, handle) = FakeOutput::new();
+    let mut cfg = config(nickname);
+    cfg.audio_output = Arc::new(output);
+    (cfg, handle)
+}
+
+fn is_audible(samples: &[f32]) -> bool {
+    samples.iter().any(|s| s.abs() > 0.05)
+}
+
+#[tokio::test]
+async fn a_watch_carries_audio_to_the_output_and_a_second_watch_of_the_same_publisher_does_not() {
+    let a = Room::create(config("alice")).await.unwrap();
+    let (bob_cfg, output) = config_with_output("bob");
+    let b = Room::join(bob_cfg, a.ticket()).await.unwrap();
+    wait_until("mutual presence", Duration::from_secs(5), || {
+        a.snapshot().members.len() == 1 && b.snapshot().members.len() == 1
+    })
+    .await;
+    let desk = a
+        .start_live(SourceKind::Monitor, None, "desk".into())
+        .await
+        .unwrap();
+    let game = a
+        .start_live(SourceKind::Window, None, "game".into())
+        .await
+        .unwrap();
+    wait_until("catalog with audio", Duration::from_secs(5), || {
+        let members = b.snapshot().members;
+        members[0].lives.len() == 2 && members[0].has_audio
+    })
+    .await;
+
+    b.watch(a.id(), desk, SOURCE_PRESET_ID).unwrap();
+    b.watch(a.id(), game, SOURCE_PRESET_ID).unwrap();
+    wait_until("both live", Duration::from_secs(5), || {
+        b.snapshot()
+            .watches
+            .iter()
+            .filter(|w| w.state == WatchState::Live)
+            .count()
+            == 2
+    })
+    .await;
+    let carriers: Vec<u32> = b
+        .snapshot()
+        .watches
+        .iter()
+        .filter(|w| w.audio)
+        .map(|w| w.live_id)
+        .collect();
+    assert_eq!(carriers, vec![desk], "only the first watch carries audio");
+    assert_eq!(a.snapshot().own_audio.subscribers, 1);
+    wait_until("audible output", Duration::from_secs(5), || {
+        is_audible(&output.render(960))
+    })
+    .await;
+
+    b.unwatch(a.id(), desk).unwrap();
+    wait_until(
+        "audio moved to the game tile",
+        Duration::from_secs(10),
+        || {
+            b.snapshot()
+                .watches
+                .iter()
+                .any(|w| w.live_id == game && w.audio && w.state == WatchState::Live)
+        },
+    )
+    .await;
+    wait_until("still audible", Duration::from_secs(5), || {
+        is_audible(&output.render(960))
+    })
+    .await;
+
+    b.set_volume(a.id(), 0.0);
+    assert_eq!(b.snapshot().members[0].gain, 0.0);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !is_audible(&output.render(960)),
+        "gain zero silences the publisher"
+    );
+
+    b.leave().await;
+    a.leave().await;
+}
+
+#[tokio::test]
+async fn turning_share_audio_off_ends_the_packets_and_the_flag_in_presence() {
+    let a = Room::create(config("alice")).await.unwrap();
+    let (bob_cfg, output) = config_with_output("bob");
+    let b = Room::join(bob_cfg, a.ticket()).await.unwrap();
+    wait_until("mutual presence", Duration::from_secs(5), || {
+        a.snapshot().members.len() == 1 && b.snapshot().members.len() == 1
+    })
+    .await;
+    let live = a
+        .start_live(SourceKind::Monitor, None, "desk".into())
+        .await
+        .unwrap();
+    wait_until("catalog", Duration::from_secs(5), || {
+        b.snapshot().members[0].lives.len() == 1
+    })
+    .await;
+    b.watch(a.id(), live, SOURCE_PRESET_ID).unwrap();
+    wait_until("audible", Duration::from_secs(5), || {
+        is_audible(&output.render(960))
+    })
+    .await;
+
+    a.set_audio(false);
+    wait_until("flag cleared", Duration::from_secs(5), || {
+        !b.snapshot().members[0].has_audio && a.snapshot().own_audio.subscribers == 0
+    })
+    .await;
+    // Drain what the jitter buffer and track still hold, then expect silence to stay.
+    for _ in 0..50 {
+        output.render(960);
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!is_audible(&output.render(960)));
+
+    b.leave().await;
+    a.leave().await;
+}
+
+#[tokio::test]
+async fn master_mute_and_a_broken_output_are_reported_in_the_snapshot() {
+    struct BrokenOutput;
+    impl brp_audio::AudioOutput for BrokenOutput {
+        fn start(
+            &self,
+            _render: brp_audio::RenderFn,
+        ) -> Result<Box<dyn brp_audio::AudioOutputSession>, brp_audio::AudioError> {
+            Err(brp_audio::AudioError::Device("no sound card".into()))
+        }
+    }
+    let mut cfg = config("alice");
+    cfg.audio_output = Arc::new(BrokenOutput);
+    let a = Room::create(cfg).await.unwrap();
+    assert_eq!(
+        a.snapshot().audio_output_error.as_deref(),
+        Some("audio device: no sound card")
+    );
+    assert!(!a.snapshot().master_mute);
+    a.set_master_mute(true);
+    assert!(a.snapshot().master_mute);
+    a.leave().await;
 }

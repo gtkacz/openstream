@@ -43,13 +43,15 @@ pub struct OwnAudioView {
     pub packets_encoded: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemberView {
     pub id: PublicKey,
     pub nickname: String,
     pub lives: Vec<LiveInfo>,
     pub seen_ago_ms: u64,
     pub path: PathKind,
+    pub has_audio: bool,
+    pub gain: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,9 +70,10 @@ pub struct WatchView {
     pub state: WatchState,
     pub frames_decoded: u64,
     pub keyframe_requests: u64,
+    pub audio: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RoomSnapshot {
     pub me: PublicKey,
     pub nickname: String,
@@ -78,4 +81,7 @@ pub struct RoomSnapshot {
     pub members: Vec<MemberView>,
     pub own_lives: Vec<OwnLiveView>,
     pub watches: Vec<WatchView>,
+    pub own_audio: OwnAudioView,
+    pub audio_output_error: Option<String>,
+    pub master_mute: bool,
 }

@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use brp_codec::RawFrame;
 use brp_net::{MediaClient, NetError, PathKind};
-use brp_pipeline::{FrameNotify, LatestSlot, Viewer, ViewerSink, ViewerStats};
+use brp_pipeline::{
+    AudioViewer, AudioViewerStats, FrameNotify, LatestSlot, Mixer, Viewer, ViewerSink, ViewerStats,
+};
 use brp_proto::constants::{
     RESUBSCRIBE_BACKOFF_INITIAL, RESUBSCRIBE_BACKOFF_MAX, SOURCE_PRESET_ID,
 };
@@ -44,6 +46,8 @@ struct WatchEntry {
     generation: u64,
     preset_id: u32,
     state: WatchState,
+    /// This watch asked for (and, once live, carries) the publisher's audio.
+    audio: bool,
     handle: WatchHandle,
     /// Dropping this ends the watch task. Replacing a watch drops the old one, which is how a
     /// preset switch is an unsubscribe followed by a subscribe.
@@ -62,6 +66,9 @@ pub struct Watcher {
     runtime: Handle,
     decoders: Arc<dyn DecoderFactory>,
     membership: Arc<Mutex<Membership>>,
+    mixer: Mixer,
+    /// False when the output device failed at room start: no watch asks for audio.
+    output_ok: bool,
     on_change: ChangeNotify,
     on_frame: FrameNotify,
     inner: Mutex<Inner>,
@@ -74,11 +81,14 @@ enum Outcome {
 }
 
 impl Watcher {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         endpoint: Endpoint,
         runtime: Handle,
         decoders: Arc<dyn DecoderFactory>,
         membership: Arc<Mutex<Membership>>,
+        mixer: Mixer,
+        output_ok: bool,
         on_change: ChangeNotify,
         on_frame: FrameNotify,
     ) -> Arc<Self> {
@@ -87,6 +97,8 @@ impl Watcher {
             runtime,
             decoders,
             membership,
+            mixer,
+            output_ok,
             on_change,
             on_frame,
             inner: Mutex::default(),
@@ -107,8 +119,25 @@ impl Watcher {
             stats: Arc::new(ViewerStats::default()),
         };
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        let task = {
+        let advertised = lock(&self.membership).get(&publisher).is_some_and(|m| {
+            m.presence
+                .lives
+                .iter()
+                .any(|l| l.id == live_id && l.has_audio)
+        });
+        let (task, audio) = {
             let mut inner = lock(&self.inner);
+            // Excludes the entry being replaced, so a preset switch on the carrier keeps its audio.
+            let audio = wants_audio(
+                inner
+                    .watches
+                    .iter()
+                    .filter(|(k, _)| k.1 != live_id || k.0 != publisher)
+                    .map(|((p, _), e)| (*p, e.audio)),
+                publisher,
+                advertised,
+                self.output_ok,
+            );
             let generation = inner.next_generation;
             inner.next_generation += 1;
             inner.watches.insert(
@@ -117,28 +146,44 @@ impl Watcher {
                     generation,
                     preset_id,
                     state: WatchState::Connecting,
+                    audio,
                     handle: handle.clone(),
                     _cancel: cancel_tx,
                 },
             );
-            WatchTask {
-                key: (publisher, live_id),
-                generation,
-            }
+            (
+                WatchTask {
+                    key: (publisher, live_id),
+                    generation,
+                },
+                audio,
+            )
         };
         tokio::spawn(
             self.clone()
-                .run_watch(task, preset_id, handle.clone(), cancel_rx),
+                .run_watch(task, preset_id, audio, handle.clone(), cancel_rx),
         );
         (self.on_change)();
         Ok(handle)
     }
 
-    pub fn unwatch(&self, publisher: PublicKey, live_id: u32) -> Result<(), RoomError> {
-        lock(&self.inner)
-            .watches
-            .remove(&(publisher, live_id))
-            .ok_or(RoomError::NotWatching)?;
+    pub fn unwatch(self: &Arc<Self>, publisher: PublicKey, live_id: u32) -> Result<(), RoomError> {
+        let successor = {
+            let mut inner = lock(&self.inner);
+            let removed = inner
+                .watches
+                .remove(&(publisher, live_id))
+                .ok_or(RoomError::NotWatching)?;
+            let successor = carrier_successor(&inner, publisher, &removed);
+            if !inner.watches.keys().any(|(p, _)| *p == publisher) {
+                self.mixer.remove_track(&track_key(&publisher));
+            }
+            successor
+        };
+        if let Some((live_id, preset_id)) = successor {
+            // Replacing the survivor resubscribes it with audio: the preset-switch path.
+            self.watch(publisher, live_id, preset_id)?;
+        }
         (self.on_change)();
         Ok(())
     }
@@ -151,6 +196,7 @@ impl Watcher {
             client.close();
         }
         drop(inner);
+        self.mixer.remove_track(&track_key(&id));
         (self.on_change)();
     }
 
@@ -173,15 +219,21 @@ impl Watcher {
                 state: entry.state,
                 frames_decoded: entry.handle.stats.frames_decoded.load(Ordering::Relaxed),
                 keyframe_requests: entry.handle.stats.keyframe_requests.load(Ordering::Relaxed),
+                audio: entry.audio,
             })
             .collect()
     }
 
     pub fn stop_all(&self) {
         let mut inner = lock(&self.inner);
+        let publishers: Vec<PublicKey> = inner.watches.keys().map(|(p, _)| *p).collect();
         inner.watches.clear();
         for client in inner.clients.drain().map(|(_, client)| client) {
             client.close();
+        }
+        drop(inner);
+        for publisher in publishers {
+            self.mixer.remove_track(&track_key(&publisher));
         }
     }
 
@@ -192,6 +244,17 @@ impl Watcher {
             (self.on_change)();
         }
         applied
+    }
+
+    /// Records whether the request actually got audio, under the same generation check as
+    /// `apply_state`: a denied request must not keep blocking the publisher's other watches.
+    fn set_audio_granted(&self, task: WatchTask, granted: bool) {
+        let mut inner = lock(&self.inner);
+        if let Some(entry) = inner.watches.get_mut(&task.key)
+            && entry.generation == task.generation
+        {
+            entry.audio = granted;
+        }
     }
 
     async fn client_for(&self, publisher: PublicKey) -> Result<Arc<MediaClient>, RoomError> {
@@ -239,6 +302,7 @@ impl Watcher {
         self: Arc<Self>,
         task: WatchTask,
         mut preset_id: u32,
+        want_audio: bool,
         handle: WatchHandle,
         mut cancel: oneshot::Receiver<()>,
     ) {
@@ -247,12 +311,13 @@ impl Watcher {
         loop {
             if !lock(&self.membership).is_member(&publisher) {
                 self.set_state(task, preset_id, WatchState::Ended);
+                self.set_audio_granted(task, false);
                 return;
             }
             let attempt = async {
                 let client = self.client_for(publisher).await?;
                 client
-                    .subscribe(live_id, preset_id, false)
+                    .subscribe(live_id, preset_id, want_audio)
                     .await
                     .map_err(RoomError::from)
             };
@@ -260,7 +325,7 @@ impl Watcher {
                 _ = &mut cancel => return,
                 result = attempt => result,
             };
-            let subscription = match subscription {
+            let mut subscription = match subscription {
                 Ok(subscription) => subscription,
                 Err(RoomError::Net(NetError::Rejected(reason))) => {
                     tracing::info!(%reason, live_id, preset_id, "subscription rejected");
@@ -268,6 +333,7 @@ impl Watcher {
                         preset_id = fallback;
                     } else if !self.live_exists(publisher, live_id) {
                         self.set_state(task, preset_id, WatchState::Ended);
+                        self.set_audio_granted(task, false);
                         return;
                     }
                     if !self
@@ -298,6 +364,7 @@ impl Watcher {
                     tracing::error!(%error, "no decoder for this live");
                     let _ = subscription.control.send(ViewerMessage::Unsubscribe).await;
                     self.set_state(task, preset_id, WatchState::Ended);
+                    self.set_audio_granted(task, false);
                     return;
                 }
             };
@@ -313,8 +380,25 @@ impl Watcher {
                 decoder,
                 sink,
             );
+            let audio_viewer = subscription.audio.take().and_then(|audio| {
+                match self.decoders.open_audio(&audio.params) {
+                    Ok(decoder) => Some(AudioViewer::start(
+                        self.runtime.clone(),
+                        audio.packets,
+                        decoder,
+                        self.mixer.add_track(track_key(&publisher)),
+                        Arc::new(AudioViewerStats::default()),
+                    )),
+                    Err(error) => {
+                        tracing::warn!(%error, "no audio decoder; continuing with video only");
+                        None
+                    }
+                }
+            });
+            self.set_audio_granted(task, audio_viewer.is_some());
             if !self.set_state(task, preset_id, WatchState::Live) {
                 stop_viewer(viewer).await;
+                stop_audio_viewer(audio_viewer).await;
                 let _ = subscription.control.send(ViewerMessage::Unsubscribe).await;
                 return;
             }
@@ -331,6 +415,7 @@ impl Watcher {
                 }
             };
             stop_viewer(viewer).await;
+            stop_audio_viewer(audio_viewer).await;
             match outcome {
                 Outcome::Cancelled => {
                     let _ = subscription.control.send(ViewerMessage::Unsubscribe).await;
@@ -343,6 +428,7 @@ impl Watcher {
                         preset_id = fallback;
                     } else if !self.live_exists(publisher, live_id) {
                         self.set_state(task, preset_id, WatchState::Ended);
+                        self.set_audio_granted(task, false);
                         return;
                     }
                 }
@@ -396,6 +482,44 @@ async fn stop_viewer(viewer: Viewer) {
     let _ = tokio::task::spawn_blocking(move || viewer.stop()).await;
 }
 
+/// `AudioViewer::stop` joins its decode thread, so it runs off the async executor too.
+async fn stop_audio_viewer(viewer: Option<AudioViewer>) {
+    if let Some(viewer) = viewer {
+        let _ = tokio::task::spawn_blocking(move || viewer.stop()).await;
+    }
+}
+
+/// One stream per publisher: a watch asks for audio only when nothing else of that publisher does.
+pub(crate) fn wants_audio(
+    mut entries: impl Iterator<Item = (PublicKey, bool)>,
+    publisher: PublicKey,
+    advertised: bool,
+    output_ok: bool,
+) -> bool {
+    advertised && output_ok && !entries.any(|(p, audio)| p == publisher && audio)
+}
+
+/// When a carrier is removed, the publisher's lowest remaining live id inherits the audio.
+fn carrier_successor(
+    inner: &Inner,
+    publisher: PublicKey,
+    removed: &WatchEntry,
+) -> Option<(u32, u32)> {
+    if !removed.audio {
+        return None;
+    }
+    inner
+        .watches
+        .iter()
+        .filter(|((p, _), _)| *p == publisher)
+        .map(|((_, live_id), entry)| (*live_id, entry.preset_id))
+        .min()
+}
+
+fn track_key(publisher: &PublicKey) -> brp_pipeline::TrackKey {
+    *publisher.as_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
@@ -407,12 +531,58 @@ mod tests {
             generation,
             preset_id,
             state: WatchState::Connecting,
+            audio: false,
             handle: WatchHandle {
                 slot: LatestSlot::new(),
                 stats: Arc::new(ViewerStats::default()),
             },
             _cancel: oneshot::channel().0,
         }
+    }
+
+    fn key(seed: u8) -> PublicKey {
+        SecretKey::from_bytes(&[seed; 32]).public()
+    }
+
+    #[test]
+    fn the_first_watch_of_a_publisher_carries_audio_and_the_second_does_not() {
+        let a = key(1);
+        assert!(wants_audio([].into_iter(), a, true, true));
+        assert!(!wants_audio([(a, true)].into_iter(), a, true, true));
+        assert!(
+            wants_audio([(a, false)].into_iter(), a, true, true),
+            "an existing silent watch does not block"
+        );
+        assert!(
+            wants_audio([(key(2), true)].into_iter(), a, true, true),
+            "other publishers do not count"
+        );
+    }
+
+    #[test]
+    fn no_audio_is_asked_for_when_unadvertised_or_the_output_is_broken() {
+        let a = key(1);
+        assert!(!wants_audio([].into_iter(), a, false, true));
+        assert!(!wants_audio([].into_iter(), a, true, false));
+    }
+
+    #[test]
+    fn closing_the_carrier_moves_audio_to_the_publishers_surviving_watch() {
+        let a = key(1);
+        let mut inner = Inner::default();
+        let mut carrier = entry(1, 1);
+        carrier.audio = true;
+        inner.watches.insert((a, 1), carrier);
+        inner.watches.insert((a, 2), entry(2, 3));
+        inner.watches.insert((key(2), 5), entry(3, 1));
+        let removed = inner.watches.remove(&(a, 1)).unwrap();
+        assert_eq!(carrier_successor(&inner, a, &removed), Some((2, 3)));
+        let quiet = inner.watches.remove(&(a, 2)).unwrap();
+        assert_eq!(
+            carrier_successor(&inner, a, &quiet),
+            None,
+            "a non-carrier moves nothing"
+        );
     }
 
     #[test]

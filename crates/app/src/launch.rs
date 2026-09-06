@@ -78,6 +78,7 @@ pub async fn open_room(
             frequency_hz: 440.0,
             amplitude: 0.0,
         }),
+        audio_output: Arc::new(brp_audio::FakeOutput::new().0),
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(move || {

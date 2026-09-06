@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brp_audio::AudioCapture;
+use brp_audio::{AudioCapture, AudioOutput, AudioOutputSession};
 use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
-use brp_pipeline::FrameNotify;
+use brp_pipeline::{FrameNotify, Mixer};
 use brp_proto::constants::{
     ENCODER_IDLE_STOP_GRACE, JOIN_TIMEOUT, MAX_LIVES_PER_PARTICIPANT, MEDIA_ALPN, MEMBER_EXPIRY,
     NICKNAME_MAX_LEN, PRESENCE_HEARTBEAT, REGISTRY_HOUSEKEEPING,
@@ -56,6 +56,7 @@ pub struct RoomConfig {
     pub target_fps: u32,
     pub capture: Arc<dyn CaptureBackend>,
     pub audio_capture: Arc<dyn AudioCapture>,
+    pub audio_output: Arc<dyn AudioOutput>,
     pub encoders: Arc<dyn EncoderFactory>,
     pub decoders: Arc<dyn DecoderFactory>,
     pub on_change: ChangeNotify,
@@ -76,6 +77,12 @@ pub struct Room {
     encoders: Arc<dyn EncoderFactory>,
     target_fps: u32,
     version: Arc<AtomicU64>,
+    notify: ChangeNotify,
+    mixer: Mixer,
+    /// Kept alive for the room's lifetime; dropping it stops playback. Mutex only so `Room` stays
+    /// `Sync` across `.await` points elsewhere: the session type itself promises only `Send`.
+    _audio_output: Mutex<Option<Box<dyn AudioOutputSession>>>,
+    audio_output_error: Option<String>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -168,11 +175,22 @@ impl Room {
                 }
             }
         };
+        let mixer = Mixer::new();
+        let (audio_output, audio_output_error) = match config.audio_output.start(mixer.render_fn())
+        {
+            Ok(session) => (Some(session), None),
+            Err(error) => {
+                tracing::warn!(%error, "audio output unavailable; watches will not ask for audio");
+                (None, Some(error.to_string()))
+            }
+        };
         let watcher = Watcher::new(
             endpoint.clone(),
             tokio::runtime::Handle::current(),
             config.decoders.clone(),
             membership.clone(),
+            mixer.clone(),
+            audio_output_error.is_none(),
             notify.clone(),
             config.on_frame.clone(),
         );
@@ -203,6 +221,10 @@ impl Room {
             encoders: config.encoders,
             target_fps: config.target_fps,
             version,
+            notify,
+            mixer,
+            _audio_output: Mutex::new(audio_output),
+            audio_output_error,
             tasks,
         })
     }
@@ -243,9 +265,11 @@ impl Room {
             .map(|m| MemberView {
                 id: m.id,
                 nickname: m.presence.nickname.clone(),
+                has_audio: m.presence.lives.iter().any(|l| l.has_audio),
                 lives: m.presence.lives.clone(),
                 seen_ago_ms: now.duration_since(m.last_seen).as_millis() as u64,
                 path: self.watcher.path_kind(&m.id),
+                gain: self.mixer.gain(m.id.as_bytes()),
             })
             .collect();
         RoomSnapshot {
@@ -255,6 +279,9 @@ impl Room {
             members,
             own_lives: self.registry.views(),
             watches: self.watcher.views(),
+            own_audio: self.registry.audio_view(),
+            audio_output_error: self.audio_output_error.clone(),
+            master_mute: self.mixer.muted(),
         }
     }
 
@@ -317,6 +344,20 @@ impl Room {
 
     pub fn unwatch(&self, publisher: PublicKey, live_id: u32) -> Result<(), RoomError> {
         self.watcher.unwatch(publisher, live_id)
+    }
+
+    pub fn set_audio(&self, enabled: bool) {
+        self.registry.set_audio(enabled);
+    }
+
+    pub fn set_volume(&self, publisher: PublicKey, gain: f32) {
+        self.mixer.set_gain(*publisher.as_bytes(), gain);
+        (self.notify)();
+    }
+
+    pub fn set_master_mute(&self, muted: bool) {
+        self.mixer.set_muted(muted);
+        (self.notify)();
     }
 
     pub async fn leave(mut self) {

@@ -203,7 +203,7 @@ mod tests {
     use brp_capture::{SourceDescriptor, SourceId};
     use brp_net::PathKind;
     use brp_proto::{Codec, LiveInfo, Preset};
-    use brp_room::{EncoderView, OwnLiveView, PresetView};
+    use brp_room::{AudioCaptureState, EncoderView, OwnAudioView, OwnLiveView, PresetView};
     use iroh::SecretKey;
     use std::time::Duration;
 
@@ -274,6 +274,14 @@ mod tests {
             members: Vec::new(),
             own_lives,
             watches: Vec::new(),
+            own_audio: OwnAudioView {
+                enabled: true,
+                state: AudioCaptureState::Idle,
+                subscribers: 0,
+                packets_encoded: 0,
+            },
+            audio_output_error: None,
+            master_mute: false,
         }
     }
 
@@ -304,6 +312,8 @@ mod tests {
             lives: Vec::new(),
             seen_ago_ms: 0,
             path: PathKind::Unknown,
+            has_audio: false,
+            gain: 1.0,
         }
     }
 
@@ -317,6 +327,14 @@ mod tests {
             members: vec![member("zed"), member("amy"), member("kim")],
             own_lives: Vec::new(),
             watches: Vec::new(),
+            own_audio: OwnAudioView {
+                enabled: true,
+                state: AudioCaptureState::Idle,
+                subscribers: 0,
+                packets_encoded: 0,
+            },
+            audio_output_error: None,
+            master_mute: false,
         };
         let names: Vec<&str> = ordered_members(&snapshot)
             .iter()
