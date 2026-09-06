@@ -1,13 +1,10 @@
-//! The participant window: a winit loop that draws the tile grid under the egui panels and turns
-//! panel commands into room calls.
+//! The participant window: a winit loop that shows the start screen until a room is open, then
+//! draws the tile grid under the egui panels and hands panel commands to the room view.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use brp_capture::SourceListing;
-use brp_proto::SourceKind;
-use brp_room::{Room, RoomSnapshot, WatchHandle};
+use brp_room::Room;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use winit::{
@@ -18,16 +15,18 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::commands::RoomCommand;
 use crate::error::AppError;
+use crate::launch::{self, Intent, Launch};
 use crate::render::grid::{self, PixelRect};
 use crate::render::tiles::{TileKey, TileRenderer};
 use crate::render::{GpuContext, ui::EguiLayer};
+use crate::room_view::RoomView;
+use crate::ui::start::{self, StartState};
 use crate::ui::state::UiState;
 use crate::ui::{self, UiOutput};
 
 /// Wakes the winit event loop for a reason that does not arrive as a `WindowEvent`. Sent through
-/// the `EventLoopProxy` from other threads (the room's background tasks, the share task).
+/// the `EventLoopProxy` from other threads (the room's background tasks, the open and share tasks).
 pub enum AppEvent {
     /// The room's version counter moved; re-snapshot on the next redraw.
     RoomChanged,
@@ -37,19 +36,34 @@ pub enum AppEvent {
     Tick,
     /// The share task finished: the live started, or the error to show.
     ShareFinished(Result<(), String>),
+    /// The open task finished: the room to show, or the error for the start screen.
+    RoomOpened(Result<Arc<Room>, String>),
 }
 
-/// The winit `ApplicationHandler` for the participant window: owns the room handle, the last
-/// snapshot, and the GPU and egui state, and turns panel commands into room calls each redraw.
+/// What the window shows: the start screen, or a room.
+enum Phase {
+    Start,
+    // Boxed: `RoomView` is much larger than `Start`, and clippy's large_enum_variant lint
+    // treats the size gap as a wasted-space signal for every `Phase` on the stack.
+    Room(Box<RoomView>),
+}
+
+/// What must be torn down after the loop ends: tasks still holding room handles, then the room.
+pub struct Shutdown {
+    pub room: Option<Arc<Room>>,
+    pub tasks: Vec<JoinHandle<()>>,
+}
+
+/// The winit `ApplicationHandler` for the participant window: owns the phase, the window-local UI
+/// state, and the GPU and egui state.
 pub struct App {
     runtime: Handle,
-    room: Arc<Room>,
     proxy: EventLoopProxy<AppEvent>,
-    snapshot: RoomSnapshot,
-    ticket: String,
+    launch: Launch,
+    start: StartState,
+    phase: Phase,
     state: UiState,
-    handles: HashMap<TileKey, WatchHandle>,
-    pending_share: Option<JoinHandle<()>>,
+    pending_open: Option<JoinHandle<()>>,
     /// When egui asked for the next frame; `about_to_wait` sleeps until then instead of forever.
     next_repaint: Option<Instant>,
     window: Option<Arc<Window>>,
@@ -59,52 +73,65 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(runtime: Handle, room: Arc<Room>, proxy: EventLoopProxy<AppEvent>) -> Self {
-        let snapshot = room.snapshot();
-        let ticket = room.ticket().to_string();
-        Self {
+    /// An `intent` from the command line opens the room at once behind the connecting start
+    /// screen; `None` waits for the user.
+    pub fn new(
+        runtime: Handle,
+        proxy: EventLoopProxy<AppEvent>,
+        launch: Launch,
+        nickname: String,
+        intent: Option<Intent>,
+    ) -> Self {
+        let mut app = Self {
             runtime,
-            room,
             proxy,
-            snapshot,
-            ticket,
+            launch,
+            start: StartState::new(nickname),
+            phase: Phase::Start,
             state: UiState::new(),
-            handles: HashMap::new(),
-            pending_share: None,
+            pending_open: None,
             next_repaint: None,
             window: None,
             gpu: None,
             tiles: None,
             ui: None,
+        };
+        if let Some(intent) = intent {
+            app.start.connecting = true;
+            app.open(intent);
         }
+        app
     }
 
-    /// A share still waiting on capture holds an `Arc<Room>`; the caller aborts it before leaving.
-    pub fn take_pending_share(&mut self) -> Option<JoinHandle<()>> {
-        self.pending_share.take()
+    pub fn finish(self) -> Shutdown {
+        let mut tasks: Vec<JoinHandle<()>> = self.pending_open.into_iter().collect();
+        let room = match self.phase {
+            Phase::Room(view) => {
+                tasks.extend(view.pending_share);
+                Some(view.room)
+            }
+            Phase::Start => None,
+        };
+        Shutdown { room, tasks }
     }
 
-    fn refresh(&mut self) {
-        if self.room.version() != self.snapshot.version {
-            self.snapshot = self.room.snapshot();
-        }
-        // The relay address can arrive after the first snapshot without bumping the version.
-        self.ticket = self.room.ticket().to_string();
-        let live: HashSet<TileKey> = self
-            .snapshot
-            .watches
-            .iter()
-            .map(|w| (w.publisher, w.live_id))
-            .collect();
-        self.handles.retain(|key, _| live.contains(key));
-        if let Some(tiles) = self.tiles.as_mut() {
-            tiles.retain(|key| live.contains(key));
-        }
-        self.state.refresh_rates(&self.snapshot, Instant::now());
+    fn open(&mut self, intent: Intent) {
+        let launch = self.launch.clone();
+        let nickname = self.start.nickname.clone();
+        let room_events = self.proxy.clone();
+        let done = self.proxy.clone();
+        self.pending_open = Some(self.runtime.spawn(async move {
+            let outcome = launch::open_room(&launch, intent, &nickname, room_events)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = done.send_event(AppEvent::RoomOpened(outcome));
+        }));
     }
 
     fn redraw(&mut self) {
-        self.refresh();
+        if let Phase::Room(view) = &mut self.phase {
+            view.refresh(&mut self.state, self.tiles.as_mut());
+        }
         let (Some(window), Some(gpu), Some(tiles), Some(ui)) = (
             self.window.as_ref(),
             self.gpu.as_mut(),
@@ -113,10 +140,8 @@ impl App {
         ) else {
             return;
         };
-        for (key, handle) in &self.handles {
-            if let Some(frame) = handle.slot.try_take() {
-                tiles.upload(&gpu.device, &gpu.queue, *key, &frame);
-            }
+        if let Phase::Room(view) = &self.phase {
+            view.upload_frames(gpu, tiles);
         }
         let surface = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
@@ -127,8 +152,12 @@ impl App {
         let size = (gpu.config.width, gpu.config.height);
 
         let mut output = UiOutput::default();
-        let mut ui_frame = ui.run(window, [size.0, size.1], |root| {
-            output = ui::draw(root, &self.snapshot, &self.ticket, &mut self.state);
+        let mut start_action = None;
+        let mut ui_frame = ui.run(window, [size.0, size.1], |root| match &self.phase {
+            Phase::Start => start_action = start::draw(root, &mut self.start),
+            Phase::Room(view) => {
+                output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state);
+            }
         });
         let pixels_per_point = ui_frame.screen.pixels_per_point;
         let placements: Vec<(TileKey, PixelRect)> = output
@@ -174,77 +203,21 @@ impl App {
             self.next_repaint = repaint_deadline(Instant::now(), ui_frame.repaint_delay);
         }
 
-        self.apply(output.commands);
-    }
-
-    fn apply(&mut self, commands: Vec<RoomCommand>) {
-        if commands.is_empty() {
-            return;
+        if let Some(action) = start_action
+            && let Some(intent) = self.start.submit(action)
+        {
+            self.open(intent);
         }
-        // `Room::watch` spawns its task with `tokio::spawn`, which needs a runtime on this thread.
-        // The handle is cloned so the guard does not borrow `self` while `share` needs it mutably.
-        let runtime = self.runtime.clone();
-        let _guard = runtime.enter();
-        self.state.status.clear();
-        for command in commands {
-            let result = match command {
-                RoomCommand::Watch { key, preset_id } => {
-                    self.room.watch(key.0, key.1, preset_id).map(|handle| {
-                        self.handles.insert(key, handle);
-                    })
-                }
-                RoomCommand::Unwatch(key) => self.room.unwatch(key.0, key.1).map(|()| {
-                    self.handles.remove(&key);
-                }),
-                RoomCommand::StopLive(live_id) => self.room.stop_live(live_id),
-                RoomCommand::SetPresets { live_id, presets } => {
-                    self.room.set_presets(live_id, presets)
-                }
-                RoomCommand::Share {
-                    kind,
-                    source: Some(source),
-                } => {
-                    self.share(kind, Some(source));
-                    Ok(())
-                }
-                RoomCommand::Share { kind, source: None } => match self.room.sources(kind) {
-                    Ok(SourceListing::PlatformPicker) => {
-                        self.share(kind, None);
-                        Ok(())
-                    }
-                    Ok(SourceListing::Choices(choices)) => {
-                        self.state.open_picker(kind, choices);
-                        Ok(())
-                    }
-                    Err(error) => Err(error),
-                },
-            };
-            if let Err(error) = result {
-                self.state.status = error.to_string();
-            }
+        if let Phase::Room(view) = &mut self.phase
+            && !output.commands.is_empty()
+        {
+            view.apply(output.commands, &self.runtime, &self.proxy, &mut self.state);
         }
-        if let Some(window) = &self.window {
+        if start_action.is_some()
+            && let Some(window) = &self.window
+        {
             window.request_redraw();
         }
-    }
-
-    fn share(&mut self, kind: SourceKind, source: Option<brp_capture::SourceId>) {
-        if self.pending_share.is_some() {
-            return;
-        }
-        let title = self.state.next_title(kind);
-        self.state.share_pending = true;
-        self.state.status.clear();
-        let room = self.room.clone();
-        let proxy = self.proxy.clone();
-        self.pending_share = Some(self.runtime.spawn(async move {
-            let outcome = room
-                .start_live(kind, source, title)
-                .await
-                .map(|_live_id| ())
-                .map_err(|error| error.to_string());
-            let _ = proxy.send_event(AppEvent::ShareFinished(outcome));
-        }));
     }
 }
 
@@ -253,10 +226,9 @@ impl ApplicationHandler<AppEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let title = format!("brp: {}", self.snapshot.nickname);
         let window = match event_loop.create_window(
             Window::default_attributes()
-                .with_title(&title)
+                .with_title("brp")
                 .with_inner_size(PhysicalSize::new(1280, 720)),
         ) {
             Ok(window) => Arc::new(window),
@@ -282,9 +254,23 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, _: &ActiveEventLoop, event: AppEvent) {
         match event {
+            AppEvent::RoomOpened(Ok(room)) => {
+                self.pending_open = None;
+                self.state = UiState::new();
+                if let Some(window) = &self.window {
+                    window.set_title(&format!("brp: {}", room.snapshot().nickname));
+                }
+                self.phase = Phase::Room(Box::new(RoomView::new(room)));
+            }
+            AppEvent::RoomOpened(Err(message)) => {
+                self.pending_open = None;
+                self.start.failed(message);
+            }
             AppEvent::ShareFinished(outcome) => {
+                if let Phase::Room(view) = &mut self.phase {
+                    view.pending_share = None;
+                }
                 self.state.share_pending = false;
-                self.pending_share = None;
                 if let Err(message) = outcome {
                     self.state.status = format!("share failed: {message}");
                 }

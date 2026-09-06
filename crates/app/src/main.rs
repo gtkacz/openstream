@@ -1,6 +1,11 @@
 //! brp: peer-to-peer screen sharing.
-use brp_app::cli::{Cli, Command};
+use std::str::FromStr;
+
+use brp_app::cli::{Cli, Command, WindowArgs};
+use brp_app::error::AppError;
+use brp_app::launch::Intent;
 use brp_app::{participant, publish};
+use brp_proto::RoomTicket;
 use clap::Parser;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
@@ -23,9 +28,15 @@ fn main() -> ExitCode {
         }
     };
     let result = match cli.command {
-        Command::Publish(args) => runtime.block_on(publish::run(args)),
-        Command::Create(args) => participant::run(&runtime, None, args.window),
-        Command::Join(args) => participant::run(&runtime, Some(args.ticket), args.window),
+        None => participant::run(&runtime, None, WindowArgs::default()),
+        Some(Command::Publish(args)) => runtime.block_on(publish::run(args)),
+        Some(Command::Create(args)) => {
+            participant::run(&runtime, Some(Intent::Create), args.window)
+        }
+        Some(Command::Join(args)) => match RoomTicket::from_str(&args.ticket) {
+            Ok(ticket) => participant::run(&runtime, Some(Intent::Join(ticket)), args.window),
+            Err(error) => Err(AppError::Ticket(error)),
+        },
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

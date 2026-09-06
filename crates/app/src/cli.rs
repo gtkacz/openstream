@@ -1,11 +1,15 @@
 use brp_proto::{Codec, SourceKind};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+/// Capture ceiling when no `--fps` is given, and the start screen's default.
+pub const DEFAULT_FPS: u32 = 60;
+
 #[derive(Parser, Debug)]
 #[command(name = "brp", about = "Peer-to-peer screen sharing", version)]
 pub struct Cli {
+    /// Without a subcommand the participant window opens on its start screen.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 #[derive(Subcommand, Debug)]
 pub enum Command {
@@ -18,7 +22,7 @@ pub enum Command {
 }
 #[derive(Args, Debug)]
 pub struct PublishArgs {
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = DEFAULT_FPS)]
     pub fps: u32,
     #[arg(long)]
     pub bitrate_kbps: Option<u32>,
@@ -41,10 +45,19 @@ pub struct WindowArgs {
     #[arg(long)]
     pub nickname: Option<String>,
     /// Capture ceiling for lives shared from the window; each live's presets can go lower.
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = DEFAULT_FPS)]
     pub fps: u32,
     #[arg(long)]
     pub no_relay: bool,
+}
+impl Default for WindowArgs {
+    fn default() -> Self {
+        Self {
+            nickname: None,
+            fps: DEFAULT_FPS,
+            no_relay: false,
+        }
+    }
 }
 #[derive(Args, Debug)]
 pub struct CreateArgs {
