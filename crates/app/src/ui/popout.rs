@@ -26,6 +26,9 @@ pub fn draw(
     else {
         return output;
     };
+    // Sampled before the pass: a popup reacts to Esc synchronously while it is drawn and closes
+    // itself, so reading this after `show` would always see it as already closed.
+    let popup_open = egui::Popup::is_any_open(ui.ctx());
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {
@@ -49,7 +52,6 @@ pub fn draw(
             i.key_pressed(egui::Key::Escape),
         )
     });
-    let popup_open = egui::Popup::is_any_open(ui.ctx());
     if fullscreen_toggle_requested(f11, escape, fullscreen, popup_open) {
         output
             .window_commands
