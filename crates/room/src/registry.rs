@@ -268,10 +268,11 @@ impl LiveRegistry {
         inner.audio.enabled = enabled;
         // A retoggle is the retry path: forget the last failure and start fresh on the next listener.
         inner.audio.last_error = None;
-        if !enabled {
-            stop_audio(&mut inner.audio);
-        }
+        let stopped = (!enabled).then(|| take_audio(&mut inner.audio)).flatten();
         drop(inner);
+        if let Some(running) = stopped {
+            stop_audio(running);
+        }
         (self.on_change)();
     }
 
@@ -305,11 +306,16 @@ impl LiveRegistry {
     }
 
     pub fn views(&self) -> Vec<OwnLiveView> {
-        lock(&self.inner)
+        let inner = lock(&self.inner);
+        let has_audio = inner.audio.advertises();
+        inner
             .lives
             .values()
             .map(|live| OwnLiveView {
-                info: live.info.clone(),
+                info: LiveInfo {
+                    has_audio,
+                    ..live.info.clone()
+                },
                 presets: live
                     .presets
                     .values()
@@ -340,7 +346,8 @@ impl LiveRegistry {
     /// Stops encoders that have had no subscriber for the whole grace period.
     pub fn housekeeping(&self, now: Instant) {
         let mut inner = lock(&self.inner);
-        let audio_changed = housekeep_audio(&mut inner.audio, now, self.grace);
+        let stopped_audio = housekeep_audio(&mut inner.audio, now, self.grace);
+        let audio_changed = stopped_audio.is_some();
         let mut stopped_any = false;
         for live in inner.lives.values_mut() {
             for state in live.presets.values_mut() {
@@ -361,6 +368,9 @@ impl LiveRegistry {
             }
         }
         drop(inner);
+        if let Some(running) = stopped_audio {
+            stop_audio(running);
+        }
         if stopped_any || audio_changed {
             (self.on_change)();
         }
@@ -371,7 +381,10 @@ impl LiveRegistry {
         for id in ids {
             let _ = self.remove_live(id);
         }
-        stop_audio(&mut lock(&self.inner).audio);
+        let stopped = take_audio(&mut lock(&self.inner).audio);
+        if let Some(running) = stopped {
+            stop_audio(running);
+        }
     }
 }
 
@@ -456,10 +469,12 @@ impl LiveSource for LiveRegistry {
         }
         let mut started = false;
         if inner.audio.running.is_none() {
-            let outcome = self
+            // A capture-start failure hands its publisher back so it can be stopped (which joins
+            // its encode thread) after the guard below drops, not while the registry is locked.
+            let outcome: Result<RunningAudio, (String, Option<AudioPublisher>)> = self
                 .encoders
                 .open_audio()
-                .map_err(|e| e.to_string())
+                .map_err(|e| (e.to_string(), None))
                 .and_then(|encoder| {
                     let publisher = AudioPublisher::start(encoder);
                     match self.audio_capture.start(publisher.sink()) {
@@ -468,10 +483,7 @@ impl LiveSource for LiveRegistry {
                             publisher,
                             idle_since: None,
                         }),
-                        Err(error) => {
-                            publisher.stop();
-                            Err(error.to_string())
-                        }
+                        Err(error) => Err((error.to_string(), Some(publisher))),
                     }
                 });
             match outcome {
@@ -479,10 +491,13 @@ impl LiveSource for LiveRegistry {
                     inner.audio.running = Some(running);
                     started = true;
                 }
-                Err(message) => {
-                    tracing::warn!(%message, "audio capture failed to start");
-                    inner.audio.last_error = Some(message);
+                Err((message, publisher)) => {
+                    inner.audio.last_error = Some(message.clone());
                     drop(inner);
+                    if let Some(publisher) = publisher {
+                        publisher.stop();
+                    }
+                    tracing::warn!(%message, "audio capture failed to start");
                     (self.on_change)();
                     return Err(SubscribeRejected::NoAudio);
                 }
@@ -509,33 +524,35 @@ fn stop_encoder(fan: &CaptureFan, state: &mut PresetState) {
     }
 }
 
-/// Stops idle capture after the grace and turns a dead session into a recorded failure.
-fn housekeep_audio(audio: &mut AudioState, now: Instant, grace: Duration) -> bool {
-    let Some(running) = audio.running.as_mut() else {
-        return false;
-    };
+/// Stops idle capture after the grace and turns a dead session into a recorded failure. Returns
+/// the capture that was taken, if any, so the caller can stop it (which joins its threads) after
+/// dropping the registry lock.
+fn housekeep_audio(audio: &mut AudioState, now: Instant, grace: Duration) -> Option<RunningAudio> {
+    let running = audio.running.as_mut()?;
     if let Some(error) = running.session.error() {
-        stop_audio(audio);
         audio.last_error = Some(error);
-        return true;
+        return take_audio(audio);
     }
     if running.publisher.subscriber_count() > 0 {
         running.idle_since = None;
-        return false;
+        return None;
     }
     let idle_for = now.duration_since(*running.idle_since.get_or_insert(now));
     if idle_for >= grace {
-        stop_audio(audio);
-        return true;
+        return take_audio(audio);
     }
-    false
+    None
 }
 
-fn stop_audio(audio: &mut AudioState) {
-    if let Some(running) = audio.running.take() {
-        running.publisher.stop();
-        running.session.stop();
-    }
+/// Removes the running capture from the state under the lock; the caller stops it once unlocked.
+fn take_audio(audio: &mut AudioState) -> Option<RunningAudio> {
+    audio.running.take()
+}
+
+/// Joins the publisher's and the session's threads. Never call this while the registry is locked.
+fn stop_audio(running: RunningAudio) {
+    running.publisher.stop();
+    running.session.stop();
 }
 
 fn validate_presets(

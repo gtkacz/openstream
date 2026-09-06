@@ -333,3 +333,51 @@ async fn a_capture_that_dies_is_treated_as_failed_by_housekeeping() {
     ));
     assert!(!registry.live_infos()[0].has_audio);
 }
+
+#[tokio::test]
+async fn turning_audio_off_while_capturing_stops_it_and_views_agree() {
+    let registry = registry(GRACE);
+    synthetic_live(&registry, "desk").await;
+    let live = synthetic_live(&registry, "game").await;
+    let mut audio = registry.subscribe_audio(live).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Capturing);
+
+    registry.set_audio(false);
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Off);
+    assert!(registry.views().iter().all(|v| !v.info.has_audio));
+    assert!(registry.live_infos().iter().all(|l| !l.has_audio));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
+            .await
+            .unwrap()
+            .is_none(),
+        "packets receiver should end when capture stops"
+    );
+}
+
+#[tokio::test]
+async fn stop_all_stops_running_audio() {
+    let registry = registry(GRACE);
+    let live = synthetic_live(&registry, "desk").await;
+    let mut audio = registry.subscribe_audio(live).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    registry.stop_all();
+    // audio.enabled is untouched by stop_all; with no lives, no error, and nothing running,
+    // that reads as Idle rather than Off.
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Idle);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
+            .await
+            .unwrap()
+            .is_none(),
+        "packets receiver should end when stop_all stops capture"
+    );
+}
