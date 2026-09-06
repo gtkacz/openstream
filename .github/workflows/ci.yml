@@ -20,3 +20,44 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+  windows:
+    runs-on: windows-latest
+    env:
+      FFMPEG_DIR: ${{ github.workspace }}\ffmpeg
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Ensure LLVM for bindgen
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) { choco install llvm -y --no-progress }
+      - name: Install FFmpeg (BtbN LGPL shared, pinned)
+        shell: pwsh
+        run: |
+          $release = "autobuild-2026-09-05-13-10"
+          $asset = "ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip"
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/$release/$asset" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
+          Move-Item (Get-ChildItem ffmpeg-extract | Select-Object -First 1).FullName $env:FFMPEG_DIR
+          Add-Content $env:GITHUB_PATH "$env:FFMPEG_DIR\bin"
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build --release -p brp
+      - name: Stage the artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target\release\brp.exe dist\
+          foreach ($dll in "avcodec-62.dll", "avutil-60.dll", "swscale-9.dll", "swresample-6.dll") {
+            Copy-Item "$env:FFMPEG_DIR\bin\$dll" dist\
+          }
+          Copy-Item "$env:FFMPEG_DIR\LICENSE.txt" dist\FFMPEG-LICENSE.txt
+          Copy-Item LICENSE dist\LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brp-windows-x86_64
+          path: dist

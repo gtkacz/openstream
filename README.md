@@ -109,6 +109,27 @@ fallback for exclusive-fullscreen cases; window capture uses Graphics Capture.
 Releases ship an LGPL shared FFmpeg build, which keeps the project MIT and
 limits the software fallback to AV1 and VP9.
 
+To build on Windows, install Visual Studio Build Tools with the C++ workload,
+LLVM (bindgen needs `libclang`), and the FFmpeg LGPL shared build that CI pins,
+BtbN release `autobuild-2026-09-05-13-10`, asset
+`ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip`. Extract it and set:
+
+```powershell
+$env:FFMPEG_DIR = "C:\path\to\ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1"
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$env:PATH = "$env:FFMPEG_DIR\bin;$env:PATH"
+cargo build --release
+```
+
+Every push builds the same thing on GitHub Actions: the `windows` job uploads
+`brp-windows-x86_64`, a zip with `brp.exe`, the four FFmpeg DLLs it links, and
+both licences. Download it from the run's artifacts, extract, and run
+`brp.exe` from that directory.
+
+Sharing on Windows opens an in-app list of monitors or windows instead of a
+system dialog. A monitor that Graphics Capture cannot deliver within two
+seconds is captured through desktop duplication instead.
+
 ## Identity and privacy
 
 On first run, `brp` creates a persistent iroh identity in the platform config
