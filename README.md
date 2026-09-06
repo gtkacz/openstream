@@ -11,9 +11,9 @@ stream and renders it in a native `wgpu` window.
 
 > **Status:** video on Linux and Windows. A participant creates or joins a room
 > from a start screen, shares several monitors or windows with quality presets,
-> and watches other members' lives in a tile grid. Audio, pop-out windows,
-> fullscreen, and persistent settings are the next phases; macOS is on the
-> backlog.
+> and watches other members' lives in a tile grid. Audio and pop-out windows
+> are in; persistent settings and release packaging are the next steps;
+> macOS is on the backlog.
 
 ## How it works
 
@@ -68,6 +68,12 @@ bitrate per preset, the measured encode rate, and a stop button. Share monitor
 and Share window open the desktop portal on Linux and an in-app list of
 monitors or windows on Windows. `--fps` is the capture ceiling for lives shared
 from the window and defaults to 60.
+
+Hovering a tile shows `pop out` and `fullscreen`. Pop out moves the live into a
+window of its own, which you can drag to another monitor; fullscreen does the
+same and makes that window borderless fullscreen. In a pop-out, F11 toggles
+fullscreen, Esc leaves it, and `back to grid` or closing the window puts the
+live back in the grid. A live is decoded once wherever it is shown.
 
 The own-lives panel also has a "Share audio" checkbox, on by default. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
@@ -226,8 +232,8 @@ written to logs.
    pending hardware: everything the machine plays except brp itself, Opus over
    the existing frame streams, one stream per publisher, per-publisher volume
    and a master mute.
-5. **Window management and polish** — planned: pop-outs, fullscreen, settings
-   UI and persistence, release packaging.
+5. **Window management and polish** — pop-outs and fullscreen done; settings
+   UI and persistence and release packaging planned.
 
 Backlog, unordered: macOS, per-application audio, zero-copy GPU paths on both
 OSes, lossless and 4:4:4 presets, congestion-driven preset switching, and
@@ -250,6 +256,10 @@ Phase 4 is designed in
 [`docs/superpowers/specs/2026-09-06-phase4-audio-design.md`](docs/superpowers/specs/2026-09-06-phase4-audio-design.md)
 and implemented by
 [`2026-09-06-plan4-audio.md`](docs/superpowers/plans/2026-09-06-plan4-audio.md).
+Phase 5 is designed in
+[`docs/superpowers/specs/2026-09-06-phase5-windows-settings-release-design.md`](docs/superpowers/specs/2026-09-06-phase5-windows-settings-release-design.md);
+pop-outs and fullscreen are implemented by
+[`2026-09-06-plan5a-popouts.md`](docs/superpowers/plans/2026-09-06-plan5a-popouts.md).
 
 ## License
 

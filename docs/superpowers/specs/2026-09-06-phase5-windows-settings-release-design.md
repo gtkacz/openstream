@@ -257,3 +257,11 @@ Verified on 2026-09-06 against the registry sources in the lock file:
 - `iroh` 1.1.0: `RelayMode::Custom(RelayMap)`; `iroh-relay` 1.1.0 implements `From<RelayUrl> for RelayMap`; `EndpointBuilder::relay_mode`.
 - `toml` 1.1.5 and `serde` 1.0 are already in `Cargo.lock` as transitive dependencies.
 - `softprops/action-gh-release@v2` attaches files listed under `files:` to the release for the pushed tag.
+
+## 13. Amendments from the 5a implementation run
+
+- **Main surface creation (5.1).** `GpuContext::new` takes the main window and returns the configured `WindowSurface` with it: wgpu picks the adapter against a surface, and a window has at most one surface, so the main surface cannot be created a second time by `WindowSurface::new`. Pop-outs use `WindowSurface::new`.
+- **Fullscreen state (5.3).** The requested fullscreen state lives on the pop-out record (`PopOutWindow { surface, fullscreen }`) rather than a separate set of window ids; same meaning, one map fewer.
+- **Constant name (11).** `POPOUT_DEFAULT_SIZE` is named `DEFAULT_WINDOW_SIZE` because the main window uses it too.
+- **Repaint scheduling (5.3).** `next_repaint` is the earliest deadline across windows and wakes every window, matching the `NewFrame` fan-out in section 7.
+- **Esc and popups (8.1).** Esc leaves fullscreen only when no egui popup is open; the popup state is sampled before the pop-out pass because the popup closes itself during the pass in reaction to the same Esc press. Otherwise dismissing the preset dropdown would also leave fullscreen.
