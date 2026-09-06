@@ -42,6 +42,15 @@ impl RoomView {
         }
     }
 
+    /// The keys of every watch in the current snapshot; pop-outs whose key is absent are closed.
+    pub fn watched_keys(&self) -> HashSet<TileKey> {
+        self.snapshot
+            .watches
+            .iter()
+            .map(|w| (w.publisher, w.live_id))
+            .collect()
+    }
+
     /// Re-snapshots when the room's version moved, drops handles and tiles of ended watches, and
     /// refreshes the rate meters.
     pub fn refresh(&mut self, state: &mut UiState, tiles: Option<&mut TileRenderer>) {
@@ -50,12 +59,7 @@ impl RoomView {
         }
         // The relay address can arrive after the first snapshot without bumping the version.
         self.ticket = self.room.ticket().to_string();
-        let live: HashSet<TileKey> = self
-            .snapshot
-            .watches
-            .iter()
-            .map(|w| (w.publisher, w.live_id))
-            .collect();
+        let live = self.watched_keys();
         self.handles.retain(|key, _| live.contains(key));
         if let Some(tiles) = tiles {
             tiles.retain(|key| live.contains(key));

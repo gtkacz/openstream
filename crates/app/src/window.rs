@@ -1,7 +1,8 @@
-//! The participant window: a winit loop that shows the start screen until a room is open, then
-//! draws the tile grid under the egui panels and hands panel commands to the room view.
+//! The participant windows: a winit loop that shows the start screen until a room is open, then
+//! draws the tile grid under the egui panels in the main window and one live per pop-out window.
+//! Panel commands go to the room view; window commands are applied here.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,19 +15,24 @@ use winit::{
     dpi::PhysicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
-    window::{Window, WindowId},
+    window::{Fullscreen, Window, WindowId},
 };
 
-use crate::error::AppError;
+use crate::commands::WindowCommand;
 use crate::launch::{self, Intent, Launch};
+use crate::popouts::PopOuts;
 use crate::render::GpuContext;
 use crate::render::grid::{self, PixelRect};
 use crate::render::surface::WindowSurface;
 use crate::render::tiles::{TileKey, TileRenderer};
+use crate::render::ui::UiFrame;
 use crate::room_view::RoomView;
 use crate::ui::start::{self, StartState};
-use crate::ui::state::UiState;
-use crate::ui::{self, UiOutput};
+use crate::ui::state::{UiState, live_title};
+use crate::ui::{self, UiOutput, popout};
+
+/// Initial inner size of the main window and of every pop-out, in physical pixels.
+pub const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1280, 720);
 
 /// Wakes the winit event loop for a reason that does not arrive as a `WindowEvent`. Sent through
 /// the `EventLoopProxy` from other threads (the room's background tasks, the open and share tasks).
@@ -51,6 +57,13 @@ enum Phase {
     Room(Box<RoomView>),
 }
 
+/// A live shown in a window of its own. `fullscreen` is the state we asked winit for; the label
+/// follows it even if the compositor refused, so the user can ask again.
+struct PopOutWindow {
+    surface: WindowSurface,
+    fullscreen: bool,
+}
+
 /// What must be torn down after the loop ends: share tasks still holding room handles, an open
 /// that may still be producing a room, and the room itself.
 pub struct Shutdown {
@@ -60,8 +73,8 @@ pub struct Shutdown {
     pub pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
 }
 
-/// The winit `ApplicationHandler` for the participant window: owns the phase, the window-local UI
-/// state, and the GPU and egui state.
+/// The winit `ApplicationHandler` for the participant windows: owns the phase, the window-local
+/// UI state, the shared GPU state, the main window, and the pop-outs.
 pub struct App {
     runtime: Handle,
     proxy: EventLoopProxy<AppEvent>,
@@ -72,11 +85,15 @@ pub struct App {
     phase: Phase,
     state: UiState,
     pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
-    /// When egui asked for the next frame; `about_to_wait` sleeps until then instead of forever.
+    /// The earliest instant any window's egui asked for its next frame; `about_to_wait` sleeps
+    /// until then instead of forever.
     next_repaint: Option<Instant>,
     gpu: Option<GpuContext>,
     main: Option<WindowSurface>,
+    /// Shared by every window: a frame is uploaded once whichever window shows it.
     tiles: Option<TileRenderer>,
+    popouts: PopOuts<WindowId>,
+    popout_windows: HashMap<WindowId, PopOutWindow>,
 }
 
 impl App {
@@ -103,6 +120,8 @@ impl App {
             gpu: None,
             main: None,
             tiles: None,
+            popouts: PopOuts::new(),
+            popout_windows: HashMap::new(),
         };
         if let Some(intent) = intent {
             app.start.connecting = true;
@@ -113,6 +132,7 @@ impl App {
 
     /// Consumes the app once the loop has ended and hands back what still holds a room, in the
     /// order the caller must tear it down: share tasks, the pending open, then the room itself.
+    /// Pop-out windows drop with the app; nothing in them outlives the loop.
     pub fn finish(self) -> Shutdown {
         let (room, tasks) = match self.phase {
             Phase::Room(view) => (Some(view.room), view.pending_share.into_iter().collect()),
@@ -142,10 +162,58 @@ impl App {
         }));
     }
 
-    fn redraw(&mut self) {
-        if let Phase::Room(view) = &mut self.phase {
-            view.refresh(&mut self.state, self.tiles.as_mut());
+    fn request_redraw_all(&self) {
+        if let Some(main) = &self.main {
+            main.window.request_redraw();
         }
+        for popout in self.popout_windows.values() {
+            popout.surface.window.request_redraw();
+        }
+    }
+
+    fn is_main(&self, id: WindowId) -> bool {
+        self.main.as_ref().is_some_and(|m| m.window.id() == id)
+    }
+
+    /// Keeps the earliest requested repaint across windows.
+    fn note_repaint(&mut self, delay: Duration) {
+        let deadline = repaint_deadline(Instant::now(), delay);
+        self.next_repaint = match (self.next_repaint, deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+
+    /// Re-snapshots the room and closes pop-outs whose watch has ended. Runs at the start of every
+    /// redraw, whichever window asked, so all windows draw from the same snapshot.
+    fn refresh_room(&mut self) {
+        let Phase::Room(view) = &mut self.phase else {
+            return;
+        };
+        view.refresh(&mut self.state, self.tiles.as_mut());
+        let watched = view.watched_keys();
+        let closed = self.popouts.retain_watched(&watched);
+        if closed.is_empty() {
+            return;
+        }
+        for id in closed {
+            self.popout_windows.remove(&id);
+        }
+        if let Some(main) = &self.main {
+            main.window.request_redraw();
+        }
+    }
+
+    fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
+        self.refresh_room();
+        if self.is_main(id) {
+            self.redraw_main(event_loop);
+        } else if self.popouts.key_of(id).is_some() {
+            self.redraw_popout(event_loop, id);
+        }
+    }
+
+    fn redraw_main(&mut self, event_loop: &ActiveEventLoop) {
         let (Some(gpu), Some(main), Some(tiles)) =
             (self.gpu.as_ref(), self.main.as_mut(), self.tiles.as_mut())
         else {
@@ -154,12 +222,8 @@ impl App {
         if let Phase::Room(view) = &self.phase {
             view.upload_frames(gpu, tiles);
         }
-        let Some(surface) = main.acquire() else {
-            return;
-        };
-        let target = surface.texture.create_view(&Default::default());
+        let popped = self.popouts.popped();
         let size = main.size();
-
         let mut output = UiOutput::default();
         let mut start_action = None;
         let mut ui_frame = main
@@ -167,62 +231,20 @@ impl App {
             .run(&main.window, [size.0, size.1], |root| match &self.phase {
                 Phase::Start => start_action = start::draw(root, &mut self.start),
                 Phase::Room(view) => {
-                    output = ui::draw(
-                        root,
-                        &view.snapshot,
-                        &view.ticket,
-                        &mut self.state,
-                        &HashSet::new(),
-                    );
+                    output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state, &popped);
                 }
             });
-        let pixels_per_point = ui_frame.screen.pixels_per_point;
-        let placements: Vec<(TileKey, PixelRect)> = output
-            .tile_rects
-            .iter()
-            .map(|(key, rect)| (*key, grid::to_pixels(*rect, pixels_per_point, size)))
-            .collect();
-        tiles.update_fits(&gpu.queue, &placements);
-
-        let mut encoder = gpu.device.create_command_encoder(&Default::default());
-        let buffers = main
-            .ui
-            .prepare(&gpu.device, &gpu.queue, &mut encoder, &mut ui_frame);
-        {
-            let mut pass = encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("tiles+ui"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &target,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                })
-                .forget_lifetime();
-            tiles.draw(&mut pass, &placements);
-            main.ui.paint(&mut pass, &ui_frame);
-        }
-        gpu.queue
-            .submit(buffers.into_iter().chain(std::iter::once(encoder.finish())));
-        main.ui.cleanup(&mut ui_frame);
-        main.window.pre_present_notify();
-        gpu.queue.present(surface);
-        if ui_frame.repaint_delay.is_zero() {
+        let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
+        present(gpu, tiles, main, &mut ui_frame, &placements);
+        let repaint_delay = ui_frame.repaint_delay;
+        if repaint_delay.is_zero() {
             main.window.request_redraw();
-            self.next_repaint = None;
         } else {
-            self.next_repaint = repaint_deadline(Instant::now(), ui_frame.repaint_delay);
+            self.note_repaint(repaint_delay);
         }
 
         let had_commands = !output.commands.is_empty();
+        let had_window_commands = !output.window_commands.is_empty();
         if let Some(action) = start_action
             && let Some(intent) = self.start.submit(action)
         {
@@ -233,9 +255,140 @@ impl App {
         {
             view.apply(output.commands, &self.runtime, &self.proxy, &mut self.state);
         }
-        if (start_action.is_some() || had_commands)
+        if had_window_commands {
+            self.apply_window_commands(event_loop, output.window_commands);
+        }
+        if (start_action.is_some() || had_commands || had_window_commands)
             && let Some(main) = &self.main
         {
+            main.window.request_redraw();
+        }
+    }
+
+    fn redraw_popout(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
+        let Some(key) = self.popouts.key_of(id) else {
+            return;
+        };
+        let (Some(gpu), Some(popout), Some(tiles), Phase::Room(view)) = (
+            self.gpu.as_ref(),
+            self.popout_windows.get_mut(&id),
+            self.tiles.as_mut(),
+            &self.phase,
+        ) else {
+            return;
+        };
+        view.upload_frames(gpu, tiles);
+        let fullscreen = popout.fullscreen;
+        let surface = &mut popout.surface;
+        let size = surface.size();
+        let mut output = UiOutput::default();
+        let mut ui_frame = surface.ui.run(&surface.window, [size.0, size.1], |root| {
+            output = popout::draw(root, &view.snapshot, &mut self.state, key, fullscreen);
+        });
+        let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
+        present(gpu, tiles, surface, &mut ui_frame, &placements);
+        let repaint_delay = ui_frame.repaint_delay;
+        if repaint_delay.is_zero() {
+            surface.window.request_redraw();
+        } else {
+            self.note_repaint(repaint_delay);
+        }
+
+        let had_commands = !output.commands.is_empty();
+        let had_window_commands = !output.window_commands.is_empty();
+        if let Phase::Room(view) = &mut self.phase
+            && had_commands
+        {
+            view.apply(output.commands, &self.runtime, &self.proxy, &mut self.state);
+        }
+        if had_window_commands {
+            self.apply_window_commands(event_loop, output.window_commands);
+        }
+        if had_commands || had_window_commands {
+            self.request_redraw_all();
+        }
+    }
+
+    fn apply_window_commands(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        commands: Vec<WindowCommand>,
+    ) {
+        for command in commands {
+            match command {
+                WindowCommand::PopOut(key) => self.open_popout(event_loop, key, false),
+                WindowCommand::PopOutFullscreen(key) => self.open_popout(event_loop, key, true),
+                WindowCommand::ToggleFullscreen(key) => {
+                    if let Some(id) = self.popouts.window_of(key)
+                        && let Some(popout) = self.popout_windows.get_mut(&id)
+                    {
+                        popout.fullscreen = !popout.fullscreen;
+                        popout.surface.window.set_fullscreen(
+                            popout.fullscreen.then_some(Fullscreen::Borderless(None)),
+                        );
+                    }
+                }
+                WindowCommand::ReturnToGrid(key) => {
+                    if let Some(id) = self.popouts.remove_key(key) {
+                        self.popout_windows.remove(&id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Opens a window for `key`. Failures leave the live in the grid and explain why in the
+    /// status line; a key already popped out is left where it is.
+    fn open_popout(&mut self, event_loop: &ActiveEventLoop, key: TileKey, fullscreen: bool) {
+        if self.popouts.is_popped(key) {
+            return;
+        }
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
+        let title = match &self.phase {
+            Phase::Room(view) => live_title(&view.snapshot, key),
+            Phase::Start => None,
+        }
+        .unwrap_or_else(|| "live".to_string());
+        let attributes = Window::default_attributes()
+            .with_title(format!("brp: {title}"))
+            .with_inner_size(DEFAULT_WINDOW_SIZE);
+        let window = match event_loop.create_window(attributes) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                self.state.status = format!("pop-out failed: {error}");
+                return;
+            }
+        };
+        let surface = match WindowSurface::new(gpu, window) {
+            Ok(surface) => surface,
+            Err(error) => {
+                self.state.status = format!("pop-out failed: {error}");
+                return;
+            }
+        };
+        if fullscreen {
+            surface
+                .window
+                .set_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
+        let id = surface.window.id();
+        self.popouts.insert(id, key);
+        surface.window.request_redraw();
+        self.popout_windows.insert(
+            id,
+            PopOutWindow {
+                surface,
+                fullscreen,
+            },
+        );
+    }
+
+    fn close_popout(&mut self, id: WindowId) {
+        self.popouts.remove_window(id);
+        self.popout_windows.remove(&id);
+        if let Some(main) = &self.main {
             main.window.request_redraw();
         }
     }
@@ -249,7 +402,7 @@ impl ApplicationHandler<AppEvent> for App {
         let window = match event_loop.create_window(
             Window::default_attributes()
                 .with_title("brp")
-                .with_inner_size(PhysicalSize::new(1280, 720)),
+                .with_inner_size(DEFAULT_WINDOW_SIZE),
         ) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -261,7 +414,6 @@ impl ApplicationHandler<AppEvent> for App {
         let (gpu, main) = match GpuContext::new(event_loop, window) {
             Ok(pair) => pair,
             Err(error) => {
-                let _: AppError = error;
                 tracing::error!(%error, "could not initialise the GPU");
                 event_loop.exit();
                 return;
@@ -298,30 +450,55 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::RoomChanged | AppEvent::NewFrame | AppEvent::Tick => {}
         }
-        if let Some(main) = &self.main {
-            main.window.request_redraw();
-        }
+        self.request_redraw_all();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        let Some(main) = self.main.as_mut() else {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.is_main(id) {
+            let Some(main) = self.main.as_mut() else {
+                return;
+            };
+            let response = main.ui.on_window_event(&main.window, &event);
+            if response.repaint {
+                main.window.request_redraw();
+            }
+            if response.consumed {
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::Resized(size) => {
+                    if let Some(gpu) = self.gpu.as_ref() {
+                        main.resize(gpu, size.width, size.height);
+                    }
+                }
+                WindowEvent::RedrawRequested => self.redraw(event_loop, id),
+                _ => {}
+            }
+            return;
+        }
+        let Some(popout) = self.popout_windows.get_mut(&id) else {
             return;
         };
-        let response = main.ui.on_window_event(&main.window, &event);
+        let response = popout
+            .surface
+            .ui
+            .on_window_event(&popout.surface.window, &event);
         if response.repaint {
-            main.window.request_redraw();
+            popout.surface.window.request_redraw();
         }
         if response.consumed {
             return;
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // Closing a pop-out returns its live to the grid; the watch itself continues.
+            WindowEvent::CloseRequested => self.close_popout(id),
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = self.gpu.as_ref() {
-                    main.resize(gpu, size.width, size.height);
+                    popout.surface.resize(gpu, size.width, size.height);
                 }
             }
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => self.redraw(event_loop, id),
             _ => {}
         }
     }
@@ -330,15 +507,81 @@ impl ApplicationHandler<AppEvent> for App {
         match self.next_repaint {
             Some(deadline) if deadline <= Instant::now() => {
                 self.next_repaint = None;
-                if let Some(main) = &self.main {
-                    main.window.request_redraw();
-                }
+                self.request_redraw_all();
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
+}
+
+/// The egui-point rects of one pass as pixel viewports on a surface of `size`.
+fn pixel_placements(
+    output: &UiOutput,
+    pixels_per_point: f32,
+    size: (u32, u32),
+) -> Vec<(TileKey, PixelRect)> {
+    output
+        .tile_rects
+        .iter()
+        .map(|(key, rect)| (*key, grid::to_pixels(*rect, pixels_per_point, size)))
+        .collect()
+}
+
+/// Records and submits one window's frame: the placed tiles, then egui on top. A lost surface
+/// skips the frame; the next `Resized` reconfigures it.
+fn present(
+    gpu: &GpuContext,
+    tiles: &TileRenderer,
+    surface: &mut WindowSurface,
+    ui_frame: &mut UiFrame,
+    placements: &[(TileKey, PixelRect)],
+) {
+    let Some(texture) = surface.acquire() else {
+        // The frame's texture deltas must still be applied and freed or they assert on drop.
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        let buffers = surface
+            .ui
+            .prepare(&gpu.device, &gpu.queue, &mut encoder, ui_frame);
+        gpu.queue
+            .submit(buffers.into_iter().chain(std::iter::once(encoder.finish())));
+        surface.ui.cleanup(ui_frame);
+        return;
+    };
+    let target = texture.texture.create_view(&Default::default());
+    tiles.update_fits(&gpu.queue, placements);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    let buffers = surface
+        .ui
+        .prepare(&gpu.device, &gpu.queue, &mut encoder, ui_frame);
+    {
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("tiles+ui"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+            .forget_lifetime();
+        tiles.draw(&mut pass, placements);
+        surface.ui.paint(&mut pass, ui_frame);
+    }
+    gpu.queue
+        .submit(buffers.into_iter().chain(std::iter::once(encoder.finish())));
+    surface.ui.cleanup(ui_frame);
+    surface.window.pre_present_notify();
+    gpu.queue.present(texture);
 }
 
 /// The instant egui wants the next frame, or `None` when it asked for nothing: egui reports
