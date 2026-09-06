@@ -10,6 +10,7 @@ use winit::event_loop::EventLoop;
 
 use crate::cli::WindowArgs;
 use crate::error::AppError;
+use crate::identity;
 use crate::launch::{self, Intent, Launch};
 use crate::window::{App, AppEvent};
 
@@ -17,7 +18,8 @@ use crate::window::{App, AppEvent};
 /// `None` shows the start screen.
 pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Result<(), AppError> {
     let launch = Launch::from(args);
-    let nickname = launch::default_nickname(&launch)?;
+    let secret = identity::load_or_create()?;
+    let nickname = launch::default_nickname(&launch, &secret);
 
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
@@ -39,7 +41,14 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
         }
     });
 
-    let mut app = App::new(runtime.handle().clone(), proxy, launch, nickname, intent);
+    let mut app = App::new(
+        runtime.handle().clone(),
+        proxy,
+        launch,
+        secret,
+        nickname,
+        intent,
+    );
     let outcome = event_loop
         .run_app(&mut app)
         .map_err(|e| AppError::Window(e.to_string()));

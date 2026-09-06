@@ -29,6 +29,7 @@ const HW_DEVICE_ORDER: [(ff::AVHWDeviceType, &str); 2] = [
     (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA, "d3d11va"),
     (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, "cuda"),
 ];
+/// Hardware decoders tried before software: the platform's own API first, then NVDEC.
 #[cfg(not(windows))]
 const HW_DEVICE_ORDER: [(ff::AVHWDeviceType, &str); 2] = [
     (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI, "vaapi"),

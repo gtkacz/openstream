@@ -23,9 +23,12 @@ pub struct SourceId(pub u64);
 /// One entry of a source list: what the picker shows and what `start` is asked to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDescriptor {
+    /// Passed back in `SourceRequest::source` to open this exact source.
     pub id: SourceId,
     pub kind: SourceKind,
+    /// The monitor's display name or the window's title, as the picker shows it.
     pub name: String,
+    /// Pixel size at listing time; the session reports the size it actually captures.
     pub width: u32,
     pub height: u32,
 }

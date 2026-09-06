@@ -7,11 +7,10 @@ use std::sync::{Arc, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use brp_proto::{PixelFormat, monotonic_us};
 use windows_capture::dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat, Error};
 use windows_capture::monitor::Monitor;
 
-use super::SharedSink;
+use super::{SharedSink, bgra_frame};
 use crate::error::CaptureError;
 use crate::fallback::Started;
 use crate::frame::{CaptureFrame, CaptureSession, SourceInfo};
@@ -106,14 +105,13 @@ fn next_frame(
         Err(error) => return Err(error),
     };
     let mut buffer = frame.buffer()?;
-    Ok(Some(CaptureFrame {
-        width: buffer.width(),
-        height: buffer.height(),
-        stride: buffer.row_pitch() as usize,
-        format: PixelFormat::Bgra,
-        data: buffer.as_raw_buffer().to_vec(),
-        capture_ts_us: monotonic_us(),
-    }))
+    let (width, height, row_pitch) = (buffer.width(), buffer.height(), buffer.row_pitch());
+    Ok(Some(bgra_frame(
+        width,
+        height,
+        row_pitch,
+        buffer.as_raw_buffer(),
+    )))
 }
 
 struct DupStarted {

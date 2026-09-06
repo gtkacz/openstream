@@ -18,11 +18,14 @@ use crate::render::tiles::{TileKey, TileRenderer};
 use crate::ui::state::UiState;
 use crate::window::AppEvent;
 
+/// The window's view of an open room: the handle, the snapshot the panels draw from, the ticket
+/// the status bar copies, the watch handles that feed tiles, and the share in flight.
 pub struct RoomView {
     pub room: Arc<Room>,
     pub snapshot: RoomSnapshot,
     pub ticket: String,
     handles: HashMap<TileKey, WatchHandle>,
+    /// Holds an `Arc<Room>` clone; the shutdown path aborts and awaits it before the leave.
     pub pending_share: Option<JoinHandle<()>>,
 }
 
@@ -110,7 +113,9 @@ impl RoomView {
                         Ok(())
                     }
                     Ok(SourceListing::Choices(choices)) => {
-                        state.open_picker(kind, choices);
+                        if !state.open_picker(kind, choices) {
+                            state.status = "a share is already in progress".into();
+                        }
                         Ok(())
                     }
                     Err(error) => Err(error),

@@ -137,7 +137,7 @@ mod tests {
                 name,
                 start: Box::new(move || {
                     called.store(true, Ordering::SeqCst);
-                    Err(CaptureError::Windows(message.into()))
+                    Err(CaptureError::SourceLost(message.into()))
                 }),
             }
         }
@@ -154,6 +154,19 @@ mod tests {
         .unwrap();
         assert_eq!(session.info(), INFO_A);
         assert!(!fallback.called());
+    }
+
+    #[test]
+    fn a_primary_that_delivers_needs_no_fallback_at_all() {
+        let primary = Probe::new();
+        let session = start_with_fallback(
+            TIMEOUT,
+            primary.starting("graphics capture", Ok(Some(INFO_A))),
+            None,
+        )
+        .unwrap();
+        assert_eq!(session.info(), INFO_A);
+        assert!(primary.called());
     }
 
     #[test]

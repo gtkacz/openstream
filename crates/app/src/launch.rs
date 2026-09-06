@@ -9,11 +9,11 @@ use brp_proto::RoomTicket;
 use brp_proto::constants::RELAY_ONLINE_TIMEOUT;
 use brp_room::codecs::FfmpegCodecs;
 use brp_room::{Room, RoomConfig, RoomTimings};
+use iroh::SecretKey;
 use winit::event_loop::EventLoopProxy;
 
 use crate::cli::WindowArgs;
 use crate::error::AppError;
-use crate::identity;
 use crate::window::AppEvent;
 
 /// What the user asked for: a fresh room, or a seat in an existing one.
@@ -46,10 +46,10 @@ impl From<WindowArgs> for Launch {
 }
 
 /// The nickname the start screen offers: the `--nickname` flag, else the short peer id.
-pub fn default_nickname(launch: &Launch) -> Result<String, AppError> {
+pub fn default_nickname(launch: &Launch, secret: &SecretKey) -> String {
     match &launch.nickname {
-        Some(nickname) => Ok(nickname.clone()),
-        None => Ok(identity::load_or_create()?.public().fmt_short().to_string()),
+        Some(nickname) => nickname.clone(),
+        None => secret.public().fmt_short().to_string(),
     }
 }
 
@@ -57,11 +57,11 @@ pub fn default_nickname(launch: &Launch) -> Result<String, AppError> {
 /// A blank `nickname` falls back to the short peer id. The ticket is not printed or logged.
 pub async fn open_room(
     launch: &Launch,
+    secret: SecretKey,
     intent: Intent,
     nickname: &str,
     proxy: EventLoopProxy<AppEvent>,
 ) -> Result<Arc<Room>, AppError> {
-    let secret = identity::load_or_create()?;
     let nickname = match nickname.trim() {
         "" => secret.public().fmt_short().to_string(),
         name => name.to_string(),

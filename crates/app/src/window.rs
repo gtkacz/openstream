@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use brp_room::Room;
+use iroh::SecretKey;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use winit::{
@@ -63,6 +64,8 @@ pub struct App {
     runtime: Handle,
     proxy: EventLoopProxy<AppEvent>,
     launch: Launch,
+    /// Loaded once at startup; every room this window opens signs as this identity.
+    secret: SecretKey,
     start: StartState,
     phase: Phase,
     state: UiState,
@@ -82,6 +85,7 @@ impl App {
         runtime: Handle,
         proxy: EventLoopProxy<AppEvent>,
         launch: Launch,
+        secret: SecretKey,
         nickname: String,
         intent: Option<Intent>,
     ) -> Self {
@@ -89,6 +93,7 @@ impl App {
             runtime,
             proxy,
             launch,
+            secret,
             start: StartState::new(nickname),
             phase: Phase::Start,
             state: UiState::new(),
@@ -106,6 +111,8 @@ impl App {
         app
     }
 
+    /// Consumes the app once the loop has ended and hands back what still holds a room, in the
+    /// order the caller must tear it down: share tasks, the pending open, then the room itself.
     pub fn finish(self) -> Shutdown {
         let (room, tasks) = match self.phase {
             Phase::Room(view) => (Some(view.room), view.pending_share.into_iter().collect()),
@@ -120,11 +127,12 @@ impl App {
 
     fn open(&mut self, intent: Intent) {
         let launch = self.launch.clone();
+        let secret = self.secret.clone();
         let nickname = self.start.nickname.clone();
         let room_events = self.proxy.clone();
         let done = self.proxy.clone();
         self.pending_open = Some(self.runtime.spawn(async move {
-            let outcome = launch::open_room(&launch, intent, &nickname, room_events)
+            let outcome = launch::open_room(&launch, secret, intent, &nickname, room_events)
                 .await
                 .map_err(|error| error.to_string());
             // The window learns of the outcome through the event; the task output is for the

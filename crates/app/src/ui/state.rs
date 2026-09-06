@@ -91,6 +91,7 @@ impl UiState {
         })
     }
 
+    /// Closes the picker without sharing; a no-op when none is open.
     pub fn cancel_picker(&mut self) {
         self.picker = None;
     }

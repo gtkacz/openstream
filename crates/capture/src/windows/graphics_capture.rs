@@ -4,7 +4,6 @@ use std::sync::PoisonError;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
-use brp_proto::{PixelFormat, monotonic_us};
 use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
@@ -13,11 +12,11 @@ use windows_capture::settings::{
     GraphicsCaptureItemType, MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
 };
 
-use super::SharedSink;
 use super::sources::Target;
+use super::{SharedSink, bgra_frame};
 use crate::error::CaptureError;
 use crate::fallback::Started;
-use crate::frame::{CaptureFrame, CaptureSession, SourceInfo};
+use crate::frame::{CaptureSession, SourceInfo};
 
 type Control = CaptureControl<Handler, CaptureError>;
 
@@ -122,14 +121,8 @@ impl GraphicsCaptureApiHandler for Handler {
         let mut buffer = frame
             .buffer()
             .map_err(|error| CaptureError::Windows(format!("frame readback failed: {error}")))?;
-        let captured = CaptureFrame {
-            width: buffer.width(),
-            height: buffer.height(),
-            stride: buffer.row_pitch() as usize,
-            format: PixelFormat::Bgra,
-            data: buffer.as_raw_buffer().to_vec(),
-            capture_ts_us: monotonic_us(),
-        };
+        let (width, height, row_pitch) = (buffer.width(), buffer.height(), buffer.row_pitch());
+        let captured = bgra_frame(width, height, row_pitch, buffer.as_raw_buffer());
         if let Some(first) = self.first.take() {
             // The receiver is gone once the fallback driver stopped waiting; a late first frame
             // is not an error.

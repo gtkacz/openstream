@@ -7,13 +7,14 @@ mod sources;
 
 use std::sync::{Arc, Mutex};
 
-use brp_proto::SourceKind;
 use brp_proto::constants::CAPTURE_FALLBACK_TIMEOUT;
+use brp_proto::{PixelFormat, SourceKind, monotonic_us};
 
 use crate::error::CaptureError;
 use crate::fallback::{Attempt, start_with_fallback};
 use crate::frame::{
-    CaptureBackend, CaptureSession, FrameSink, SourceListing, SourceRequest, StartFuture,
+    CaptureBackend, CaptureFrame, CaptureSession, FrameSink, SourceListing, SourceRequest,
+    StartFuture,
 };
 
 use self::sources::Target;
@@ -21,6 +22,19 @@ use self::sources::Target;
 /// The sink is shared between the primary and the fallback attempt. Only one capture thread runs
 /// at a time, so the lock is never contended.
 pub(crate) type SharedSink = Arc<Mutex<FrameSink>>;
+
+/// A frame as both Windows capture paths deliver it: BGRA rows of `row_pitch` bytes copied out of
+/// a mapped D3D texture, stamped with the project clock on arrival.
+pub(super) fn bgra_frame(width: u32, height: u32, row_pitch: u32, data: &[u8]) -> CaptureFrame {
+    CaptureFrame {
+        width,
+        height,
+        stride: row_pitch as usize,
+        format: PixelFormat::Bgra,
+        data: data.to_vec(),
+        capture_ts_us: monotonic_us(),
+    }
+}
 
 /// Captures one monitor or window chosen from [`CaptureBackend::sources`].
 pub struct WindowsCapture;
