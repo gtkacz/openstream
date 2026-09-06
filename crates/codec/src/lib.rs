@@ -9,5 +9,7 @@ pub mod traits;
 pub use audio::{AudioDecoder, AudioEncoder, AudioFrame};
 pub use error::CodecError;
 pub use raw::RawFrame;
-pub use select::{open_decoder, open_encoder, open_encoder_auto};
+pub use select::{
+    open_audio_decoder, open_audio_encoder, open_decoder, open_encoder, open_encoder_auto,
+};
 pub use traits::{EncoderConfig, FrameConverter, InputImage, VideoDecoder, VideoEncoder};

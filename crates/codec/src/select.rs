@@ -1,10 +1,12 @@
 //! Hardware-first encoder selection and software decoder fallback.
 
+use crate::audio::{AudioDecoder, AudioEncoder};
 use crate::error::CodecError;
 use crate::ffmpeg::decoder::{FfmpegDecoder, HwDecode};
 use crate::ffmpeg::encoder::FfmpegEncoder;
+use crate::ffmpeg::opus::{OpusDecoder, OpusEncoder};
 use crate::traits::{EncoderConfig, VideoDecoder, VideoEncoder};
-use brp_proto::{Codec, CodecParams};
+use brp_proto::{AudioParams, Codec, CodecParams};
 
 pub const PROBE_ORDER: &[(&str, Codec)] = &[
     ("hevc_nvenc", Codec::Hevc),
@@ -74,6 +76,14 @@ pub fn open_decoder(params: &CodecParams) -> Result<Box<dyn VideoDecoder>, Codec
             ))
         }
     }
+}
+
+pub fn open_audio_encoder() -> Result<Box<dyn AudioEncoder>, CodecError> {
+    Ok(Box::new(OpusEncoder::open()?))
+}
+
+pub fn open_audio_decoder(params: &AudioParams) -> Result<Box<dyn AudioDecoder>, CodecError> {
+    Ok(Box::new(OpusDecoder::open(params)?))
 }
 
 #[cfg(test)]
