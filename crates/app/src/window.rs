@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use brp_proto::SourceKind;
 use brp_room::{Room, RoomSnapshot, WatchHandle};
@@ -49,6 +49,8 @@ pub struct App {
     state: UiState,
     handles: HashMap<TileKey, WatchHandle>,
     pending_share: Option<JoinHandle<()>>,
+    /// When egui asked for the next frame; `about_to_wait` sleeps until then instead of forever.
+    next_repaint: Option<Instant>,
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
     tiles: Option<TileRenderer>,
@@ -68,6 +70,7 @@ impl App {
             state: UiState::new(),
             handles: HashMap::new(),
             pending_share: None,
+            next_repaint: None,
             window: None,
             gpu: None,
             tiles: None,
@@ -165,6 +168,9 @@ impl App {
         gpu.queue.present(surface);
         if ui_frame.repaint_delay.is_zero() {
             window.request_redraw();
+            self.next_repaint = None;
+        } else {
+            self.next_repaint = repaint_deadline(Instant::now(), ui_frame.repaint_delay);
         }
 
         self.apply(output.commands);
@@ -301,6 +307,38 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(ControlFlow::Wait);
+        match self.next_repaint {
+            Some(deadline) if deadline <= Instant::now() => {
+                self.next_repaint = None;
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+}
+
+/// The instant egui wants the next frame, or `None` when it asked for nothing: egui reports
+/// `Duration::MAX` in that case, which overflows an `Instant`.
+fn repaint_deadline(now: Instant, delay: Duration) -> Option<Instant> {
+    now.checked_add(delay)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_finite_delay_becomes_a_deadline_and_no_request_becomes_none() {
+        let now = Instant::now();
+        assert_eq!(
+            repaint_deadline(now, Duration::from_millis(300)),
+            Some(now + Duration::from_millis(300))
+        );
+        assert_eq!(repaint_deadline(now, Duration::ZERO), Some(now));
+        assert_eq!(repaint_deadline(now, Duration::MAX), None);
     }
 }
