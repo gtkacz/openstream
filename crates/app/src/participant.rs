@@ -4,72 +4,33 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use brp_capture::PlatformCapture;
-use brp_net::RelaySetting;
 use brp_proto::RoomTicket;
-use brp_proto::constants::{RELAY_ONLINE_TIMEOUT, STATS_LOG_INTERVAL};
-use brp_room::codecs::FfmpegCodecs;
-use brp_room::{Room, RoomConfig, RoomTimings};
+use brp_proto::constants::STATS_LOG_INTERVAL;
 use tokio::runtime::Runtime;
 use winit::event_loop::EventLoop;
 
 use crate::cli::WindowArgs;
 use crate::error::AppError;
-use crate::identity;
+use crate::launch::{self, Intent, Launch};
 use crate::window::{App, AppEvent};
 
 /// Runs `brp create` or `brp join` to completion: creates or joins the room, opens the
 /// participant window, and blocks until the window closes, at which point the room is left in an
 /// orderly fashion. `ticket` selects join over create.
 pub fn run(runtime: &Runtime, ticket: Option<String>, args: WindowArgs) -> Result<(), AppError> {
-    let ticket = ticket.as_deref().map(RoomTicket::from_str).transpose()?;
-    let relay = if args.no_relay {
-        RelaySetting::Disabled
-    } else {
-        RelaySetting::Default
+    let intent = match ticket.as_deref().map(RoomTicket::from_str).transpose()? {
+        Some(ticket) => Intent::Join(ticket),
+        None => Intent::Create,
     };
+    let launch = Launch::from(args);
+    let nickname = launch::default_nickname(&launch)?;
 
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|e| AppError::Window(e.to_string()))?;
     let proxy = event_loop.create_proxy();
-    let change_proxy = proxy.clone();
-    let frame_proxy = proxy.clone();
 
-    let room = runtime.block_on(async {
-        let secret = identity::load_or_create()?;
-        let nickname = args
-            .nickname
-            .clone()
-            .unwrap_or_else(|| secret.public().fmt_short().to_string());
-        let config = RoomConfig {
-            secret,
-            relay,
-            nickname,
-            target_fps: args.fps,
-            capture: Arc::new(PlatformCapture),
-            encoders: Arc::new(FfmpegCodecs::default()),
-            decoders: Arc::new(FfmpegCodecs::default()),
-            on_change: Arc::new(move || {
-                let _ = change_proxy.send_event(AppEvent::RoomChanged);
-            }),
-            on_frame: Arc::new(move || {
-                let _ = frame_proxy.send_event(AppEvent::NewFrame);
-            }),
-            timings: RoomTimings::default(),
-        };
-        let room = match ticket {
-            Some(ticket) => Room::join(config, ticket).await?,
-            None => Room::create(config).await?,
-        };
-        if relay == RelaySetting::Default && !room.online(RELAY_ONLINE_TIMEOUT).await {
-            tracing::warn!(
-                "relay registration timed out; the ticket may only work on the local network"
-            );
-        }
-        Ok::<_, AppError>(Arc::new(room))
-    })?;
-    println!("Ticket:\n{}\n", room.ticket());
+    let room = runtime.block_on(launch::open_room(&launch, intent, &nickname, proxy.clone()))?;
 
     // Encoder byte counters and last-seen ages move without any frame arriving, so a slow tick
     // keeps the status bar honest when nothing is watched.

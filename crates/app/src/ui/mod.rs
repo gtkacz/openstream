@@ -4,6 +4,7 @@
 pub mod members;
 pub mod own_lives;
 pub mod picker;
+pub mod start;
 pub mod state;
 pub mod status;
 pub mod tiles;
