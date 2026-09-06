@@ -1,5 +1,5 @@
 {
-  "last_sync_commit": "ae85e23712ea89338458f2cbc499dd07f38866a7",
+  "last_sync_commit": "6765fd4a610abc1f5dcb45bd872e78723bbeabfb",
   "total_pages": 201,
   "provider": "opencode",
   "model": "opencode/default",
@@ -51,7 +51,7 @@
     "layer_count": 5,
     "tour_steps": 12,
     "has_summaries": true,
-    "fingerprint": "584a441b27c958ce"
+    "fingerprint": "bde3f6f5c2490935"
   },
   "onboarding_slots_offered": [
     "active_landscape",
@@ -65,6 +65,6 @@
   "config_fingerprint": "c2c16fb0f75db7a646cefa08dfda3055a1137a2d3745d0a2344b302bf2aaab50",
   "health_analyzer_version": 8,
   "last_full_rescore_at": 1788568972.0,
-  "last_docs_commit": "ae85e23712ea89338458f2cbc499dd07f38866a7",
+  "last_docs_commit": "6765fd4a610abc1f5dcb45bd872e78723bbeabfb",
   "renderer_fingerprint": "e9dd4752aba30dcd7acb68a539c7c7d3289bdf39bce31deda41b305c7fbba0d1:700459f89534c9b8fad3894967f4eebfcce68209e6f2c80a855eefdc547a75b7"
 }
