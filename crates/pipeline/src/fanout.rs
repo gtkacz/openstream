@@ -1,6 +1,8 @@
 use brp_proto::{
     EncodedFrame,
-    constants::{FORCED_KEYFRAME_MIN_INTERVAL, SENDER_BACKLOG_FRAMES},
+    constants::{
+        AUDIO_SENDER_BACKLOG_PACKETS, FORCED_KEYFRAME_MIN_INTERVAL, SENDER_BACKLOG_FRAMES,
+    },
 };
 use std::{
     sync::{
@@ -50,6 +52,9 @@ struct Sub {
 pub struct FanOut {
     subs: Vec<Sub>,
     keyframe: KeyframeRequest,
+    /// Video subscribers wait for a keyframe after joining or dropping; audio packets stand alone.
+    gate_keyframes: bool,
+    backlog: usize,
 }
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PushOutcome {
@@ -61,12 +66,25 @@ impl FanOut {
         Self {
             subs: vec![],
             keyframe,
+            gate_keyframes: true,
+            backlog: SENDER_BACKLOG_FRAMES,
+        }
+    }
+    /// A fan-out for Opus packets: no keyframe gating and a deeper backlog.
+    pub fn new_audio() -> Self {
+        Self {
+            subs: vec![],
+            keyframe: KeyframeRequest::new(),
+            gate_keyframes: false,
+            backlog: AUDIO_SENDER_BACKLOG_PACKETS,
         }
     }
     pub fn add(&mut self) -> Receiver<Arc<EncodedFrame>> {
-        let (tx, rx) = mpsc::channel(SENDER_BACKLOG_FRAMES);
+        let (tx, rx) = mpsc::channel(self.backlog);
         self.subs.push(Sub { tx, waiting: true });
-        self.keyframe.request();
+        if self.gate_keyframes {
+            self.keyframe.request();
+        }
         rx
     }
     pub fn subscriber_count(&self) -> usize {
@@ -80,8 +98,9 @@ impl FanOut {
     pub fn push(&mut self, f: Arc<EncodedFrame>) -> PushOutcome {
         let mut o = PushOutcome::default();
         let mut req = false;
+        let gate = self.gate_keyframes;
         self.subs.retain_mut(|s| {
-            if s.waiting && !f.keyframe {
+            if gate && s.waiting && !f.keyframe {
                 o.skipped += 1;
                 return true;
             }
@@ -100,7 +119,7 @@ impl FanOut {
                 Err(TrySendError::Closed(_)) => false,
             }
         });
-        if req {
+        if req && gate {
             self.keyframe.request()
         }
         o
@@ -216,5 +235,32 @@ mod tests {
         drop(rx);
         fanout.prune();
         assert_eq!(fanout.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn audio_fanout_delivers_without_waiting_for_a_keyframe() {
+        let mut fanout = FanOut::new_audio();
+        let mut rx = fanout.add();
+        assert_eq!(
+            fanout.push(frame(1, false)),
+            PushOutcome {
+                delivered: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(rx.try_recv().unwrap().seq, 1);
+    }
+
+    #[test]
+    fn audio_fanout_holds_the_audio_backlog_and_keeps_delivering_after_a_full_channel() {
+        let mut fanout = FanOut::new_audio();
+        let mut rx = fanout.add();
+        for seq in 0..brp_proto::constants::AUDIO_SENDER_BACKLOG_PACKETS as u64 {
+            assert_eq!(fanout.push(frame(seq, false)).delivered, 1);
+        }
+        assert_eq!(fanout.push(frame(99, false)).skipped, 1);
+        assert_eq!(rx.try_recv().unwrap().seq, 0);
+        // A non-keyframe after the drop is delivered at once; audio has no keyframes to wait for.
+        assert_eq!(fanout.push(frame(100, false)).delivered, 1);
     }
 }

@@ -70,6 +70,13 @@ pub struct AudioParams {
     pub sample_rate: u32,
     pub channels: u8,
 }
+impl AudioParams {
+    /// The only format brp sends: 48 kHz stereo, what every backend delivers and Opus wants.
+    pub const STANDARD: Self = Self {
+        sample_rate: crate::constants::AUDIO_SAMPLE_RATE,
+        channels: crate::constants::AUDIO_CHANNELS,
+    };
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViewerMessage {
     Subscribe {

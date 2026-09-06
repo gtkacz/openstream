@@ -43,3 +43,23 @@ pub const PACER_JITTER_TOLERANCE: Duration = Duration::from_millis(1);
 /// Graphics Capture normally delivers its first frame within milliseconds; a monitor still silent
 /// after this is served by desktop duplication instead.
 pub const CAPTURE_FALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
+pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
+pub const AUDIO_CHANNELS: u8 = 2;
+/// 20 ms at 48 kHz: the Opus frame the master spec picked.
+pub const AUDIO_FRAME_SAMPLES: usize = 960;
+pub const AUDIO_PACKET_DURATION: Duration = Duration::from_millis(20);
+pub const OPUS_BITRATE_KBPS: u32 = 128;
+/// Audio frames have no preset; the master spec reserves zero for them.
+pub const AUDIO_PRESET_ID: u32 = 0;
+/// 200 ms of slack before a stalled viewer loses audio. Video's backlog of two frames is tuned
+/// for keyframe recovery, which audio has no need of.
+pub const AUDIO_SENDER_BACKLOG_PACKETS: usize = 10;
+pub const JITTER_INITIAL_DEPTH: Duration = Duration::from_millis(60);
+pub const JITTER_STEP: Duration = Duration::from_millis(20);
+/// Beyond this the added delay annoys more than the dropouts it prevents.
+pub const JITTER_MAX_DEPTH: Duration = Duration::from_millis(200);
+/// Long enough that a burst of late packets does not make the depth oscillate.
+pub const JITTER_SHRINK_AFTER: Duration = Duration::from_secs(10);
+/// Room for the jitter maximum plus decode scheduling slack.
+pub const MIXER_TRACK_CAPACITY: Duration = Duration::from_millis(500);
+pub const AUDIO_IDLE_STOP_GRACE: Duration = ENCODER_IDLE_STOP_GRACE;
