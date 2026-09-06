@@ -218,3 +218,16 @@ Verified on 2026-09-06:
 - The dev machine's FFmpeg 8.1.2 links `libopus.so.0` and lists the `libopus` encoder and decoder. The BtbN LGPL shared build pinned in CI includes libopus in `avcodec-62.dll`. Fedora's `ffmpeg-free` is expected to as well; section 5.10 covers the check.
 - `pipewire` 0.10 ships an `audio-capture` example and a `create-delete-remote-objects` example covering the stream, registry, and factory calls this design relies on. `libspa` 0.10 has audio format helpers under `param::audio`.
 - The dev machine runs PipeWire with a PulseAudio compatibility server and one USB stereo sink at 48 kHz.
+
+## 13. Amendments from the implementation run
+
+- **Linux node identification (5.4).** `application.process.id` is absent from a node's registry properties at announce time on PipeWire 1.6 with WirePlumber, so the backend resolves a node's owner through its `client.id` to the Client global's kernel-verified `pipewire.sec.pid`. brp's own capture node is recognised only when both `node.name == brp-audio-capture` and that resolved pid match; a node whose pid cannot be resolved is never linked (fail closed) and logged once. Links carry `link.passive = true` so a passive link does not keep an idle application node running.
+- **Stream node id (5.4).** `Stream::node_id` is unassigned until the stream is paused, so the backend learns its own node id from the registry, via the graph's verdict for our own node, rather than from the stream object.
+- **PipeWire core errors (5.4).** Only an error on the core object ends the capture session; per-object errors, such as a link whose target vanished, are logged and ignored.
+- **Jitter buffer (5.6).** A packet below the next sequence is late regardless of whether playout is primed. After the buffer runs dry it re-primes to the target depth. The shrink check runs before the priming check, so a long idle stretch still relaxes the depth even mid re-prime.
+- **Mixer (5.6).** Tracks and remembered gains live under one mutex so a gain set concurrently with a track being added cannot be lost. A track with fewer samples than the callback contributes silence for that callback and is cleared, rather than kept for the next one.
+- **Audio publisher (5.6).** The capture-chunk sender lives on the publisher handle, not on the shared thread state, so the encode thread exits once every handle and sink is dropped, with no explicit `stop()` required.
+- **Net (5.7).** Route removal on the client is guarded so only the subscription that registered a route removes it: a stale teardown cannot evict a newer subscription's audio route. Stream priority via `SendStream::set_priority` was available and is used to rank audio streams above video.
+- **Registry (5.8).** Capture and encoder threads are stopped after the registry lock is released, not while held. `views()` re-derives `has_audio` the same way `live_infos()` does, rather than relying on a stored value that could go stale.
+- **Audio output trait (5.3).** `AudioOutputSession` is `Send + Sync`, not just `Send`, so the room stays `Sync`.
+- **Windows (5.5).** Buffers flagged `AUDCLNT_BUFFERFLAGS_SILENT` are zeroed before reaching the sink rather than passed through undefined, and draining keeps byte alignment to whole stereo frames so a partial frame cannot swap channels for the rest of the session.

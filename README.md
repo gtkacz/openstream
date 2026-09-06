@@ -70,6 +70,14 @@ and Share window open the desktop portal on Linux and an in-app list of
 monitors or windows on Windows. `--fps` is the capture ceiling for lives shared
 from the window and defaults to 60.
 
+The own-lives panel also has a "Share audio" checkbox, on by default. The tile
+carrying a publisher's audio shows a volume slider and mute, mirrored next to
+that member in the members panel, and the status bar has a "mute all" for
+every publisher at once. On Linux, capture links to every application's
+PipeWire output except brp's own; on Windows, WASAPI process loopback in
+exclude mode does the same, requiring Windows 10 version 2004. The Windows
+audio path is compiled and tested on CI but has not run on hardware.
+
 On Windows the binary opens no console window. Started from a terminal with
 arguments it prints to that terminal, but the shell does not wait for it, so
 output can appear after the prompt.
@@ -215,7 +223,9 @@ written to logs.
    the duplication fallback, Windows hardware codecs and D3D11VA decode,
    bundled FFmpeg, Windows CI, the in-app picker, and a start screen so the
    app needs no terminal.
-4. **Audio** — planned: loopback capture, Opus, the mixer, per-live volume.
+4. **Audio** — done, Windows pending hardware: everything the machine plays
+   except brp itself, Opus over the existing frame streams, one stream per
+   publisher, per-publisher volume and a master mute.
 5. **Window management and polish** — planned: pop-outs, fullscreen, settings
    UI and persistence, release packaging.
 
@@ -236,6 +246,10 @@ Phase 3 is designed in
 [`docs/superpowers/specs/2026-09-05-phase3-windows-design.md`](docs/superpowers/specs/2026-09-05-phase3-windows-design.md)
 and implemented by
 [`2026-09-05-plan3-windows.md`](docs/superpowers/plans/2026-09-05-plan3-windows.md).
+Phase 4 is designed in
+[`docs/superpowers/specs/2026-09-06-phase4-audio-design.md`](docs/superpowers/specs/2026-09-06-phase4-audio-design.md)
+and implemented by
+[`2026-09-06-plan4-audio.md`](docs/superpowers/plans/2026-09-06-plan4-audio.md).
 
 ## License
 
