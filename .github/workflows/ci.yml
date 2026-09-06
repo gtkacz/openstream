@@ -34,10 +34,12 @@ jobs:
       - name: Ensure LLVM for bindgen
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) { choco install llvm -y --no-progress }
       - name: Install FFmpeg (BtbN LGPL shared, pinned)
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $release = "autobuild-2026-09-05-13-10"
           $asset = "ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip"
           Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/$release/$asset" -OutFile ffmpeg.zip
@@ -50,6 +52,7 @@ jobs:
       - name: Stage the artifact
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target\release\brp.exe dist\
           foreach ($dll in "avcodec-62.dll", "avutil-60.dll", "swscale-9.dll", "swresample-6.dll") {
