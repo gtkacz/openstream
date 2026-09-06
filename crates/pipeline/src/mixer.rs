@@ -69,10 +69,18 @@ impl Track {
 }
 
 #[derive(Default)]
-struct MixerInner {
-    tracks: Mutex<HashMap<TrackKey, Track>>,
+struct MixerState {
+    tracks: HashMap<TrackKey, Track>,
     /// Gains outlive tracks so a slider set before a watch goes live, or across a reconnect, holds.
-    gains: Mutex<HashMap<TrackKey, f32>>,
+    gains: HashMap<TrackKey, f32>,
+}
+
+#[derive(Default)]
+struct MixerInner {
+    // One lock for both maps: add_track reads the remembered gain and inserts the track as a
+    // single critical section, so a concurrent set_gain can never land between the read and the
+    // insert and go unseen by the new track.
+    state: Mutex<MixerState>,
     muted: AtomicBool,
 }
 
@@ -87,27 +95,34 @@ impl Mixer {
     }
 
     pub fn add_track(&self, key: TrackKey) -> Track {
-        let gain = self.gain(&key);
-        lock(&self.inner.tracks)
+        let mut state = lock(&self.inner.state);
+        let gain = state.gains.get(&key).copied().unwrap_or(1.0);
+        state
+            .tracks
             .entry(key)
             .or_insert_with(|| Track::new(gain))
             .clone()
     }
 
     pub fn remove_track(&self, key: &TrackKey) {
-        lock(&self.inner.tracks).remove(key);
+        lock(&self.inner.state).tracks.remove(key);
     }
 
     pub fn set_gain(&self, key: TrackKey, gain: f32) {
         let gain = gain.clamp(0.0, 1.0);
-        lock(&self.inner.gains).insert(key, gain);
-        if let Some(track) = lock(&self.inner.tracks).get(&key) {
+        let mut state = lock(&self.inner.state);
+        state.gains.insert(key, gain);
+        if let Some(track) = state.tracks.get(&key) {
             track.set_gain(gain);
         }
     }
 
     pub fn gain(&self, key: &TrackKey) -> f32 {
-        lock(&self.inner.gains).get(key).copied().unwrap_or(1.0)
+        lock(&self.inner.state)
+            .gains
+            .get(key)
+            .copied()
+            .unwrap_or(1.0)
     }
 
     pub fn set_muted(&self, muted: bool) {
@@ -119,22 +134,23 @@ impl Mixer {
     }
 
     pub fn underruns(&self, key: &TrackKey) -> u64 {
-        lock(&self.inner.tracks)
+        lock(&self.inner.state)
+            .tracks
             .get(key)
             .map(Track::underruns)
             .unwrap_or(0)
     }
 
-    /// Fills `out` with the mix. Runs on the device thread: the track map is only tried, and a
-    /// contended callback renders silence rather than blocking; each track's buffer lock is held
-    /// by the decode thread for a memcpy at most.
+    /// Fills `out` with the mix. Runs on the device thread: the mixer state (tracks and gains) is
+    /// only tried, and a contended callback renders silence rather than blocking; each track's
+    /// buffer lock is held by the decode thread for a memcpy at most.
     pub fn render(&self, out: &mut [f32]) {
         out.fill(0.0);
-        let Ok(tracks) = self.inner.tracks.try_lock() else {
+        let Ok(state) = self.inner.state.try_lock() else {
             return;
         };
         let muted = self.muted();
-        for track in tracks.values() {
+        for track in state.tracks.values() {
             let gain = track.gain();
             let mut buffer = lock(&track.inner.buffer);
             if buffer.len() < out.len() {
@@ -182,16 +198,35 @@ mod tests {
         let a = mixer.add_track(A);
         let b = mixer.add_track(B);
         mixer.set_gain(B, 0.5);
+        a.push(&[0.4; 4]);
+        b.push(&[0.4; 4]);
+        let mut out = [0.0; 4];
+        mixer.render(&mut out);
+        assert!(
+            out.iter().all(|s| (*s - 0.6).abs() < 1e-6),
+            "0.4 + 0.2 sums to 0.6"
+        );
+        assert_eq!(mixer.gain(&B), 0.5);
+        assert_eq!(mixer.gain(&A), 1.0);
+
         a.push(&[0.8; 4]);
         b.push(&[0.8; 4]);
-        let mut out = [0.0; 4];
         mixer.render(&mut out);
         assert!(
             out.iter().all(|s| (*s - 1.0).abs() < 1e-6),
             "0.8 + 0.4 clamps to 1.0"
         );
-        assert_eq!(mixer.gain(&B), 0.5);
-        assert_eq!(mixer.gain(&A), 1.0);
+    }
+
+    #[test]
+    fn set_gain_on_a_live_track_reaches_the_output() {
+        let mixer = Mixer::new();
+        let a = mixer.add_track(A);
+        a.push(&[1.0; 4]);
+        mixer.set_gain(A, 0.25);
+        let mut out = [0.0; 4];
+        mixer.render(&mut out);
+        assert!(out.iter().all(|s| (*s - 0.25).abs() < 1e-6));
     }
 
     #[test]
