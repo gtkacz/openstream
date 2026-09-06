@@ -1,6 +1,7 @@
 //! brp: peer-to-peer screen sharing. Everything the `brp` binary wires together.
 pub mod cli;
 pub mod commands;
+pub mod console;
 pub mod error;
 pub mod identity;
 pub mod launch;

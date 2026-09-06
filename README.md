@@ -52,29 +52,34 @@ allowing delay to accumulate. The stream uses the versioned media ALPN
 
 ## Usage
 
+Run `brp` with no arguments, or double-click `brp.exe` on Windows, to open the
+start screen: pick a nickname, then Create room, or paste a ticket and Join
+room. The status bar's Copy ticket button gives you the ticket to hand to
+others. From a terminal the same window can be opened directly:
+
 ```
 cargo build --release
 
-# Open a room in the participant window and print its ticket
+# Open a new room in the participant window
 ./target/release/brp create [--nickname N] [--fps 60] [--no-relay]
 
-# Join that room in the participant window
+# Join a room in the participant window
 ./target/release/brp join <ticket> [--nickname N] [--fps 60] [--no-relay]
 
-# Share one live headlessly, creating a room or joining one
-./target/release/brp publish --nickname alice [--ticket <ticket>] [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--audio] [--no-relay]
+# Share one live headlessly and print the ticket, creating a room or joining one
+./target/release/brp publish --nickname alice [--ticket <ticket>] [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--no-relay]
 ```
 
 On Windows, releases bundle the FFmpeg DLLs, so `brp.exe` runs without a global
-FFmpeg install.
+FFmpeg install, and the binary opens no console window. Started from a
+terminal with arguments it prints to that terminal, but the shell does not
+wait for it, so output can appear after the prompt.
 
-In the window, tick a live in the left panel to watch it, pick its preset, and
-toggle its audio; hover a tile for the preset selector, volume slider, stats,
-pop-out, and fullscreen buttons. The bottom panel lists your own lives with a
-frame-rate control, a codec selector, template checkboxes, an audio toggle, and
-a bitrate per preset. The settings dialog holds the nickname, relay setting,
-default bitrate rule, and audio output device. `--fps` is the capture ceiling
-for lives shared from the window.
+In the window, tick a live in the left panel to watch it and pick its preset;
+hover a tile for the preset selector and stats. The bottom panel lists your own
+lives with a frame-rate control, a codec selector, template checkboxes, and a
+bitrate per preset. `--fps` is the capture ceiling for lives shared from the
+window and defaults to 60.
 
 A ticket names the room and one member already in it. Anyone in the room can hand out a ticket.
 Media connections are accepted only from room members. Encoders run only while someone watches.

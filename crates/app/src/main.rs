@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! brp: peer-to-peer screen sharing.
 use std::str::FromStr;
 
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
+    brp_app::console::attach_parent_console();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
