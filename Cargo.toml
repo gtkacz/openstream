@@ -12,6 +12,7 @@ rust-version = "1.91"
 brp-proto = { path = "crates/proto" }
 brp-codec = { path = "crates/codec" }
 brp-capture = { path = "crates/capture" }
+brp-audio = { path = "crates/audio" }
 brp-net = { path = "crates/net" }
 brp-pipeline = { path = "crates/pipeline" }
 brp-room = { path = "crates/room" }
@@ -43,3 +44,5 @@ pollster = "1.0"
 bytemuck = { version = "1.25", features = ["derive"] }
 windows-capture = "2.0"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+cpal = "0.18"
+wasapi = "0.24"

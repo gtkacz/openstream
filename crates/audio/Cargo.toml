@@ -1,0 +1,19 @@
+[package]
+name = "brp-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brp-proto.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, features = ["pipewire"] }
+pipewire.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+cpal.workspace = true
+wasapi.workspace = true
