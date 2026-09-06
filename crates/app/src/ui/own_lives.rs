@@ -22,8 +22,9 @@ pub fn draw(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("My lives");
-                let can_share =
-                    !state.share_pending && snapshot.own_lives.len() < MAX_LIVES_PER_PARTICIPANT;
+                let can_share = !state.share_pending
+                    && state.picker.is_none()
+                    && snapshot.own_lives.len() < MAX_LIVES_PER_PARTICIPANT;
                 if ui
                     .add_enabled(can_share, egui::Button::new("Share monitor"))
                     .clicked()

@@ -66,9 +66,10 @@ impl UiState {
         format!("{name} {counter}")
     }
 
-    /// Opens the picker unless a share is already under way. Returns whether it opened.
+    /// Opens the picker. Refuses while a share is pending or a picker is already open, so a
+    /// second click cannot discard an in-progress choice. Returns whether it opened.
     pub fn open_picker(&mut self, kind: SourceKind, choices: Vec<SourceDescriptor>) -> bool {
-        if self.share_pending {
+        if self.share_pending || self.picker.is_some() {
             return false;
         }
         self.picker = Some(SourcePicker { kind, choices });
@@ -364,5 +365,19 @@ mod tests {
         state.share_pending = true;
         assert!(!state.open_picker(SourceKind::Monitor, vec![descriptor(1)]));
         assert!(state.picker.is_none());
+    }
+
+    #[test]
+    fn the_picker_does_not_reopen_while_one_is_open() {
+        let mut state = UiState::new();
+        assert!(state.open_picker(SourceKind::Monitor, vec![descriptor(1)]));
+        assert!(!state.open_picker(SourceKind::Window, vec![descriptor(2)]));
+        assert_eq!(
+            state.picker,
+            Some(SourcePicker {
+                kind: SourceKind::Monitor,
+                choices: vec![descriptor(1)],
+            })
+        );
     }
 }
