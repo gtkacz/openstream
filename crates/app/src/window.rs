@@ -18,9 +18,10 @@ use winit::{
 
 use crate::error::AppError;
 use crate::launch::{self, Intent, Launch};
+use crate::render::GpuContext;
 use crate::render::grid::{self, PixelRect};
+use crate::render::surface::WindowSurface;
 use crate::render::tiles::{TileKey, TileRenderer};
-use crate::render::{GpuContext, ui::EguiLayer};
 use crate::room_view::RoomView;
 use crate::ui::start::{self, StartState};
 use crate::ui::state::UiState;
@@ -72,10 +73,9 @@ pub struct App {
     pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
     /// When egui asked for the next frame; `about_to_wait` sleeps until then instead of forever.
     next_repaint: Option<Instant>,
-    window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
+    main: Option<WindowSurface>,
     tiles: Option<TileRenderer>,
-    ui: Option<EguiLayer>,
 }
 
 impl App {
@@ -99,10 +99,9 @@ impl App {
             state: UiState::new(),
             pending_open: None,
             next_repaint: None,
-            window: None,
             gpu: None,
+            main: None,
             tiles: None,
-            ui: None,
         };
         if let Some(intent) = intent {
             app.start.connecting = true;
@@ -146,33 +145,30 @@ impl App {
         if let Phase::Room(view) = &mut self.phase {
             view.refresh(&mut self.state, self.tiles.as_mut());
         }
-        let (Some(window), Some(gpu), Some(tiles), Some(ui)) = (
-            self.window.as_ref(),
-            self.gpu.as_mut(),
-            self.tiles.as_mut(),
-            self.ui.as_mut(),
-        ) else {
+        let (Some(gpu), Some(main), Some(tiles)) =
+            (self.gpu.as_ref(), self.main.as_mut(), self.tiles.as_mut())
+        else {
             return;
         };
         if let Phase::Room(view) = &self.phase {
             view.upload_frames(gpu, tiles);
         }
-        let surface = match gpu.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            _ => return,
+        let Some(surface) = main.acquire() else {
+            return;
         };
         let target = surface.texture.create_view(&Default::default());
-        let size = (gpu.config.width, gpu.config.height);
+        let size = main.size();
 
         let mut output = UiOutput::default();
         let mut start_action = None;
-        let mut ui_frame = ui.run(window, [size.0, size.1], |root| match &self.phase {
-            Phase::Start => start_action = start::draw(root, &mut self.start),
-            Phase::Room(view) => {
-                output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state);
-            }
-        });
+        let mut ui_frame = main
+            .ui
+            .run(&main.window, [size.0, size.1], |root| match &self.phase {
+                Phase::Start => start_action = start::draw(root, &mut self.start),
+                Phase::Room(view) => {
+                    output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state);
+                }
+            });
         let pixels_per_point = ui_frame.screen.pixels_per_point;
         let placements: Vec<(TileKey, PixelRect)> = output
             .tile_rects
@@ -182,7 +178,9 @@ impl App {
         tiles.update_fits(&gpu.queue, &placements);
 
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
-        let buffers = ui.prepare(&gpu.device, &gpu.queue, &mut encoder, &mut ui_frame);
+        let buffers = main
+            .ui
+            .prepare(&gpu.device, &gpu.queue, &mut encoder, &mut ui_frame);
         {
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -203,15 +201,15 @@ impl App {
                 })
                 .forget_lifetime();
             tiles.draw(&mut pass, &placements);
-            ui.paint(&mut pass, &ui_frame);
+            main.ui.paint(&mut pass, &ui_frame);
         }
         gpu.queue
             .submit(buffers.into_iter().chain(std::iter::once(encoder.finish())));
-        ui.cleanup(&mut ui_frame);
-        window.pre_present_notify();
+        main.ui.cleanup(&mut ui_frame);
+        main.window.pre_present_notify();
         gpu.queue.present(surface);
         if ui_frame.repaint_delay.is_zero() {
-            window.request_redraw();
+            main.window.request_redraw();
             self.next_repaint = None;
         } else {
             self.next_repaint = repaint_deadline(Instant::now(), ui_frame.repaint_delay);
@@ -229,16 +227,16 @@ impl App {
             view.apply(output.commands, &self.runtime, &self.proxy, &mut self.state);
         }
         if (start_action.is_some() || had_commands)
-            && let Some(window) = &self.window
+            && let Some(main) = &self.main
         {
-            window.request_redraw();
+            main.window.request_redraw();
         }
     }
 }
 
 impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if self.main.is_some() {
             return;
         }
         let window = match event_loop.create_window(
@@ -253,18 +251,18 @@ impl ApplicationHandler<AppEvent> for App {
                 return;
             }
         };
-        let gpu = match GpuContext::new(event_loop, &window) {
-            Ok(gpu) => gpu,
+        let (gpu, main) = match GpuContext::new(event_loop, window) {
+            Ok(pair) => pair,
             Err(error) => {
                 let _: AppError = error;
+                tracing::error!(%error, "could not initialise the GPU");
                 event_loop.exit();
                 return;
             }
         };
-        self.tiles = Some(TileRenderer::new(&gpu.device, gpu.config.format));
-        self.ui = Some(EguiLayer::new(&window, &gpu.device, gpu.config.format));
+        self.tiles = Some(TileRenderer::new(&gpu.device, gpu.format));
         self.gpu = Some(gpu);
-        self.window = Some(window);
+        self.main = Some(main);
     }
 
     fn user_event(&mut self, _: &ActiveEventLoop, event: AppEvent) {
@@ -272,8 +270,9 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::RoomOpened(Ok(room)) => {
                 self.pending_open = None;
                 self.state = UiState::new();
-                if let Some(window) = &self.window {
-                    window.set_title(&format!("brp: {}", room.snapshot().nickname));
+                if let Some(main) = &self.main {
+                    main.window
+                        .set_title(&format!("brp: {}", room.snapshot().nickname));
                 }
                 self.phase = Phase::Room(Box::new(RoomView::new(room)));
             }
@@ -292,29 +291,27 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::RoomChanged | AppEvent::NewFrame | AppEvent::Tick => {}
         }
-        if let Some(window) = &self.window {
-            window.request_redraw();
+        if let Some(main) = &self.main {
+            main.window.request_redraw();
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        let Some(window) = self.window.clone() else {
+        let Some(main) = self.main.as_mut() else {
             return;
         };
-        if let Some(ui) = self.ui.as_mut() {
-            let response = ui.on_window_event(&window, &event);
-            if response.repaint {
-                window.request_redraw();
-            }
-            if response.consumed {
-                return;
-            }
+        let response = main.ui.on_window_event(&main.window, &event);
+        if response.repaint {
+            main.window.request_redraw();
+        }
+        if response.consumed {
+            return;
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                if let Some(gpu) = self.gpu.as_mut() {
-                    gpu.resize(size.width, size.height);
+                if let Some(gpu) = self.gpu.as_ref() {
+                    main.resize(gpu, size.width, size.height);
                 }
             }
             WindowEvent::RedrawRequested => self.redraw(),
@@ -326,8 +323,8 @@ impl ApplicationHandler<AppEvent> for App {
         match self.next_repaint {
             Some(deadline) if deadline <= Instant::now() => {
                 self.next_repaint = None;
-                if let Some(window) = &self.window {
-                    window.request_redraw();
+                if let Some(main) = &self.main {
+                    main.window.request_redraw();
                 }
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
