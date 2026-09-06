@@ -6,6 +6,7 @@ pub mod error;
 pub mod identity;
 pub mod launch;
 pub mod participant;
+pub mod popouts;
 pub mod presets;
 pub mod publish;
 pub mod render;

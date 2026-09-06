@@ -197,13 +197,36 @@ pub fn ordered_watches(snapshot: &RoomSnapshot) -> Vec<&WatchView> {
     watches
 }
 
+/// The watches the grid draws: [`ordered_watches`] minus the keys shown in a pop-out window.
+pub fn visible_watches<'a>(
+    snapshot: &'a RoomSnapshot,
+    popped: &HashSet<TileKey>,
+) -> Vec<&'a WatchView> {
+    ordered_watches(snapshot)
+        .into_iter()
+        .filter(|w| !popped.contains(&(w.publisher, w.live_id)))
+        .collect()
+}
+
+/// The live's title as its publisher advertises it, or `None` once the publisher is gone.
+pub fn live_title(snapshot: &RoomSnapshot, key: TileKey) -> Option<String> {
+    snapshot
+        .members
+        .iter()
+        .find(|m| m.id == key.0)
+        .and_then(|m| m.lives.iter().find(|l| l.id == key.1))
+        .map(|l| l.title.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use brp_capture::{SourceDescriptor, SourceId};
     use brp_net::PathKind;
     use brp_proto::{Codec, LiveInfo, Preset};
-    use brp_room::{AudioCaptureState, EncoderView, OwnAudioView, OwnLiveView, PresetView};
+    use brp_room::{
+        AudioCaptureState, EncoderView, OwnAudioView, OwnLiveView, PresetView, WatchState,
+    };
     use iroh::SecretKey;
     use std::time::Duration;
 
@@ -398,5 +421,58 @@ mod tests {
                 choices: vec![descriptor(1)],
             })
         );
+    }
+
+    fn watch(publisher: iroh::PublicKey, live_id: u32) -> WatchView {
+        WatchView {
+            publisher,
+            live_id,
+            preset_id: 1,
+            state: WatchState::Live,
+            frames_decoded: 0,
+            keyframe_requests: 0,
+            audio: false,
+        }
+    }
+
+    #[test]
+    fn visible_watches_skip_popped_keys_and_keep_the_order() {
+        let a = SecretKey::from_bytes(&[1u8; 32]).public();
+        let b = SecretKey::from_bytes(&[2u8; 32]).public();
+        let mut snapshot = snapshot_with(Vec::new());
+        snapshot.watches = vec![watch(b, 1), watch(a, 2), watch(a, 1)];
+        let popped = HashSet::from([(a, 2)]);
+        let keys: Vec<TileKey> = visible_watches(&snapshot, &popped)
+            .iter()
+            .map(|w| (w.publisher, w.live_id))
+            .collect();
+        // Key order follows the derived public key bytes, not the seed bytes, so sort the
+        // expectation the same way `ordered_watches` does.
+        let mut expected = vec![(a, 1), (b, 1)];
+        expected.sort_by(|x, y| x.0.as_bytes().cmp(y.0.as_bytes()).then(x.1.cmp(&y.1)));
+        assert_eq!(keys, expected);
+        assert_eq!(visible_watches(&snapshot, &HashSet::new()).len(), 3);
+    }
+
+    #[test]
+    fn live_title_follows_the_publisher_and_vanishes_with_it() {
+        let mut publisher = member("bob");
+        publisher.lives.push(LiveInfo {
+            id: 4,
+            title: "desk".into(),
+            kind: SourceKind::Monitor,
+            source_width: 64,
+            source_height: 32,
+            source_fps: 30,
+            has_audio: false,
+            presets: Vec::new(),
+        });
+        let id = publisher.id;
+        let mut snapshot = snapshot_with(Vec::new());
+        snapshot.members = vec![publisher];
+        assert_eq!(live_title(&snapshot, (id, 4)), Some("desk".to_string()));
+        assert_eq!(live_title(&snapshot, (id, 5)), None);
+        snapshot.members.clear();
+        assert_eq!(live_title(&snapshot, (id, 4)), None);
     }
 }

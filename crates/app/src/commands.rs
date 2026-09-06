@@ -31,3 +31,18 @@ pub enum RoomCommand {
     /// Silences all playback without touching the per-publisher gains.
     SetMasterMute(bool),
 }
+
+/// A command a panel wants applied to the windows, not the room: which live gets its own window
+/// and whether that window is fullscreen. Queued and drained after the egui pass like
+/// [`RoomCommand`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowCommand {
+    /// Moves the live out of the grid into a new window.
+    PopOut(TileKey),
+    /// Moves the live into a new window that starts borderless fullscreen.
+    PopOutFullscreen(TileKey),
+    /// Flips the live's pop-out between borderless fullscreen and windowed.
+    ToggleFullscreen(TileKey),
+    /// Closes the live's pop-out and puts it back in the grid.
+    ReturnToGrid(TileKey),
+}

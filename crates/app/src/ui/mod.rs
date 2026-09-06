@@ -11,15 +11,16 @@ pub mod tiles;
 
 use brp_room::RoomSnapshot;
 
-use crate::commands::RoomCommand;
+use crate::commands::{RoomCommand, WindowCommand};
 use crate::render::tiles::TileKey;
 use state::UiState;
 
-/// Everything a completed egui pass produced: commands to apply to the room, and where the video
-/// renderer should place each watched live's frame.
+/// Everything a completed egui pass produced: commands to apply to the room, commands to apply to
+/// the windows, and where the video renderer should place each watched live's frame.
 #[derive(Debug, Default)]
 pub struct UiOutput {
     pub commands: Vec<RoomCommand>,
+    pub window_commands: Vec<WindowCommand>,
     /// Where the video renderer draws each watched live, in egui points.
     pub tile_rects: Vec<(TileKey, egui::Rect)>,
 }
@@ -46,6 +47,7 @@ pub fn draw(
     picker::draw(ui.ctx(), state, &mut commands);
     UiOutput {
         commands,
+        window_commands: Vec::new(),
         tile_rects,
     }
 }
