@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(cat)",
+      "Bash(git rm *)",
+      "Bash(git fsck *)",
+      "Bash(python3 -)",
+      "Bash(git commit -q -m 'fix: wake the window for egui'\\\\''s timed repaint requests *)",
+      "Bash(ps -eo pid,etime,cmd)"
+    ]
+  }
+}
