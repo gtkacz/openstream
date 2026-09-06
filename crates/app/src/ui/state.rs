@@ -3,11 +3,20 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use brp_capture::{SourceDescriptor, SourceId};
 use brp_proto::SourceKind;
 use brp_proto::constants::STATS_LOG_INTERVAL;
 use brp_room::{MemberView, RoomSnapshot, WatchView};
 
+use crate::commands::RoomCommand;
 use crate::render::tiles::TileKey;
+
+/// The source list the user is choosing from, on platforms without a picker of their own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePicker {
+    pub kind: SourceKind,
+    pub choices: Vec<SourceDescriptor>,
+}
 
 /// Window-local state the room snapshot cannot carry: pending edits, per-tile choices, and the
 /// status line.
@@ -15,8 +24,11 @@ use crate::render::tiles::TileKey;
 pub struct UiState {
     /// Last error or notice, shown in the status bar.
     pub status: String,
-    /// True while the portal picker is open for a new live.
+    /// True from the share click until the live started or failed: the portal dialog on Linux,
+    /// capture start with its fallback on Windows.
     pub share_pending: bool,
+    /// Open while the user picks a source from the platform's list.
+    pub picker: Option<SourcePicker>,
     monitor_shares: u32,
     window_shares: u32,
     /// Preset picked for a remote live before it is watched.
@@ -52,6 +64,34 @@ impl UiState {
             SourceKind::Window => "Window",
         };
         format!("{name} {counter}")
+    }
+
+    /// Opens the picker unless a share is already under way. Returns whether it opened.
+    pub fn open_picker(&mut self, kind: SourceKind, choices: Vec<SourceDescriptor>) -> bool {
+        if self.share_pending {
+            return false;
+        }
+        self.picker = Some(SourcePicker { kind, choices });
+        true
+    }
+
+    /// The share command for a picked source, closing the picker. `None` when no picker is open
+    /// or the id is not one of its choices.
+    pub fn pick_source(&mut self, id: SourceId) -> Option<RoomCommand> {
+        let picker = self.picker.as_ref()?;
+        if !picker.choices.iter().any(|choice| choice.id == id) {
+            return None;
+        }
+        let kind = picker.kind;
+        self.picker = None;
+        Some(RoomCommand::Share {
+            kind,
+            source: Some(id),
+        })
+    }
+
+    pub fn cancel_picker(&mut self) {
+        self.picker = None;
     }
 
     /// Feeds the cumulative byte counters of a snapshot into the upload and per-encoder meters.
@@ -158,11 +198,14 @@ pub fn ordered_watches(snapshot: &RoomSnapshot) -> Vec<&WatchView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brp_capture::{SourceDescriptor, SourceId};
     use brp_net::PathKind;
     use brp_proto::{Codec, LiveInfo, Preset};
     use brp_room::{EncoderView, OwnLiveView, PresetView};
     use iroh::SecretKey;
     use std::time::Duration;
+
+    use crate::commands::RoomCommand;
 
     #[test]
     fn titles_count_per_kind_and_never_repeat() {
@@ -278,5 +321,48 @@ mod tests {
             .map(|m| m.nickname.as_str())
             .collect();
         assert_eq!(names, ["amy", "kim", "zed"]);
+    }
+
+    fn descriptor(id: u64) -> SourceDescriptor {
+        SourceDescriptor {
+            id: SourceId(id),
+            kind: SourceKind::Monitor,
+            name: format!("Monitor {id}"),
+            width: 1920,
+            height: 1080,
+        }
+    }
+
+    #[test]
+    fn picking_a_listed_source_issues_the_share_and_closes_the_picker() {
+        let mut state = UiState::new();
+        assert!(state.open_picker(SourceKind::Monitor, vec![descriptor(1), descriptor(2)]));
+        assert_eq!(
+            state.pick_source(SourceId(2)),
+            Some(RoomCommand::Share {
+                kind: SourceKind::Monitor,
+                source: Some(SourceId(2)),
+            })
+        );
+        assert!(state.picker.is_none());
+    }
+
+    #[test]
+    fn an_unlisted_id_or_a_closed_picker_yields_no_command() {
+        let mut state = UiState::new();
+        assert_eq!(state.pick_source(SourceId(1)), None);
+        assert!(state.open_picker(SourceKind::Window, vec![descriptor(1)]));
+        assert_eq!(state.pick_source(SourceId(9)), None);
+        assert!(state.picker.is_some());
+        state.cancel_picker();
+        assert!(state.picker.is_none());
+    }
+
+    #[test]
+    fn the_picker_does_not_open_while_a_share_is_pending() {
+        let mut state = UiState::new();
+        state.share_pending = true;
+        assert!(!state.open_picker(SourceKind::Monitor, vec![descriptor(1)]));
+        assert!(state.picker.is_none());
     }
 }

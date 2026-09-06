@@ -3,6 +3,7 @@
 
 pub mod members;
 pub mod own_lives;
+pub mod picker;
 pub mod state;
 pub mod status;
 pub mod tiles;
@@ -41,6 +42,7 @@ pub fn draw(
     own_lives::draw(ui, snapshot, state, &mut commands);
     members::draw(ui, snapshot, state, &mut commands);
     let tile_rects = tiles::draw(ui, snapshot, state, &mut commands);
+    picker::draw(ui.ctx(), state, &mut commands);
     UiOutput {
         commands,
         tile_rects,

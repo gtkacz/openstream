@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use brp_capture::SourceListing;
 use brp_proto::SourceKind;
 use brp_room::{Room, RoomSnapshot, WatchHandle};
 use tokio::runtime::Handle;
@@ -34,7 +35,7 @@ pub enum AppEvent {
     NewFrame,
     /// Periodic wake so counters refresh while nothing is watched.
     Tick,
-    /// The portal picker closed: the live started, or the error to show.
+    /// The share task finished: the live started, or the error to show.
     ShareFinished(Result<(), String>),
 }
 
@@ -78,7 +79,7 @@ impl App {
         }
     }
 
-    /// A share still waiting on the portal holds an `Arc<Room>`; the caller aborts it before leaving.
+    /// A share still waiting on capture holds an `Arc<Room>`; the caller aborts it before leaving.
     pub fn take_pending_share(&mut self) -> Option<JoinHandle<()>> {
         self.pending_share.take()
     }
@@ -199,10 +200,24 @@ impl App {
                 RoomCommand::SetPresets { live_id, presets } => {
                     self.room.set_presets(live_id, presets)
                 }
-                RoomCommand::Share(kind) => {
-                    self.share(kind);
+                RoomCommand::Share {
+                    kind,
+                    source: Some(source),
+                } => {
+                    self.share(kind, Some(source));
                     Ok(())
                 }
+                RoomCommand::Share { kind, source: None } => match self.room.sources(kind) {
+                    Ok(SourceListing::PlatformPicker) => {
+                        self.share(kind, None);
+                        Ok(())
+                    }
+                    Ok(SourceListing::Choices(choices)) => {
+                        self.state.open_picker(kind, choices);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
             };
             if let Err(error) = result {
                 self.state.status = error.to_string();
@@ -213,7 +228,7 @@ impl App {
         }
     }
 
-    fn share(&mut self, kind: SourceKind) {
+    fn share(&mut self, kind: SourceKind, source: Option<brp_capture::SourceId>) {
         if self.pending_share.is_some() {
             return;
         }
@@ -224,7 +239,7 @@ impl App {
         let proxy = self.proxy.clone();
         self.pending_share = Some(self.runtime.spawn(async move {
             let outcome = room
-                .start_live(kind, None, title)
+                .start_live(kind, source, title)
                 .await
                 .map(|_live_id| ())
                 .map_err(|error| error.to_string());

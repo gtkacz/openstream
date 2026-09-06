@@ -1,6 +1,7 @@
 //! What the panels ask the room to do. Panels only emit these; the window applies them after the
 //! egui pass, so widget code never holds the room.
 
+use brp_capture::SourceId;
 use brp_proto::{Preset, SourceKind};
 
 use crate::render::tiles::TileKey;
@@ -12,8 +13,12 @@ pub enum RoomCommand {
     Watch { key: TileKey, preset_id: u32 },
     /// Stops watching a live.
     Unwatch(TileKey),
-    /// Opens the portal picker for a new live of this kind.
-    Share(SourceKind),
+    /// Starts a new live of this kind. Without a source the window asks the room for the
+    /// platform's listing and either starts at once or opens the picker.
+    Share {
+        kind: SourceKind,
+        source: Option<SourceId>,
+    },
     /// Stops publishing the live with this id.
     StopLive(u32),
     /// Replaces the preset list offered for a live.

@@ -28,16 +28,22 @@ pub fn draw(
                     .add_enabled(can_share, egui::Button::new("Share monitor"))
                     .clicked()
                 {
-                    commands.push(RoomCommand::Share(SourceKind::Monitor));
+                    commands.push(RoomCommand::Share {
+                        kind: SourceKind::Monitor,
+                        source: None,
+                    });
                 }
                 if ui
                     .add_enabled(can_share, egui::Button::new("Share window"))
                     .clicked()
                 {
-                    commands.push(RoomCommand::Share(SourceKind::Window));
+                    commands.push(RoomCommand::Share {
+                        kind: SourceKind::Window,
+                        source: None,
+                    });
                 }
                 if state.share_pending {
-                    ui.weak("waiting for the picker");
+                    ui.weak("starting the share");
                 }
             });
             egui::ScrollArea::vertical().show(ui, |ui| {

@@ -4,7 +4,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use brp_capture::PortalCapture;
+use brp_capture::PlatformCapture;
 use brp_net::RelaySetting;
 use brp_proto::RoomTicket;
 use brp_proto::constants::{RELAY_ONLINE_TIMEOUT, STATS_LOG_INTERVAL};
@@ -47,7 +47,7 @@ pub fn run(runtime: &Runtime, ticket: Option<String>, args: WindowArgs) -> Resul
             relay,
             nickname,
             target_fps: args.fps,
-            capture: Arc::new(PortalCapture),
+            capture: Arc::new(PlatformCapture),
             encoders: Arc::new(FfmpegCodecs::default()),
             decoders: Arc::new(FfmpegCodecs::default()),
             on_change: Arc::new(move || {
