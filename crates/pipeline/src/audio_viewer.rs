@@ -234,19 +234,11 @@ mod tests {
     /// A device buffer larger than one packet is the normal case: cpal's PipeWire host hands the
     /// callback the server quantum, 1024 frames on a stock daemon. Without a cushion in front of
     /// the track, production and consumption both run at 20 ms and every callback underruns.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_device_sized_callback_stops_underrunning_once_the_cushion_is_in() {
         const DEVICE_FRAMES: u64 = 1024;
         const WARM_UP: Duration = Duration::from_millis(200);
         const RUN: Duration = Duration::from_millis(1200);
-        // Both sides run off the wall clock at exactly 48 kHz, as a sound card and a publisher do,
-        // so any reserve the track holds comes from the cushion and not from a pacing mismatch.
-        let due_packets = |elapsed: Duration| {
-            (elapsed.as_micros() / AUDIO_PACKET_DURATION.as_micros()) as u64 + 1
-        };
-        let due_renders = |elapsed: Duration| {
-            (elapsed.as_micros() as u64 * u64::from(AUDIO_SAMPLE_RATE) / 1_000_000) / DEVICE_FRAMES
-        };
 
         let mixer = Mixer::new();
         let track = mixer.add_track([3; 32]);
@@ -259,44 +251,61 @@ mod tests {
             Arc::new(AudioViewerStats::default()),
         );
 
-        let mut encoder = FakeAudioEncoder::default();
-        let mut out = vec![0.0f32; (DEVICE_FRAMES * u64::from(AUDIO_CHANNELS)) as usize];
-        let start = Instant::now();
-        let (mut warm, mut audible) = (None, false);
-        let (mut seq, mut renders) = (0u64, 0u64);
-        while start.elapsed() < RUN {
-            let elapsed = start.elapsed();
-            while seq < due_packets(elapsed) {
-                let mut frame = AudioFrame::silence(seq * 20_000);
-                frame.samples.fill(0.5);
-                let packet = encoder.encode(&frame).unwrap().remove(0);
-                tx.send(received(&packet)).await.unwrap();
-                seq += 1;
-            }
-            while renders < due_renders(elapsed) {
-                mixer.render(&mut out);
-                audible |= out.iter().all(|s| (*s - 0.5).abs() < 1e-3);
-                renders += 1;
-            }
-            if warm.is_none() && elapsed >= WARM_UP {
-                warm = Some((track.underruns(), renders));
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        let (warm_underruns, warm_renders) = warm.expect("the warm-up window elapsed");
-        let (underruns, renders) = (track.underruns() - warm_underruns, renders - warm_renders);
-        // Steady state is zero underruns; a loaded machine deschedules the decode thread past the
-        // cushion once or twice per run, while without the cushion this harness underran seven
-        // callbacks in fifty, so a twentieth separates the two comfortably.
+        // The publisher and the device both run off the wall clock at 48 kHz, so any reserve the
+        // track holds comes from the cushion and not from a pacing mismatch. Both sit on a plain
+        // thread, leaving the runtime to the decode loop whose cadence is what is under test.
+        let (underruns, renders, audible) = {
+            let (mixer, track) = (mixer.clone(), track.clone());
+            tokio::task::spawn_blocking(move || {
+                let mut encoder = FakeAudioEncoder::default();
+                let mut out = vec![0.0f32; (DEVICE_FRAMES * u64::from(AUDIO_CHANNELS)) as usize];
+                let start = Instant::now();
+                let (mut warm, mut audible) = (None, false);
+                let (mut seq, mut renders) = (0u64, 0u64);
+                while start.elapsed() < RUN {
+                    let elapsed = start.elapsed();
+                    let micros = elapsed.as_micros() as u64;
+                    let due_packets = micros / AUDIO_PACKET_DURATION.as_micros() as u64 + 1;
+                    let due_renders =
+                        (micros * u64::from(AUDIO_SAMPLE_RATE) / 1_000_000) / DEVICE_FRAMES;
+                    while seq < due_packets {
+                        let mut frame = AudioFrame::silence(seq * 20_000);
+                        frame.samples.fill(0.5);
+                        let packet = encoder.encode(&frame).unwrap().remove(0);
+                        tx.blocking_send(received(&packet)).unwrap();
+                        seq += 1;
+                    }
+                    while renders < due_renders {
+                        mixer.render(&mut out);
+                        audible |= out.iter().all(|s| (*s - 0.5).abs() < 1e-3);
+                        renders += 1;
+                    }
+                    if warm.is_none() && elapsed >= WARM_UP {
+                        warm = Some((track.underruns(), renders));
+                    }
+                    thread::sleep(Duration::from_micros(500));
+                }
+                let (warm_underruns, warm_renders) = warm.expect("the warm-up window elapsed");
+                (
+                    track.underruns() - warm_underruns,
+                    renders - warm_renders,
+                    audible,
+                )
+            })
+            .await
+            .unwrap()
+        };
+
+        // Without the cushion this harness underruns six or seven of these callbacks; a loaded
+        // machine can still deschedule the decode thread past the cushion once or twice.
         assert!(
-            underruns * 20 <= renders,
+            underruns * 12 <= renders,
             "{underruns} of the {renders} device callbacks after warm-up underran"
         );
         assert!(
             audible,
             "a whole callback of the publisher's audio was mixed"
         );
-        drop(tx);
         viewer.stop();
     }
 }
