@@ -504,12 +504,24 @@ async fn turning_share_audio_off_ends_the_packets_and_the_flag_in_presence() {
         !b.snapshot().members[0].has_audio && a.snapshot().own_audio.subscribers == 0
     })
     .await;
-    // Drain what the jitter buffer and track still hold, then expect silence to stay.
-    for _ in 0..50 {
-        output.render(960);
-    }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!is_audible(&output.render(960)));
+    // The jitter buffer can still hold real packets right when the flag clears, so wait for
+    // them to drain rather than assuming a fixed render count empties it.
+    wait_until("silence", Duration::from_secs(5), || {
+        !is_audible(&output.render(960))
+    })
+    .await;
+    let renders: Vec<bool> = {
+        let mut results = Vec::with_capacity(10);
+        for _ in 0..10 {
+            results.push(is_audible(&output.render(960)));
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        results
+    };
+    assert!(
+        renders.iter().all(|audible| !audible),
+        "expected 10 consecutive silent renders, got {renders:?}"
+    );
 
     b.leave().await;
     a.leave().await;

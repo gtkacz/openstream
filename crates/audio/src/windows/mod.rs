@@ -111,10 +111,8 @@ fn run(
             let drained = bytes.drain(..whole).collect::<Vec<u8>>();
             // AUDCLNT_BUFFERFLAGS_SILENT means the buffer's contents are undefined and must be
             // treated as silence; process loopback reports it whenever nothing else is playing.
-            let mut samples: Vec<f32> = drained
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                .collect();
+            let (frames, _) = drained.as_chunks::<4>();
+            let mut samples: Vec<f32> = frames.iter().map(|b| f32::from_le_bytes(*b)).collect();
             if info.flags.silent {
                 samples.fill(0.0);
             }
