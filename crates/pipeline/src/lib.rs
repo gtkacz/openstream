@@ -2,6 +2,7 @@
 pub mod audio_publisher;
 pub mod error;
 pub mod fanout;
+pub mod jitter;
 pub mod pacer;
 pub mod publisher;
 pub mod reorder;
@@ -10,6 +11,7 @@ pub mod viewer;
 pub use audio_publisher::{AudioPublisher, AudioPublisherStats, FrameAssembler};
 pub use error::PipelineError;
 pub use fanout::{FanOut, KeyframeRequest, PushOutcome};
+pub use jitter::{JitterBuffer, Slot};
 pub use pacer::Pacer;
 pub use publisher::{Publisher, PublisherStats};
 pub use reorder::{Drained, IncomingFrame, Reorder};
