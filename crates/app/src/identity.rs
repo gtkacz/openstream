@@ -4,7 +4,6 @@ use data_encoding::HEXLOWER;
 use directories::ProjectDirs;
 use iroh::SecretKey;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -29,6 +28,7 @@ pub fn load_or_create_at(path: &Path) -> Result<SecretKey, AppError> {
 }
 #[cfg(unix)]
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = fs::OpenOptions::new()
         .write(true)
