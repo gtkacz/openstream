@@ -268,6 +268,7 @@ impl Room {
             .start(
                 SourceRequest {
                     kind,
+                    source: None,
                     target_fps: self.target_fps,
                 },
                 Box::new(move |frame| sink.push(frame)),

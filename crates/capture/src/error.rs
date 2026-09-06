@@ -11,4 +11,6 @@ pub enum CaptureError {
     SourceLost(String),
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
+    #[error("windows: {0}")]
+    Windows(String),
 }

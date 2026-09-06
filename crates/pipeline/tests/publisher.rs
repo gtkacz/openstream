@@ -31,6 +31,7 @@ async fn subscriber_receives_a_keyframe_first_then_ordered_frames() {
     .start(
         SourceRequest {
             kind: SourceKind::Monitor,
+            source: None,
             target_fps: 60,
         },
         Box::new(move |frame| sink_slot.put(Arc::new(frame))),

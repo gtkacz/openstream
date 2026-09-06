@@ -99,6 +99,7 @@ mod tests {
         .start(
             SourceRequest {
                 kind: SourceKind::Monitor,
+                source: None,
                 target_fps: 100,
             },
             Box::new(move |f| sink_frames.lock().unwrap().push(f)),
@@ -143,6 +144,19 @@ mod tests {
             frames
                 .windows(2)
                 .all(|w| w[1].capture_ts_us > w[0].capture_ts_us)
+        );
+    }
+
+    #[test]
+    fn synthetic_source_leaves_picking_to_the_platform() {
+        let source = SyntheticSource {
+            width: 64,
+            height: 32,
+            fps: 30,
+        };
+        assert_eq!(
+            source.sources(SourceKind::Monitor).unwrap(),
+            SourceListing::PlatformPicker
         );
     }
 }

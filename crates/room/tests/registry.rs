@@ -35,6 +35,7 @@ async fn synthetic_live(registry: &LiveRegistry, title: &str) -> u32 {
     .start(
         SourceRequest {
             kind: SourceKind::Monitor,
+            source: None,
             target_fps: 60,
         },
         Box::new(move |f| sink.push(f)),

@@ -10,3 +10,5 @@ pub use synthetic::SyntheticSource;
 pub mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::PortalCapture;
+#[cfg(target_os = "linux")]
+pub use linux::PortalCapture as PlatformCapture;
