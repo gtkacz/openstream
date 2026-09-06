@@ -1,5 +1,6 @@
 //! Capture, codec, and transport pipelines.
 pub mod audio_publisher;
+pub mod audio_viewer;
 pub mod error;
 pub mod fanout;
 pub mod jitter;
@@ -10,6 +11,7 @@ pub mod reorder;
 pub mod slot;
 pub mod viewer;
 pub use audio_publisher::{AudioPublisher, AudioPublisherStats, FrameAssembler};
+pub use audio_viewer::{AudioViewer, AudioViewerStats};
 pub use error::PipelineError;
 pub use fanout::{FanOut, KeyframeRequest, PushOutcome};
 pub use jitter::{JitterBuffer, Slot};
