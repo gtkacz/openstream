@@ -182,6 +182,13 @@ fn apply_low_latency_options(name: &str, ctx: &CodecContext) -> Result<(), Codec
             set_opt_int(ctx, "async_depth", 1)?;
             set_opt_int(ctx, "low_power", 1)?;
         }
+        "h264_mf" | "hevc_mf" => {
+            // Hardware only: a software Media Foundation transform would defeat the probe order,
+            // where software AV1 is the deliberate last resort.
+            set_opt_int(ctx, "hw_encoding", 1)?;
+            set_opt(ctx, "rate_control", "cbr")?;
+            set_opt(ctx, "scenario", "display_remoting")?;
+        }
         "libsvtav1" => {
             set_opt(ctx, "preset", "10")?;
             set_opt(ctx, "svtav1-params", "rc=2:pred-struct=1:rtc=1")?;

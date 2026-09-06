@@ -16,6 +16,8 @@ pub const PROBE_ORDER: &[(&str, Codec)] = &[
     ("hevc_qsv", Codec::Hevc),
     ("h264_qsv", Codec::H264),
     ("av1_qsv", Codec::Av1),
+    ("hevc_mf", Codec::Hevc),
+    ("h264_mf", Codec::H264),
     ("hevc_vaapi", Codec::Hevc),
     ("h264_vaapi", Codec::H264),
     ("av1_vaapi", Codec::Av1),
@@ -71,5 +73,24 @@ pub fn open_decoder(params: &CodecParams) -> Result<Box<dyn VideoDecoder>, Codec
                     .map_err(|_| CodecError::NoDecoder(params.codec))?,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PROBE_ORDER;
+
+    fn position(name: &str) -> usize {
+        PROBE_ORDER
+            .iter()
+            .position(|(candidate, _)| *candidate == name)
+            .unwrap_or_else(|| panic!("{name} is not in the probe order"))
+    }
+
+    #[test]
+    fn media_foundation_is_probed_after_qsv_and_before_the_software_fallback() {
+        assert!(position("av1_qsv") < position("hevc_mf"));
+        assert!(position("hevc_mf") < position("h264_mf"));
+        assert!(position("h264_mf") < position("libsvtav1"));
     }
 }
