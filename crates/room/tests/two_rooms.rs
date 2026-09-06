@@ -443,7 +443,7 @@ async fn a_watch_carries_audio_to_the_output_and_a_second_watch_of_the_same_publ
     assert_eq!(carriers, vec![desk], "only the first watch carries audio");
     assert_eq!(a.snapshot().own_audio.subscribers, 1);
     wait_until("audible output", Duration::from_secs(5), || {
-        is_audible(&output.render(960))
+        is_audible(&output.render(1024))
     })
     .await;
 
@@ -460,7 +460,7 @@ async fn a_watch_carries_audio_to_the_output_and_a_second_watch_of_the_same_publ
     )
     .await;
     wait_until("still audible", Duration::from_secs(5), || {
-        is_audible(&output.render(960))
+        is_audible(&output.render(1024))
     })
     .await;
 
@@ -468,7 +468,7 @@ async fn a_watch_carries_audio_to_the_output_and_a_second_watch_of_the_same_publ
     assert_eq!(b.snapshot().members[0].gain, 0.0);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
-        !is_audible(&output.render(960)),
+        !is_audible(&output.render(1024)),
         "gain zero silences the publisher"
     );
 
@@ -495,7 +495,7 @@ async fn turning_share_audio_off_ends_the_packets_and_the_flag_in_presence() {
     .await;
     b.watch(a.id(), live, SOURCE_PRESET_ID).unwrap();
     wait_until("audible", Duration::from_secs(5), || {
-        is_audible(&output.render(960))
+        is_audible(&output.render(1024))
     })
     .await;
 
@@ -507,13 +507,13 @@ async fn turning_share_audio_off_ends_the_packets_and_the_flag_in_presence() {
     // The jitter buffer can still hold real packets right when the flag clears, so wait for
     // them to drain rather than assuming a fixed render count empties it.
     wait_until("silence", Duration::from_secs(5), || {
-        !is_audible(&output.render(960))
+        !is_audible(&output.render(1024))
     })
     .await;
     let renders: Vec<bool> = {
         let mut results = Vec::with_capacity(10);
         for _ in 0..10 {
-            results.push(is_audible(&output.render(960)));
+            results.push(is_audible(&output.render(1024)));
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         results

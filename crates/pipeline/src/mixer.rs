@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use brp_audio::RenderFn;
 use brp_proto::constants::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, MIXER_TRACK_CAPACITY};
@@ -141,23 +141,25 @@ impl Mixer {
             .unwrap_or(0)
     }
 
-    /// Fills `out` with the mix. Runs on the device thread: the mixer state (tracks and gains) is
-    /// only tried, and a contended callback renders silence rather than blocking; each track's
-    /// buffer lock is held by the decode thread for a memcpy at most.
+    /// Fills `out` with the mix. Runs on the device thread, so nothing here ever waits on a lock:
+    /// the mixer state and every track buffer are only tried, and a contended one contributes
+    /// silence for that callback and counts an underrun.
     pub fn render(&self, out: &mut [f32]) {
         out.fill(0.0);
-        let Ok(state) = self.inner.state.try_lock() else {
+        let Some(state) = try_lock(&self.inner.state) else {
             return;
         };
         let muted = self.muted();
         for track in state.tracks.values() {
             let gain = track.gain();
-            let mut buffer = lock(&track.inner.buffer);
-            if buffer.len() < out.len() {
-                // A partial burst followed by a gap clicks; one callback of silence does not.
+            let Some(mut buffer) = try_lock(&track.inner.buffer) else {
                 track.inner.underruns.fetch_add(1, Ordering::Relaxed);
-                buffer.clear();
                 continue;
+            };
+            if buffer.len() < out.len() {
+                // Short of a full callback: play what there is and let the rest stay silent, so a
+                // track that is merely behind keeps its audio instead of losing it.
+                track.inner.underruns.fetch_add(1, Ordering::Relaxed);
             }
             for sample in out.iter_mut() {
                 let Some(value) = buffer.pop_front() else {
@@ -183,6 +185,15 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// `lock`'s device-thread sibling: recovers a poisoned mutex like it does, but never waits.
+fn try_lock<T>(mutex: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+    match mutex.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
 }
 
 #[cfg(test)]
@@ -230,15 +241,37 @@ mod tests {
     }
 
     #[test]
-    fn a_short_track_contributes_silence_and_counts_one_underrun() {
+    fn a_short_track_contributes_what_it_has_and_counts_one_underrun() {
         let mixer = Mixer::new();
         let a = mixer.add_track(A);
         a.push(&[0.5; 2]);
         let mut out = [0.0; 4];
         mixer.render(&mut out);
+        assert_eq!(
+            out,
+            [0.5, 0.5, 0.0, 0.0],
+            "the tail is zero-filled, not dropped"
+        );
+        assert_eq!(mixer.underruns(&A), 1);
+        assert_eq!(a.queued(), 0);
+    }
+
+    #[test]
+    fn a_contended_track_renders_silence_and_counts_an_underrun() {
+        let mixer = Mixer::new();
+        let a = mixer.add_track(A);
+        a.push(&[0.5; 4]);
+        let held = a.inner.buffer.lock().unwrap();
+        let mut out = [0.0; 4];
+        mixer.render(&mut out);
         assert_eq!(out, [0.0; 4]);
         assert_eq!(mixer.underruns(&A), 1);
-        assert_eq!(a.queued(), 0, "the short remainder is consumed, not kept");
+        drop(held);
+        mixer.render(&mut out);
+        assert!(
+            out.iter().all(|s| (*s - 0.5).abs() < 1e-6),
+            "the samples waited for the next callback"
+        );
     }
 
     #[test]
