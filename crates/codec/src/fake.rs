@@ -1,6 +1,7 @@
+use crate::audio::{AudioDecoder, AudioEncoder, AudioFrame};
 use crate::traits::*;
 use crate::{CodecError, RawFrame};
-use brp_proto::{CodecParams, EncodedFrame};
+use brp_proto::{AudioParams, CodecParams, EncodedFrame};
 pub struct FakeEncoder {
     cfg: EncoderConfig,
     next: u64,
@@ -60,11 +61,44 @@ impl FrameConverter for SolidConverter {
     }
 }
 
+/// Carries the float samples through as bytes so integration tests can assert on what reaches
+/// the output.
+#[derive(Default)]
+pub struct FakeAudioEncoder {
+    next: u64,
+}
+impl AudioEncoder for FakeAudioEncoder {
+    fn name(&self) -> &'static str {
+        "fake-audio"
+    }
+    fn params(&self) -> AudioParams {
+        AudioParams::STANDARD
+    }
+    fn encode(&mut self, f: &AudioFrame) -> Result<Vec<EncodedFrame>, CodecError> {
+        f.validate()?;
+        let p = EncodedFrame {
+            seq: self.next,
+            capture_ts_us: f.capture_ts_us,
+            keyframe: true,
+            data: postcard::to_allocvec(f)?,
+        };
+        self.next += 1;
+        Ok(vec![p])
+    }
+}
+pub struct FakeAudioDecoder;
+impl AudioDecoder for FakeAudioDecoder {
+    fn decode(&mut self, p: &EncodedFrame) -> Result<Vec<AudioFrame>, CodecError> {
+        Ok(vec![postcard::from_bytes(&p.data)?])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use brp_proto::{Codec, EncodedFrame, PixelFormat};
 
     use super::*;
+    use crate::audio::{AudioDecoder, AudioEncoder, AudioFrame};
 
     fn cfg() -> EncoderConfig {
         EncoderConfig {
@@ -128,5 +162,39 @@ mod tests {
         let out = conv.convert(&img).unwrap();
         assert_eq!((out.width, out.height, out.capture_ts_us), (4, 2, 5));
         assert!(out.validate().is_ok());
+    }
+
+    #[test]
+    fn fake_audio_codec_round_trips_frames_and_numbers_packets() {
+        let mut enc = FakeAudioEncoder::default();
+        let mut dec = FakeAudioDecoder;
+        for i in 0..3u64 {
+            let mut frame = AudioFrame::silence(i * 20_000);
+            frame.samples[0] = i as f32;
+            let packets = enc.encode(&frame).unwrap();
+            assert_eq!(packets.len(), 1);
+            assert_eq!(
+                (
+                    packets[0].seq,
+                    packets[0].capture_ts_us,
+                    packets[0].keyframe
+                ),
+                (i, i * 20_000, true)
+            );
+            assert_eq!(dec.decode(&packets[0]).unwrap(), vec![frame]);
+        }
+        assert_eq!(enc.params(), brp_proto::AudioParams::STANDARD);
+    }
+
+    #[test]
+    fn fake_audio_encoder_rejects_a_partial_frame() {
+        let short = AudioFrame {
+            samples: vec![0.0; 10],
+            capture_ts_us: 0,
+        };
+        assert!(matches!(
+            FakeAudioEncoder::default().encode(&short),
+            Err(CodecError::InvalidFrame(_))
+        ));
     }
 }
