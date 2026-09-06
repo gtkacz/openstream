@@ -98,19 +98,26 @@ fn run(
         .map_err(|e| AudioError::Windows(format!("Start: {e}")))?;
     let _ = ready.send(Ok(()));
 
+    // A stereo frame's worth of bytes; draining anything less would strand a partial frame and
+    // swap channels for the rest of the session.
+    let frame_bytes = AUDIO_CHANNELS as usize * 4;
     let mut bytes: VecDeque<u8> = VecDeque::new();
     while !stop.load(Ordering::Relaxed) {
-        capture
+        let info = capture
             .read_from_device_to_deque(&mut bytes)
             .map_err(|e| AudioError::Windows(format!("GetBuffer: {e}")))?;
-        if bytes.len() >= 4 {
-            let whole = bytes.len() - bytes.len() % 4;
-            let samples: Vec<f32> = bytes
-                .drain(..whole)
-                .collect::<Vec<u8>>()
+        if bytes.len() >= frame_bytes {
+            let whole = bytes.len() - bytes.len() % frame_bytes;
+            let drained = bytes.drain(..whole).collect::<Vec<u8>>();
+            // AUDCLNT_BUFFERFLAGS_SILENT means the buffer's contents are undefined and must be
+            // treated as silence; process loopback reports it whenever nothing else is playing.
+            let mut samples: Vec<f32> = drained
                 .chunks_exact(4)
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
+            if info.flags.silent {
+                samples.fill(0.0);
+            }
             sink(AudioChunk {
                 samples,
                 capture_ts_us: monotonic_us(),
