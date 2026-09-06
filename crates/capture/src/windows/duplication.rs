@@ -171,10 +171,12 @@ impl Drop for DupSession {
 }
 
 fn shutdown(stop: &AtomicBool, thread: Option<JoinHandle<()>>) {
+    // A missing handle means the thread now belongs to the session; its flag is not ours.
+    let Some(thread) = thread else {
+        return;
+    };
     stop.store(true, Ordering::Relaxed);
-    if let Some(thread) = thread
-        && thread.join().is_err()
-    {
+    if thread.join().is_err() {
         tracing::warn!("duplication thread panicked");
     }
 }
