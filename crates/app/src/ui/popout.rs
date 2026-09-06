@@ -49,7 +49,8 @@ pub fn draw(
             i.key_pressed(egui::Key::Escape),
         )
     });
-    if fullscreen_toggle_requested(f11, escape, fullscreen) {
+    let popup_open = egui::Popup::is_any_open(ui.ctx());
+    if fullscreen_toggle_requested(f11, escape, fullscreen, popup_open) {
         output
             .window_commands
             .push(WindowCommand::ToggleFullscreen(key));
@@ -57,9 +58,15 @@ pub fn draw(
     output
 }
 
-/// F11 always toggles; Esc only leaves fullscreen, so it cannot enter it by accident.
-pub fn fullscreen_toggle_requested(f11: bool, escape: bool, fullscreen: bool) -> bool {
-    f11 || (escape && fullscreen)
+/// F11 always toggles; Esc only leaves fullscreen, so it cannot enter it by accident. Esc is
+/// ignored while a popup is open because the same press is dismissing the popup.
+pub fn fullscreen_toggle_requested(
+    f11: bool,
+    escape: bool,
+    fullscreen: bool,
+    popup_open: bool,
+) -> bool {
+    f11 || (escape && fullscreen && !popup_open)
 }
 
 #[cfg(test)]
@@ -68,10 +75,16 @@ mod tests {
 
     #[test]
     fn f11_toggles_both_ways_and_escape_only_leaves_fullscreen() {
-        assert!(fullscreen_toggle_requested(true, false, false));
-        assert!(fullscreen_toggle_requested(true, false, true));
-        assert!(fullscreen_toggle_requested(false, true, true));
-        assert!(!fullscreen_toggle_requested(false, true, false));
-        assert!(!fullscreen_toggle_requested(false, false, true));
+        assert!(fullscreen_toggle_requested(true, false, false, false));
+        assert!(fullscreen_toggle_requested(true, false, true, false));
+        assert!(fullscreen_toggle_requested(false, true, true, false));
+        assert!(!fullscreen_toggle_requested(false, true, false, false));
+        assert!(!fullscreen_toggle_requested(false, false, true, false));
+    }
+
+    #[test]
+    fn escape_is_ignored_while_a_popup_is_open_but_f11_still_toggles() {
+        assert!(!fullscreen_toggle_requested(false, true, true, true));
+        assert!(fullscreen_toggle_requested(true, false, true, true));
     }
 }
