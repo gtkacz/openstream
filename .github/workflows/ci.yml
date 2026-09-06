@@ -12,6 +12,7 @@ jobs:
         run: >
           dnf install -y --setopt=install_weak_deps=False git gcc gcc-c++ clang clang-devel
           pkgconf-pkg-config ffmpeg-free-devel pipewire-devel libxkbcommon-devel wayland-devel libX11-devel
+          alsa-lib-devel
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:

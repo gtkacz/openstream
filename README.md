@@ -81,13 +81,15 @@ PipeWire, and bindgen's Clang development files:
 
 ```sh
 sudo dnf install gcc clang clang-devel pkgconf-pkg-config \
-  pipewire-devel ffmpeg-devel
+  pipewire-devel ffmpeg-devel alsa-lib-devel
 ```
 
 At runtime, install and run `xdg-desktop-portal` with a compositor backend and
 PipeWire. The portal's ScreenCast interface supplies the monitor/window picker
-and capture stream. A working Vulkan/GL-capable `wgpu` graphics backend is also
-required for the window.
+and capture stream. PipeWire also serves audio: brp captures every
+application's output except its own and plays received audio through the
+default output device. A working Vulkan/GL-capable `wgpu` graphics backend is
+also required for the window.
 
 The development environment is Fedora 44 with KDE on Wayland. The application
 is intended to work on Wayland and X11 wherever the desktop portal is
@@ -100,8 +102,10 @@ Windows 10 version 2004 or later with a GPU that has an HEVC or H.264 encoder
 a target. Monitor capture uses Windows Graphics Capture; a monitor that delivers
 no frame within two seconds, which happens with some exclusive-fullscreen
 games, is captured through desktop duplication instead. Window capture uses
-Graphics Capture only. Every push builds the Windows binary on GitHub Actions:
-the `windows` job uploads `brp-windows-x86_64`, a zip with `brp.exe`, the four
+Graphics Capture only. Audio capture uses WASAPI process loopback, which needs
+the same Windows 10 version 2004 minimum already required above. Every push
+builds the Windows binary on GitHub Actions: the `windows` job uploads
+`brp-windows-x86_64`, a zip with `brp.exe`, the four
 FFmpeg DLLs it links, and both licences. Download it from the run's artifacts,
 extract, and run `brp.exe` from that directory.
 
@@ -146,6 +150,7 @@ rooms are entered each launch until the settings phase.
 | `brp-proto` | Wire types, postcard encoding, frame headers, tickets, presence, preset templates, constants, and bitrate rules |
 | `brp-codec` | Encoder/decoder traits, the FFmpeg implementation with hardware probing across NVIDIA, AMD, Intel, Media Foundation/VAAPI, and software, plus test fakes |
 | `brp-capture` | Capture traits, the synthetic source, the Linux portal/PipeWire backend, the Windows Graphics Capture backend with its desktop-duplication fallback, and the platform-neutral fallback driver |
+| `brp-audio` | Audio capture traits, the PipeWire application-output capture, the WASAPI process-loopback capture, cpal playback, and the test doubles |
 | `brp-net` | iroh endpoint, QUIC media client/server, connection policy, and stream framing |
 | `brp-room` | Room membership over signed gossip presence, the live registry with lazy encoders, watches, and snapshots |
 | `brp-pipeline` | Bounded publisher/viewer pipelines, fan-out, reordering, frame pacing, and latest-frame slots |

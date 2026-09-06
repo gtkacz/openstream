@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use brp_audio::{CpalOutput, PlatformAudioCapture};
 use brp_capture::PlatformCapture;
 use brp_net::RelaySetting;
 use brp_proto::RoomTicket;
@@ -73,12 +74,8 @@ pub async fn open_room(
         nickname,
         target_fps: launch.fps,
         capture: Arc::new(PlatformCapture),
-        // TODO: replace with the platform audio backend once it lands.
-        audio_capture: Arc::new(brp_audio::SyntheticTone {
-            frequency_hz: 440.0,
-            amplitude: 0.0,
-        }),
-        audio_output: Arc::new(brp_audio::FakeOutput::new().0),
+        audio_capture: Arc::new(PlatformAudioCapture::new(std::process::id())),
+        audio_output: Arc::new(CpalOutput),
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(move || {

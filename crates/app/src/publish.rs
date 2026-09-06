@@ -1,6 +1,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use brp_audio::{CpalOutput, PlatformAudioCapture};
 use brp_capture::PlatformCapture;
 use brp_net::RelaySetting;
 use brp_proto::constants::{RELAY_ONLINE_TIMEOUT, SOURCE_PRESET_ID, STATS_LOG_INTERVAL};
@@ -29,12 +30,8 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         nickname,
         target_fps: args.fps,
         capture: Arc::new(PlatformCapture),
-        // TODO: replace with the platform audio backend once it lands.
-        audio_capture: Arc::new(brp_audio::SyntheticTone {
-            frequency_hz: 440.0,
-            amplitude: 0.0,
-        }),
-        audio_output: Arc::new(brp_audio::FakeOutput::new().0),
+        audio_capture: Arc::new(PlatformAudioCapture::new(std::process::id())),
+        audio_output: Arc::new(CpalOutput),
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(|| {}),

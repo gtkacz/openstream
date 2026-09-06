@@ -16,3 +16,8 @@ pub use synthetic::SyntheticTone;
 pub mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::PipeWireCapture as PlatformAudioCapture;
+
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+pub use windows::ProcessLoopbackCapture as PlatformAudioCapture;
