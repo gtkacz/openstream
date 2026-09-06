@@ -27,6 +27,23 @@ pub struct OwnLiveView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioCaptureState {
+    Off,
+    /// Enabled, nobody listening: capture has not been started or was stopped after the grace.
+    Idle,
+    Capturing,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnAudioView {
+    pub enabled: bool,
+    pub state: AudioCaptureState,
+    pub subscribers: usize,
+    pub packets_encoded: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberView {
     pub id: PublicKey,
     pub nickname: String,

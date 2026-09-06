@@ -5,15 +5,16 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use brp_audio::{AudioCapture, AudioCaptureSession};
 use brp_capture::{CaptureFrame, CaptureSession};
-use brp_net::{LiveSource, SubscribeRejected, Subscription};
-use brp_pipeline::{LatestSlot, Pacer, Publisher};
+use brp_net::{AudioSubscription, LiveSource, SubscribeRejected, Subscription};
+use brp_pipeline::{AudioPublisher, LatestSlot, Pacer, Publisher};
 use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, MAX_PRESETS_PER_LIVE};
 use brp_proto::{LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
 
 use crate::codecs::EncoderFactory;
 use crate::error::RoomError;
-use crate::snapshot::{EncoderView, OwnLiveView, PresetView};
+use crate::snapshot::{AudioCaptureState, EncoderView, OwnAudioView, OwnLiveView, PresetView};
 
 pub type ChangeNotify = Arc<dyn Fn() + Send + Sync>;
 
@@ -71,14 +72,35 @@ struct OwnLive {
     presets: BTreeMap<u32, PresetState>,
 }
 
+struct RunningAudio {
+    session: Box<dyn AudioCaptureSession>,
+    publisher: AudioPublisher,
+    idle_since: Option<Instant>,
+}
+
+struct AudioState {
+    enabled: bool,
+    running: Option<RunningAudio>,
+    last_error: Option<String>,
+}
+
+impl AudioState {
+    /// What presence says: on, and not known to be broken.
+    fn advertises(&self) -> bool {
+        self.enabled && self.last_error.is_none()
+    }
+}
+
 struct Inner {
     lives: BTreeMap<u32, OwnLive>,
     next_live_id: u32,
+    audio: AudioState,
 }
 
 pub struct LiveRegistry {
     inner: Mutex<Inner>,
     encoders: Arc<dyn EncoderFactory>,
+    audio_capture: Arc<dyn AudioCapture>,
     grace: Duration,
     on_change: ChangeNotify,
 }
@@ -86,6 +108,7 @@ pub struct LiveRegistry {
 impl LiveRegistry {
     pub fn new(
         encoders: Arc<dyn EncoderFactory>,
+        audio_capture: Arc<dyn AudioCapture>,
         grace: Duration,
         on_change: ChangeNotify,
     ) -> Arc<Self> {
@@ -93,8 +116,14 @@ impl LiveRegistry {
             inner: Mutex::new(Inner {
                 lives: BTreeMap::new(),
                 next_live_id: 1,
+                audio: AudioState {
+                    enabled: true,
+                    running: None,
+                    last_error: None,
+                },
             }),
             encoders,
+            audio_capture,
             grace,
             on_change,
         })
@@ -116,6 +145,7 @@ impl LiveRegistry {
         }
         let id = inner.next_live_id;
         inner.next_live_id += 1;
+        let has_audio = inner.audio.advertises();
         let info = LiveInfo {
             id,
             title,
@@ -123,7 +153,7 @@ impl LiveRegistry {
             source_width: source.width,
             source_height: source.height,
             source_fps: source.fps,
-            has_audio: false,
+            has_audio,
             presets: presets.clone(),
         };
         let presets = presets
@@ -221,11 +251,57 @@ impl LiveRegistry {
     }
 
     pub fn live_infos(&self) -> Vec<LiveInfo> {
-        lock(&self.inner)
+        let inner = lock(&self.inner);
+        let has_audio = inner.audio.advertises();
+        inner
             .lives
             .values()
-            .map(|l| l.info.clone())
+            .map(|l| LiveInfo {
+                has_audio,
+                ..l.info.clone()
+            })
             .collect()
+    }
+
+    pub fn set_audio(&self, enabled: bool) {
+        let mut inner = lock(&self.inner);
+        inner.audio.enabled = enabled;
+        // A retoggle is the retry path: forget the last failure and start fresh on the next listener.
+        inner.audio.last_error = None;
+        if !enabled {
+            stop_audio(&mut inner.audio);
+        }
+        drop(inner);
+        (self.on_change)();
+    }
+
+    pub fn audio_enabled(&self) -> bool {
+        lock(&self.inner).audio.enabled
+    }
+
+    pub fn audio_view(&self) -> OwnAudioView {
+        let inner = lock(&self.inner);
+        let audio = &inner.audio;
+        let state = match (&audio.last_error, &audio.running, audio.enabled) {
+            (_, _, false) => AudioCaptureState::Off,
+            (Some(error), _, true) => AudioCaptureState::Failed(error.clone()),
+            (None, Some(_), true) => AudioCaptureState::Capturing,
+            (None, None, true) => AudioCaptureState::Idle,
+        };
+        OwnAudioView {
+            enabled: audio.enabled,
+            state,
+            subscribers: audio
+                .running
+                .as_ref()
+                .map(|r| r.publisher.subscriber_count())
+                .unwrap_or(0),
+            packets_encoded: audio
+                .running
+                .as_ref()
+                .map(|r| r.publisher.stats().packets_encoded.load(Ordering::Relaxed))
+                .unwrap_or(0),
+        }
     }
 
     pub fn views(&self) -> Vec<OwnLiveView> {
@@ -264,6 +340,7 @@ impl LiveRegistry {
     /// Stops encoders that have had no subscriber for the whole grace period.
     pub fn housekeeping(&self, now: Instant) {
         let mut inner = lock(&self.inner);
+        let audio_changed = housekeep_audio(&mut inner.audio, now, self.grace);
         let mut stopped_any = false;
         for live in inner.lives.values_mut() {
             for state in live.presets.values_mut() {
@@ -284,7 +361,7 @@ impl LiveRegistry {
             }
         }
         drop(inner);
-        if stopped_any {
+        if stopped_any || audio_changed {
             (self.on_change)();
         }
     }
@@ -294,6 +371,7 @@ impl LiveRegistry {
         for id in ids {
             let _ = self.remove_live(id);
         }
+        stop_audio(&mut lock(&self.inner).audio);
     }
 }
 
@@ -367,12 +445,96 @@ impl LiveSource for LiveRegistry {
             running.publisher.request_keyframe(live_id, preset_id);
         }
     }
+
+    fn subscribe_audio(&self, live_id: u32) -> Result<AudioSubscription, SubscribeRejected> {
+        let mut inner = lock(&self.inner);
+        if !inner.lives.contains_key(&live_id) {
+            return Err(SubscribeRejected::UnknownLive(live_id));
+        }
+        if !inner.audio.advertises() {
+            return Err(SubscribeRejected::NoAudio);
+        }
+        let mut started = false;
+        if inner.audio.running.is_none() {
+            let outcome = self
+                .encoders
+                .open_audio()
+                .map_err(|e| e.to_string())
+                .and_then(|encoder| {
+                    let publisher = AudioPublisher::start(encoder);
+                    match self.audio_capture.start(publisher.sink()) {
+                        Ok(session) => Ok(RunningAudio {
+                            session,
+                            publisher,
+                            idle_since: None,
+                        }),
+                        Err(error) => {
+                            publisher.stop();
+                            Err(error.to_string())
+                        }
+                    }
+                });
+            match outcome {
+                Ok(running) => {
+                    inner.audio.running = Some(running);
+                    started = true;
+                }
+                Err(message) => {
+                    tracing::warn!(%message, "audio capture failed to start");
+                    inner.audio.last_error = Some(message);
+                    drop(inner);
+                    (self.on_change)();
+                    return Err(SubscribeRejected::NoAudio);
+                }
+            }
+        }
+        let running = inner.audio.running.as_mut().expect("set above");
+        running.idle_since = None;
+        let subscription = AudioSubscription {
+            params: running.publisher.params(),
+            packets: running.publisher.subscribe(),
+        };
+        drop(inner);
+        if started {
+            (self.on_change)();
+        }
+        Ok(subscription)
+    }
 }
 
 fn stop_encoder(fan: &CaptureFan, state: &mut PresetState) {
     if let Some(running) = state.running.take() {
         running.publisher.stop();
         fan.detach(&running.slot);
+    }
+}
+
+/// Stops idle capture after the grace and turns a dead session into a recorded failure.
+fn housekeep_audio(audio: &mut AudioState, now: Instant, grace: Duration) -> bool {
+    let Some(running) = audio.running.as_mut() else {
+        return false;
+    };
+    if let Some(error) = running.session.error() {
+        stop_audio(audio);
+        audio.last_error = Some(error);
+        return true;
+    }
+    if running.publisher.subscriber_count() > 0 {
+        running.idle_since = None;
+        return false;
+    }
+    let idle_for = now.duration_since(*running.idle_since.get_or_insert(now));
+    if idle_for >= grace {
+        stop_audio(audio);
+        return true;
+    }
+    false
+}
+
+fn stop_audio(audio: &mut AudioState) {
+    if let Some(running) = audio.running.take() {
+        running.publisher.stop();
+        running.session.stop();
     }
 }
 

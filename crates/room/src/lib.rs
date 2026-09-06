@@ -13,6 +13,7 @@ pub use error::RoomError;
 pub use registry::ChangeNotify;
 pub use room::{Room, RoomConfig, RoomTimings};
 pub use snapshot::{
-    EncoderView, MemberView, OwnLiveView, PresetView, RoomSnapshot, WatchState, WatchView,
+    AudioCaptureState, EncoderView, MemberView, OwnAudioView, OwnLiveView, PresetView,
+    RoomSnapshot, WatchState, WatchView,
 };
 pub use watcher::WatchHandle;

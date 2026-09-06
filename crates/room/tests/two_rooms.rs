@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use brp_audio::SyntheticTone;
 use brp_capture::{
     CaptureBackend, CaptureError, FrameSink, SourceDescriptor, SourceId, SourceListing,
     SourceRequest, StartFuture, SyntheticSource,
@@ -22,6 +23,10 @@ pub fn config(nickname: &str) -> RoomConfig {
             width: 64,
             height: 32,
             fps: 30,
+        }),
+        audio_capture: Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
         }),
         encoders: Arc::new(FakeCodecs),
         decoders: Arc::new(FakeCodecs),

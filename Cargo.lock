@@ -486,6 +486,7 @@ dependencies = [
 name = "brp"
 version = "0.1.0"
 dependencies = [
+ "brp-audio",
  "brp-capture",
  "brp-codec",
  "brp-net",
@@ -590,6 +591,7 @@ dependencies = [
 name = "brp-room"
 version = "0.1.0"
 dependencies = [
+ "brp-audio",
  "brp-capture",
  "brp-codec",
  "brp-net",

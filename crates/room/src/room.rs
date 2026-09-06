@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use brp_audio::AudioCapture;
 use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::FrameNotify;
@@ -54,6 +55,7 @@ pub struct RoomConfig {
     pub nickname: String,
     pub target_fps: u32,
     pub capture: Arc<dyn CaptureBackend>,
+    pub audio_capture: Arc<dyn AudioCapture>,
     pub encoders: Arc<dyn EncoderFactory>,
     pub decoders: Arc<dyn DecoderFactory>,
     pub on_change: ChangeNotify,
@@ -118,6 +120,7 @@ impl Room {
         let membership = Arc::new(Mutex::new(Membership::new(config.timings.expiry)));
         let registry = LiveRegistry::new(
             config.encoders.clone(),
+            config.audio_capture.clone(),
             config.timings.encoder_grace,
             registry_notify,
         );

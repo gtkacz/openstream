@@ -5,10 +5,10 @@ use std::sync::OnceLock;
 use brp_capture::SourceInfo;
 use brp_codec::ffmpeg::SwsConverter;
 use brp_codec::{
-    CodecError, EncoderConfig, FrameConverter, VideoDecoder, VideoEncoder, open_decoder,
-    open_encoder,
+    AudioDecoder, AudioEncoder, CodecError, EncoderConfig, FrameConverter, VideoDecoder,
+    VideoEncoder, open_audio_decoder, open_audio_encoder, open_decoder, open_encoder,
 };
-use brp_proto::{Codec, CodecParams, PixelFormat, Preset};
+use brp_proto::{AudioParams, Codec, CodecParams, PixelFormat, Preset};
 
 pub struct EncoderParts {
     pub converter: Box<dyn FrameConverter>,
@@ -26,10 +26,14 @@ pub trait EncoderFactory: Send + Sync + 'static {
     /// The codec new lives default to. The real factory probes the GPU once; the spec prefers HEVC,
     /// then H.264, then the software AV1 fallback.
     fn preferred_codec(&self) -> Codec;
+
+    fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError>;
 }
 
 pub trait DecoderFactory: Send + Sync + 'static {
     fn open(&self, params: &CodecParams) -> Result<Box<dyn VideoDecoder>, CodecError>;
+
+    fn open_audio(&self, params: &AudioParams) -> Result<Box<dyn AudioDecoder>, CodecError>;
 }
 
 fn config_for(preset: &Preset) -> EncoderConfig {
@@ -84,16 +88,26 @@ impl EncoderFactory for FfmpegCodecs {
                 .unwrap_or(Codec::Av1)
         })
     }
+
+    fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
+        open_audio_encoder()
+    }
 }
 
 impl DecoderFactory for FfmpegCodecs {
     fn open(&self, params: &CodecParams) -> Result<Box<dyn VideoDecoder>, CodecError> {
         open_decoder(params)
     }
+
+    fn open_audio(&self, params: &AudioParams) -> Result<Box<dyn AudioDecoder>, CodecError> {
+        open_audio_decoder(params)
+    }
 }
 
 pub mod fake {
-    use brp_codec::fake::{FakeDecoder, FakeEncoder, SolidConverter};
+    use brp_codec::fake::{
+        FakeAudioDecoder, FakeAudioEncoder, FakeDecoder, FakeEncoder, SolidConverter,
+    };
 
     use super::*;
 
@@ -119,11 +133,19 @@ pub mod fake {
         fn preferred_codec(&self) -> Codec {
             Codec::H264
         }
+
+        fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
+            Ok(Box::new(FakeAudioEncoder::default()))
+        }
     }
 
     impl DecoderFactory for FakeCodecs {
         fn open(&self, _params: &CodecParams) -> Result<Box<dyn VideoDecoder>, CodecError> {
             Ok(Box::new(FakeDecoder))
+        }
+
+        fn open_audio(&self, _params: &AudioParams) -> Result<Box<dyn AudioDecoder>, CodecError> {
+            Ok(Box::new(FakeAudioDecoder))
         }
     }
 }
