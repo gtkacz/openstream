@@ -5,12 +5,14 @@ use std::str::FromStr;
 use brp_proto::RoomTicket;
 
 use crate::launch::Intent;
+use crate::settings::RecentRoom;
 
 /// Which button the user clicked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartAction {
     Create,
     Join,
+    OpenSettings,
 }
 
 /// The form's fields, whether an open is in flight, and the last error to show.
@@ -35,6 +37,9 @@ impl StartState {
     /// Turns a click into an intent, or refuses it: nothing while an open is in flight, and a join
     /// needs a ticket that parses. On success the screen is marked connecting.
     pub fn submit(&mut self, action: StartAction) -> Option<Intent> {
+        if action == StartAction::OpenSettings {
+            return None;
+        }
         if self.connecting {
             return None;
         }
@@ -47,6 +52,8 @@ impl StartState {
                     return None;
                 }
             },
+            // Returned above before this match is reached.
+            StartAction::OpenSettings => unreachable!(),
         };
         self.error.clear();
         self.connecting = true;
@@ -60,12 +67,55 @@ impl StartState {
     }
 }
 
-/// Draws the start screen and returns the button clicked, if any.
-pub fn draw(ui: &mut egui::Ui, state: &mut StartState) -> Option<StartAction> {
+/// Characters of a ticket shown at each end on the start screen; the middle is elided.
+const TICKET_HEAD: usize = 8;
+const TICKET_TAIL: usize = 6;
+
+/// "just now", then minutes, hours, days.
+pub fn relative_age(then_unix: u64, now_unix: u64) -> String {
+    let seconds = now_unix.saturating_sub(then_unix);
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    if minutes == 0 {
+        "just now".to_string()
+    } else if hours == 0 {
+        format!("{minutes} min ago")
+    } else if days == 0 {
+        format!("{hours} h ago")
+    } else {
+        format!("{days} d ago")
+    }
+}
+
+/// The ticket's ends with the middle elided, so a row fits and two tickets stay tellable apart.
+pub fn abbreviate_ticket(ticket: &str) -> String {
+    let chars: Vec<char> = ticket.chars().collect();
+    if chars.len() <= TICKET_HEAD + TICKET_TAIL + 1 {
+        return ticket.to_string();
+    }
+    let head: String = chars[..TICKET_HEAD].iter().collect();
+    let tail: String = chars[chars.len() - TICKET_TAIL..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// Draws the start screen and returns the button clicked, if any. Clicking a recent room fills
+/// the ticket field and joins it.
+pub fn draw(
+    ui: &mut egui::Ui,
+    state: &mut StartState,
+    recent: &[RecentRoom],
+    now_unix: u64,
+) -> Option<StartAction> {
     let mut action = None;
     egui::CentralPanel::default().show(ui, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            if ui.button("Settings").clicked() {
+                action = Some(StartAction::OpenSettings);
+            }
+        });
         ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.25);
+            ui.add_space(ui.available_height() * 0.2);
             ui.heading("brp");
             ui.add_space(16.0);
             ui.horizontal(|ui| {
@@ -97,6 +147,23 @@ pub fn draw(ui: &mut egui::Ui, state: &mut StartState) -> Option<StartAction> {
                 .clicked()
             {
                 action = Some(StartAction::Join);
+            }
+            if !recent.is_empty() {
+                ui.add_space(16.0);
+                ui.label("Recent rooms");
+                for room in recent {
+                    ui.horizontal(|ui| {
+                        ui.monospace(abbreviate_ticket(&room.ticket));
+                        ui.weak(relative_age(room.last_joined_unix, now_unix));
+                        if ui
+                            .add_enabled(!state.connecting, egui::Button::new("Join"))
+                            .clicked()
+                        {
+                            state.ticket = room.ticket.clone();
+                            action = Some(StartAction::Join);
+                        }
+                    });
+                }
             }
             ui.add_space(16.0);
             if state.connecting {
@@ -156,6 +223,33 @@ mod tests {
         state.submit(StartAction::Create);
         assert_eq!(state.submit(StartAction::Create), None);
         assert_eq!(state.submit(StartAction::Join), None);
+    }
+
+    #[test]
+    fn open_settings_is_never_an_intent_and_leaves_the_form_alone() {
+        let mut state = StartState::new("alice".into());
+        assert_eq!(state.submit(StartAction::OpenSettings), None);
+        assert!(!state.connecting);
+    }
+
+    #[test]
+    fn relative_age_rounds_down_through_the_units() {
+        assert_eq!(relative_age(1_000, 1_030), "just now");
+        assert_eq!(relative_age(1_000, 1_000 + 5 * 60), "5 min ago");
+        assert_eq!(relative_age(1_000, 1_000 + 3 * 3_600 + 59), "3 h ago");
+        assert_eq!(relative_age(1_000, 1_000 + 2 * 86_400), "2 d ago");
+        assert_eq!(relative_age(2_000, 1_000), "just now");
+    }
+
+    #[test]
+    fn short_tickets_are_shown_whole_and_long_ones_keep_both_ends() {
+        assert_eq!(abbreviate_ticket("brpshort"), "brpshort");
+        let long = "brp".to_string() + &"x".repeat(40) + "tail42";
+        let shown = abbreviate_ticket(&long);
+        assert!(shown.starts_with("brpxxxxx"), "{shown}");
+        assert!(shown.ends_with("tail42"), "{shown}");
+        assert!(shown.contains('…'), "{shown}");
+        assert_eq!(shown.chars().count(), TICKET_HEAD + TICKET_TAIL + 1);
     }
 
     #[test]

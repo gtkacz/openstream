@@ -5,6 +5,7 @@ pub mod members;
 pub mod own_lives;
 pub mod picker;
 pub mod popout;
+pub mod settings;
 pub mod start;
 pub mod state;
 pub mod status;
@@ -24,6 +25,8 @@ use state::UiState;
 pub struct UiOutput {
     pub commands: Vec<RoomCommand>,
     pub window_commands: Vec<WindowCommand>,
+    /// The status bar's Settings button was clicked.
+    pub open_settings: bool,
     /// Where the video renderer draws each watched live, in egui points.
     pub tile_rects: Vec<(TileKey, egui::Rect)>,
 }
@@ -47,7 +50,15 @@ pub fn draw(
 ) -> UiOutput {
     let mut commands = Vec::new();
     let mut window_commands = Vec::new();
-    status::draw(ui, snapshot, ticket, state, &mut commands);
+    let mut open_settings = false;
+    status::draw(
+        ui,
+        snapshot,
+        ticket,
+        state,
+        &mut commands,
+        &mut open_settings,
+    );
     own_lives::draw(ui, snapshot, state, &mut commands);
     members::draw(ui, snapshot, state, &mut commands);
     let tile_rects = tiles::draw(
@@ -62,6 +73,7 @@ pub fn draw(
     UiOutput {
         commands,
         window_commands,
+        open_settings,
         tile_rects,
     }
 }

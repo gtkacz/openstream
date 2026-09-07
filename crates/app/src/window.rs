@@ -28,7 +28,8 @@ use crate::render::tiles::{TileKey, TileRenderer};
 use crate::render::ui::UiFrame;
 use crate::room_view::RoomView;
 use crate::settings::{SettingsStore, now_unix};
-use crate::ui::start::{self, StartState};
+use crate::ui::settings::{self as settings_ui, SettingsDialog};
+use crate::ui::start::{self, StartAction, StartState};
 use crate::ui::state::{UiState, live_title};
 use crate::ui::{self, UiOutput, popout};
 
@@ -87,6 +88,7 @@ pub struct App {
     state: UiState,
     pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
     store: SettingsStore,
+    settings_dialog: SettingsDialog,
     /// The intent an open in flight was started with; a join remembers the ticket that got us in,
     /// a create remembers the room's own ticket.
     pending_intent: Option<Intent>,
@@ -129,6 +131,7 @@ impl App {
             popouts: PopOuts::new(),
             popout_windows: HashMap::new(),
             store,
+            settings_dialog: SettingsDialog::default(),
             pending_intent: None,
         };
         if let Some(message) = &app.store.load_error {
@@ -257,14 +260,25 @@ impl App {
         let size = main.size();
         let mut output = UiOutput::default();
         let mut start_action = None;
-        let mut ui_frame = main
-            .ui
-            .run(&main.window, [size.0, size.1], |root| match &self.phase {
-                Phase::Start => start_action = start::draw(root, &mut self.start),
+        let room_open = matches!(self.phase, Phase::Room(_));
+        let now = now_unix();
+        let mut saved = None;
+        let mut ui_frame = main.ui.run(&main.window, [size.0, size.1], |root| {
+            match &self.phase {
+                Phase::Start => {
+                    start_action = start::draw(
+                        root,
+                        &mut self.start,
+                        &self.store.settings.recent_rooms,
+                        now,
+                    );
+                }
                 Phase::Room(view) => {
                     output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state, &popped);
                 }
-            });
+            }
+            saved = settings_ui::draw(root.ctx(), &mut self.settings_dialog, room_open);
+        });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
         let presented = present(gpu, tiles, main, &mut ui_frame, &placements);
         let repaint_delay = ui_frame.repaint_delay;
@@ -293,6 +307,26 @@ impl App {
         }
         if (start_action.is_some() || had_commands || had_window_commands)
             && let Some(main) = &self.main
+        {
+            main.window.request_redraw();
+        }
+
+        if output.open_settings || start_action == Some(StartAction::OpenSettings) {
+            let devices = brp_audio::output_devices().map_err(|e| e.to_string());
+            self.settings_dialog
+                .open_with(&self.store.settings, devices);
+        }
+        // `saved` is moved into the dialog-save branch below; keep this before that.
+        let saved_any = saved.is_some();
+        if let Some(settings) = saved {
+            self.store.settings = settings;
+            if let Err(error) = self.store.save() {
+                self.settings_dialog.error = format!("could not save: {error}");
+                self.settings_dialog.open = true;
+            }
+        }
+        if let Some(main) = &self.main
+            && (saved_any || output.open_settings)
         {
             main.window.request_redraw();
         }
