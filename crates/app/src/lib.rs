@@ -11,5 +11,6 @@ pub mod presets;
 pub mod publish;
 pub mod render;
 pub mod room_view;
+pub mod settings;
 pub mod ui;
 pub mod window;

@@ -15,6 +15,8 @@ pub enum AppError {
     Identity(String),
     #[error("window system: {0}")]
     Window(String),
+    #[error("settings: {0}")]
+    Settings(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

@@ -17,6 +17,7 @@ brp-net = { path = "crates/net" }
 brp-pipeline = { path = "crates/pipeline" }
 brp-room = { path = "crates/room" }
 serde = { version = "1.0", features = ["derive"] }
+toml = "1.1"
 postcard = { version = "1.1", features = ["alloc"] }
 thiserror = "2.0"
 tracing = "0.1"
