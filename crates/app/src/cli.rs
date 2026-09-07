@@ -39,7 +39,7 @@ pub struct PublishArgs {
     #[arg(long)]
     pub nickname: Option<String>,
 }
-#[derive(Args, Debug, Default)]
+#[derive(Args, Debug, Default, Clone)]
 pub struct WindowArgs {
     /// Shown to other participants. Overrides the saved nickname for this launch.
     #[arg(long)]

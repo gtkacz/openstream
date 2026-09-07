@@ -1,5 +1,5 @@
 //! Audio I/O behind platform-neutral traits: capture of everything the machine plays except brp,
-//! and playback through the default output device.
+//! and playback through the default output device or a saved one.
 pub mod chunk;
 pub mod cpal_output;
 pub mod error;

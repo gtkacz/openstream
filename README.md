@@ -73,7 +73,7 @@ lives with a frame-rate control, a codec selector, template checkboxes, a
 bitrate per preset, the measured encode rate, and a stop button. Share monitor
 and Share window open the desktop portal on Linux and an in-app list of
 monitors or windows on Windows. `--fps` is the capture ceiling for lives shared
-from the window and defaults to 60.
+from the window and defaults to the saved frame rate ceiling (60 out of the box).
 
 Hovering a tile shows `pop out` and `fullscreen`. Pop out moves the live into a
 window of its own, which you can drag to another monitor; fullscreen does the
@@ -131,8 +131,8 @@ builds the Windows binary on GitHub Actions: the `windows` job uploads
 `brp-windows-x86_64`, a zip with `brp.exe`, the four
 FFmpeg DLLs it links, and both licences. Download it from the run's artifacts,
 extract, and run `brp.exe` from that directory. Tagged releases publish a zip
-of the same layout and a Linux tarball on the GitHub Releases page, with a
-`SHA256SUMS` file.
+with the same files under a versioned top-level directory and a Linux tarball
+on the GitHub Releases page, with a `SHA256SUMS` file.
 
 The FFmpeg build is BtbN's LGPL shared build, which keeps the project MIT and
 limits the software fallback to AV1 and VP9. To build on Windows yourself,

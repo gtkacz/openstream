@@ -46,7 +46,7 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
     let mut app = App::new(
         runtime.handle().clone(),
         proxy,
-        launch,
+        args,
         secret,
         nickname,
         intent,

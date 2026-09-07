@@ -68,7 +68,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         room.set_presets(live, presets)?;
     }
 
-    if relay == RelaySetting::Default && !room.online(RELAY_ONLINE_TIMEOUT).await {
+    if relay != RelaySetting::Disabled && !room.online(RELAY_ONLINE_TIMEOUT).await {
         tracing::warn!(
             "relay registration timed out; the ticket may only work on the local network"
         );

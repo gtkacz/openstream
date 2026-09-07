@@ -55,7 +55,8 @@ impl Launch {
     }
 }
 
-/// The nickname the start screen offers: the `--nickname` flag, else the short peer id.
+/// The nickname the start screen offers: the `--nickname` flag, else the saved nickname, else
+/// the short peer id.
 pub fn default_nickname(launch: &Launch, secret: &SecretKey) -> String {
     match &launch.nickname {
         Some(nickname) => nickname.clone(),
@@ -99,7 +100,7 @@ pub async fn open_room(
         Intent::Join(ticket) => Room::join(config, ticket).await?,
         Intent::Create => Room::create(config).await?,
     };
-    if launch.relay == RelaySetting::Default && !room.online(RELAY_ONLINE_TIMEOUT).await {
+    if launch.relay != RelaySetting::Disabled && !room.online(RELAY_ONLINE_TIMEOUT).await {
         tracing::warn!(
             "relay registration timed out; the ticket may only work on the local network"
         );

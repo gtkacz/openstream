@@ -88,6 +88,9 @@ jobs:
           # checkout leaves a lightweight tag at the same ref; force the fetch so the
           # annotated tag object (and its message) replaces it rather than being rejected.
           git fetch --no-tags --force origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          # A lightweight tag has no annotation object, so %(contents) falls back to printing the
+          # commit message; the empty-file check below cannot catch that case on its own.
+          [ "$(git tag -l --format='%(objecttype)' "$GITHUB_REF_NAME")" = tag ] || { echo "$GITHUB_REF_NAME is not an annotated tag; use git tag -a" >&2; exit 1; }
           git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
           [ -s notes.md ] || { echo "no annotation on $GITHUB_REF_NAME; use git tag -a" >&2; exit 1; }
       - uses: softprops/action-gh-release@v2

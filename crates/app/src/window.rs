@@ -18,6 +18,7 @@ use winit::{
     window::{Fullscreen, Window, WindowId},
 };
 
+use crate::cli::WindowArgs;
 use crate::commands::WindowCommand;
 use crate::launch::{self, Intent, Launch};
 use crate::popouts::PopOuts;
@@ -80,7 +81,8 @@ pub struct Shutdown {
 pub struct App {
     runtime: Handle,
     proxy: EventLoopProxy<AppEvent>,
-    launch: Launch,
+    /// The flags of this launch, which override the file each time a room opens.
+    args: WindowArgs,
     /// Loaded once at startup; every room this window opens signs as this identity.
     secret: SecretKey,
     start: StartState,
@@ -109,7 +111,7 @@ impl App {
     pub fn new(
         runtime: Handle,
         proxy: EventLoopProxy<AppEvent>,
-        launch: Launch,
+        args: WindowArgs,
         secret: SecretKey,
         nickname: String,
         intent: Option<Intent>,
@@ -118,7 +120,7 @@ impl App {
         let mut app = Self {
             runtime,
             proxy,
-            launch,
+            args,
             secret,
             start: StartState::new(nickname),
             phase: Phase::Start,
@@ -159,9 +161,18 @@ impl App {
         }
     }
 
+    /// Builds the launch from the current settings and the retained command line flags, so a
+    /// dialog Save applies to the next room without a restart, then opens it in the background.
     fn open(&mut self, intent: Intent) {
         self.pending_intent = Some(intent.clone());
-        let launch = self.launch.clone();
+        let launch = match Launch::from_settings(&self.store.settings, &self.args) {
+            Ok(launch) => launch,
+            Err(error) => {
+                self.start.failed(error.to_string());
+                self.pending_intent = None;
+                return;
+            }
+        };
         let secret = self.secret.clone();
         let nickname = self.start.nickname.clone();
         let room_events = self.proxy.clone();
@@ -185,7 +196,7 @@ impl App {
             Some(Intent::Create) | None => room.ticket().to_string(),
         };
         self.store.settings.remember_room(&ticket, now_unix());
-        if !self.launch.nickname_from_flag
+        if self.args.nickname.is_none()
             && let Some(nickname) = normalised_nickname(&self.start.nickname)
         {
             self.store.settings.nickname = Some(nickname);
@@ -328,11 +339,15 @@ impl App {
             if let Err(error) = self.store.save() {
                 self.settings_dialog.error = format!("could not save: {error}");
                 self.settings_dialog.open = true;
-            } else if !self.launch.nickname_from_flag
-                && let Some(nickname) = &self.store.settings.nickname
-            {
-                // The start form, not the saved settings, is what the next open sends.
-                self.start.nickname = nickname.clone();
+            } else {
+                // The file is now what we wrote, so a stale "not loaded" message no longer holds.
+                self.start.error.clear();
+                if self.args.nickname.is_none()
+                    && let Some(nickname) = &self.store.settings.nickname
+                {
+                    // The start form, not the saved settings, is what the next open sends.
+                    self.start.nickname = nickname.clone();
+                }
             }
         }
         if let Some(main) = &self.main
@@ -520,6 +535,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::RoomOpened(Err(message)) => {
                 self.pending_open = None;
+                self.pending_intent = None;
                 self.start.failed(message);
             }
             AppEvent::ShareFinished(outcome) => {

@@ -88,14 +88,20 @@ impl Settings {
         Ok(dirs.config_dir().join(SETTINGS_FILE))
     }
 
-    /// A missing file is the defaults. Any other failure is an error and the file is left as is.
+    /// A missing file is the defaults. Any other failure, including a value `validate` rejects,
+    /// is an error and the file is left as is.
     pub fn load(path: &Path) -> Result<Self, AppError> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => return Err(AppError::Settings(format!("{}: {e}", path.display()))),
         };
-        toml::from_str(&text).map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))
+        let settings: Self = toml::from_str(&text)
+            .map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))?;
+        settings
+            .validate()
+            .map_err(|msg| AppError::Settings(format!("{}: {msg}", path.display())))?;
+        Ok(settings)
     }
 
     /// Writes the whole file through a temporary sibling and a rename, so a crash mid-write
@@ -103,11 +109,16 @@ impl Settings {
     pub fn save(&self, path: &Path) -> Result<(), AppError> {
         let text = toml::to_string_pretty(self).map_err(|e| AppError::Settings(e.to_string()))?;
         if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
+            fs::create_dir_all(dir)
+                .map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))?;
         }
-        let tmp = path.with_extension("toml.tmp");
-        fs::write(&tmp, text)?;
-        fs::rename(&tmp, path)?;
+        // Unique per process: two instances saving at once must not share a temp sibling, or one
+        // instance's rename could pick up the other's still-being-written file.
+        let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
+        fs::write(&tmp, text)
+            .map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))?;
+        fs::rename(&tmp, path)
+            .map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))?;
         Ok(())
     }
 
@@ -155,6 +166,8 @@ impl SettingsStore {
     pub fn load_at(path: PathBuf) -> Self {
         let (settings, load_error) = match Settings::load(&path) {
             Ok(settings) => (settings, None),
+            // `Settings` variant already names the path; other variants need their own message.
+            Err(AppError::Settings(message)) => (Settings::default(), Some(message)),
             Err(error) => (Settings::default(), Some(error.to_string())),
         };
         Self {
@@ -280,6 +293,24 @@ mod tests {
             "{error}"
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "this = = is not toml");
+        let store = SettingsStore::load_at(path);
+        assert_eq!(store.settings, Settings::default());
+        assert!(store.load_error.is_some());
+    }
+
+    #[test]
+    fn a_file_with_an_invalid_relay_url_loads_as_an_error_and_is_left_untouched() {
+        let path = temp_path("invalid_relay");
+        let original = "[relay]\nmode = \"custom\"\nurl = \"nope\"\n";
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, original).unwrap();
+        let error = Settings::load(&path).unwrap_err();
+        assert!(matches!(error, AppError::Settings(_)), "{error}");
+        assert!(
+            error.to_string().contains(&path.display().to_string()),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
         let store = SettingsStore::load_at(path);
         assert_eq!(store.settings, Settings::default());
         assert!(store.load_error.is_some());
