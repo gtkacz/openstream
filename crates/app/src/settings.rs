@@ -191,6 +191,13 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// The nickname rule shared by the dialog and the start screen: surrounding whitespace is
+/// dropped and an empty result means "no saved nickname".
+pub fn normalised_nickname(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +365,16 @@ mod tests {
         assert!(settings.validate().unwrap_err().contains("relay URL"));
         settings.relay = RelayChoice::Custom("https://relay.example.com/".into());
         assert_eq!(settings.validate(), Ok(()));
+    }
+
+    #[test]
+    fn normalised_nickname_drops_whitespace_and_treats_blank_as_none() {
+        assert_eq!(normalised_nickname(""), None);
+        assert_eq!(normalised_nickname("   "), None);
+        assert_eq!(
+            normalised_nickname("  John Smith "),
+            Some("John Smith".to_string())
+        );
     }
 
     #[test]

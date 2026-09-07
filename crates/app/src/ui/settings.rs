@@ -3,7 +3,7 @@
 
 use brp_audio::OutputDevice;
 
-use crate::settings::{RelayChoice, Settings};
+use crate::settings::{RelayChoice, Settings, normalised_nickname};
 
 /// Dialog state: whether it is open, the draft being edited, the devices listed when it opened,
 /// and the last validation or save error.
@@ -11,6 +11,10 @@ use crate::settings::{RelayChoice, Settings};
 pub struct SettingsDialog {
     pub open: bool,
     pub draft: Settings,
+    /// The nickname field's raw text. Held apart from `draft.nickname` so the text edit keeps
+    /// whatever the user is typing, spaces included, instead of a normalised value rebuilt from
+    /// it every frame.
+    pub nickname_text: String,
     pub devices: Vec<OutputDevice>,
     pub devices_error: Option<String>,
     pub error: String,
@@ -20,6 +24,7 @@ impl SettingsDialog {
     /// Opens with a fresh draft of `settings` and the device list as enumerated now.
     pub fn open_with(&mut self, settings: &Settings, devices: Result<Vec<OutputDevice>, String>) {
         self.draft = settings.clone();
+        self.nickname_text = settings.nickname.clone().unwrap_or_default();
         match devices {
             Ok(devices) => {
                 self.devices = devices;
@@ -95,11 +100,7 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
                     ui.label("Nickname");
-                    let mut nickname = dialog.draft.nickname.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut nickname).changed() {
-                        dialog.draft.nickname =
-                            (!nickname.trim().is_empty()).then(|| nickname.trim().to_string());
-                    }
+                    ui.text_edit_singleline(&mut dialog.nickname_text);
                     ui.end_row();
 
                     ui.label("Relay");
@@ -160,6 +161,7 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
             }
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
+                    dialog.draft.nickname = normalised_nickname(&dialog.nickname_text);
                     match dialog.draft.validate() {
                         Ok(()) => {
                             saved = Some(dialog.draft.clone());

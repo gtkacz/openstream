@@ -27,7 +27,7 @@ use crate::render::surface::WindowSurface;
 use crate::render::tiles::{TileKey, TileRenderer};
 use crate::render::ui::UiFrame;
 use crate::room_view::RoomView;
-use crate::settings::{SettingsStore, now_unix};
+use crate::settings::{SettingsStore, normalised_nickname, now_unix};
 use crate::ui::settings::{self as settings_ui, SettingsDialog};
 use crate::ui::start::{self, StartAction, StartState};
 use crate::ui::state::{UiState, live_title};
@@ -185,11 +185,10 @@ impl App {
             Some(Intent::Create) | None => room.ticket().to_string(),
         };
         self.store.settings.remember_room(&ticket, now_unix());
-        if !self.launch.nickname_from_flag {
-            let nickname = self.start.nickname.trim();
-            if !nickname.is_empty() {
-                self.store.settings.nickname = Some(nickname.to_string());
-            }
+        if !self.launch.nickname_from_flag
+            && let Some(nickname) = normalised_nickname(&self.start.nickname)
+        {
+            self.store.settings.nickname = Some(nickname);
         }
         if let Err(error) = self.store.save_unless_load_failed() {
             self.state.status = format!("settings not saved: {error}");
@@ -277,7 +276,13 @@ impl App {
                     output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state, &popped);
                 }
             }
-            saved = settings_ui::draw(root.ctx(), &mut self.settings_dialog, room_open);
+            // egui may run this closure twice in a pass; a `None` from the second run must not
+            // discard a `Some` the first run already produced.
+            if let Some(settings) =
+                settings_ui::draw(root.ctx(), &mut self.settings_dialog, room_open)
+            {
+                saved = Some(settings);
+            }
         });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
         let presented = present(gpu, tiles, main, &mut ui_frame, &placements);
@@ -323,6 +328,11 @@ impl App {
             if let Err(error) = self.store.save() {
                 self.settings_dialog.error = format!("could not save: {error}");
                 self.settings_dialog.open = true;
+            } else if !self.launch.nickname_from_flag
+                && let Some(nickname) = &self.store.settings.nickname
+            {
+                // The start form, not the saved settings, is what the next open sends.
+                self.start.nickname = nickname.clone();
             }
         }
         if let Some(main) = &self.main
