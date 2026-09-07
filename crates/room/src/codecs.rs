@@ -36,6 +36,12 @@ pub trait DecoderFactory: Send + Sync + 'static {
     fn open_audio(&self, params: &AudioParams) -> Result<Box<dyn AudioDecoder>, CodecError>;
 }
 
+/// A size every hardware encoder accepts, used only to learn which codec the GPU offers. NVENC
+/// rejects anything below roughly 145x49 for H.264 and more for AV1, so a tiny probe would skip
+/// every hardware encoder and new lives would default to software AV1.
+const PROBE_WIDTH: u32 = 640;
+const PROBE_HEIGHT: u32 = 360;
+
 fn config_for(preset: &Preset) -> EncoderConfig {
     EncoderConfig {
         width: preset.width,
@@ -77,8 +83,8 @@ impl EncoderFactory for FfmpegCodecs {
     fn preferred_codec(&self) -> Codec {
         *self.probed_codec.get_or_init(|| {
             let probe = EncoderConfig {
-                width: 64,
-                height: 64,
+                width: PROBE_WIDTH,
+                height: PROBE_HEIGHT,
                 fps: 30,
                 bitrate_kbps: 1_000,
                 codec: Codec::Hevc,
