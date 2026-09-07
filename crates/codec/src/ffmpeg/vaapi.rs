@@ -28,6 +28,9 @@ pub struct VaapiEncoder {
 impl VaapiEncoder {
     pub fn open(name: &'static str, cfg: &EncoderConfig) -> Result<Self, CodecError> {
         init_logging();
+        if !super::vaapi_runtime::available() {
+            return Err(CodecError::HwRuntimeMissing("VAAPI"));
+        }
         let cname = cstring(name)?;
         let codec = unsafe { ff::avcodec_find_encoder_by_name(cname.as_ptr()) };
         if codec.is_null() {

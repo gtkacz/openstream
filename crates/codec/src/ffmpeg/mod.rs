@@ -6,6 +6,7 @@ pub mod encoder;
 pub(crate) mod ffi;
 pub mod opus;
 pub mod vaapi;
+pub(crate) mod vaapi_runtime;
 
 pub use convert::SwsConverter;
 pub use decoder::{FfmpegDecoder, HwDecode};

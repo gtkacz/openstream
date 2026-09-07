@@ -46,4 +46,5 @@ bytemuck = { version = "1.25", features = ["derive"] }
 windows-capture = "2.0"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
 cpal = "0.18"
+libc = "0.2"
 wasapi = "0.24"

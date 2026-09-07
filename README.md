@@ -115,16 +115,17 @@ is intended to work on Wayland and X11 wherever the desktop portal is
 available.
 
 The Linux release tarball carries the four FFmpeg libraries the binary loads
-(`libavcodec.so.62`, `libavutil.so.60`, `libswscale.so.9`,
-`libswresample.so.6`) from the same pinned BtbN LGPL shared build the Windows
-zip uses, with their licence. The binary finds them beside itself wherever the
-extracted directory sits, so no FFmpeg needs to be installed. The
-tarball is built on Fedora 44 and links its glibc, so it runs on distributions
-with glibc 2.43 or newer; PipeWire, the desktop portal, and the graphics stack
-come from the system as described above. Elsewhere, build from source, either
-against the distribution's FFmpeg as shown or with `FFMPEG_DIR` pointing at an
-extracted BtbN build. CI builds and tests the Linux binary against that same
-BtbN build, so the FFmpeg under test is the one shipped. Every push also
+(`libavcodec.so.62`, `libavutil.so.60`, `libswscale.so.9`, `libswresample.so.6`)
+from the same pinned BtbN LGPL shared build the Windows zip uses, with their
+licence. The binary finds them beside itself wherever the extracted directory
+sits, so no FFmpeg needs to be installed. The tarball is built on Fedora 44 and
+links its glibc, so it runs on distributions with glibc 2.43 or newer; PipeWire,
+the desktop portal, libva, and the graphics stack come from the system as
+described above. VAAPI encoding and decoding need libva installed; without it
+brp skips VAAPI and continues with the other encoders and software decoding.
+Elsewhere, build from source, either against the distribution's FFmpeg as shown
+or with `FFMPEG_DIR` pointing at an extracted BtbN build. CI builds and tests the Linux binary against that
+same BtbN build, so the FFmpeg under test is the one shipped. Every push also
 uploads `brp-linux-x86_64`, the same staged directory, in the run's artifacts.
 
 ## Windows

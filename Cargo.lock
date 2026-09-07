@@ -545,6 +545,7 @@ version = "0.1.0"
 dependencies = [
  "brp-proto",
  "ffmpeg-sys-next",
+ "libc",
  "postcard",
  "serde",
  "thiserror 2.0.20",

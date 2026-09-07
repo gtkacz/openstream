@@ -11,3 +11,6 @@ serde.workspace = true
 postcard.workspace = true
 thiserror.workspace = true
 ffmpeg-sys-next.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

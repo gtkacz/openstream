@@ -137,6 +137,11 @@ fn try_hw_device(
         }
     }
     let format = format?;
+    if device_type == ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
+        && !super::vaapi_runtime::available()
+    {
+        return None;
+    }
     let mut device_ptr = ptr::null_mut();
     if unsafe {
         ff::av_hwdevice_ctx_create(

@@ -5,6 +5,8 @@ pub enum CodecError {
     EncoderMissing(&'static str),
     #[error("FFmpeg has no decoder named {0}")]
     DecoderMissing(&'static str),
+    #[error("the {0} runtime libraries are not installed")]
+    HwRuntimeMissing(&'static str),
     #[error("{call} failed with code {code}: {message}")]
     Ffmpeg {
         call: &'static str,
