@@ -15,6 +15,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::cli::WindowArgs;
 use crate::error::AppError;
+use crate::settings::Settings;
 use crate::window::AppEvent;
 
 /// What the user asked for: a fresh room, or a seat in an existing one.
@@ -24,25 +25,33 @@ pub enum Intent {
     Join(RoomTicket),
 }
 
-/// Settings that apply to any room this window opens.
+/// Settings that apply to any room this window opens: the saved settings, with each command line
+/// flag that is present replacing its field for this launch only.
 #[derive(Debug, Clone)]
 pub struct Launch {
     pub nickname: Option<String>,
+    /// True when `--nickname` was given: the start screen's nickname is then not saved.
+    pub nickname_from_flag: bool,
     pub fps: u32,
     pub relay: RelaySetting,
+    /// cpal device id to play through; `None` is the system default.
+    pub audio_output: Option<String>,
 }
 
-impl From<WindowArgs> for Launch {
-    fn from(args: WindowArgs) -> Self {
-        Self {
-            nickname: args.nickname,
-            fps: args.fps,
-            relay: if args.no_relay {
-                RelaySetting::Disabled
-            } else {
-                RelaySetting::Default
-            },
-        }
+impl Launch {
+    pub fn from_settings(settings: &Settings, args: &WindowArgs) -> Result<Self, AppError> {
+        let relay = if args.no_relay {
+            RelaySetting::Disabled
+        } else {
+            settings.relay.to_relay_setting()?
+        };
+        Ok(Self {
+            nickname: args.nickname.clone().or_else(|| settings.nickname.clone()),
+            nickname_from_flag: args.nickname.is_some(),
+            fps: args.fps.unwrap_or(settings.fps),
+            relay,
+            audio_output: settings.audio.output_device.clone(),
+        })
     }
 }
 
@@ -75,7 +84,7 @@ pub async fn open_room(
         target_fps: launch.fps,
         capture: Arc::new(PlatformCapture),
         audio_capture: Arc::new(PlatformAudioCapture::new(std::process::id())),
-        audio_output: Arc::new(CpalOutput::new(None)),
+        audio_output: Arc::new(CpalOutput::new(launch.audio_output.clone())),
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(move || {
@@ -96,4 +105,62 @@ pub async fn open_room(
         );
     }
     Ok(Arc::new(room))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{AudioSettings, RelayChoice};
+
+    fn saved() -> Settings {
+        Settings {
+            nickname: Some("saved".into()),
+            fps: 30,
+            relay: RelayChoice::Custom("https://relay.example.com/".into()),
+            audio: AudioSettings {
+                output_device: Some("dev".into()),
+            },
+            recent_rooms: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn without_flags_the_saved_settings_apply() {
+        let launch = Launch::from_settings(&saved(), &WindowArgs::default()).unwrap();
+        assert_eq!(launch.nickname.as_deref(), Some("saved"));
+        assert!(!launch.nickname_from_flag);
+        assert_eq!(launch.fps, 30);
+        assert!(matches!(launch.relay, RelaySetting::Custom(_)));
+        assert_eq!(launch.audio_output.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn each_flag_overrides_only_its_field() {
+        let args = WindowArgs {
+            nickname: Some("flag".into()),
+            fps: Some(120),
+            no_relay: true,
+        };
+        let launch = Launch::from_settings(&saved(), &args).unwrap();
+        assert_eq!(launch.nickname.as_deref(), Some("flag"));
+        assert!(launch.nickname_from_flag);
+        assert_eq!(launch.fps, 120);
+        assert_eq!(launch.relay, RelaySetting::Disabled);
+        assert_eq!(launch.audio_output.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn a_bad_saved_relay_url_is_an_error_unless_relays_are_off() {
+        let mut settings = saved();
+        settings.relay = RelayChoice::Custom("nope".into());
+        assert!(Launch::from_settings(&settings, &WindowArgs::default()).is_err());
+        let args = WindowArgs {
+            no_relay: true,
+            ..WindowArgs::default()
+        };
+        assert_eq!(
+            Launch::from_settings(&settings, &args).unwrap().relay,
+            RelaySetting::Disabled
+        );
+    }
 }

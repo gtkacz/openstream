@@ -39,25 +39,18 @@ pub struct PublishArgs {
     #[arg(long)]
     pub nickname: Option<String>,
 }
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct WindowArgs {
-    /// Shown to other participants. Defaults to the short peer id.
+    /// Shown to other participants. Overrides the saved nickname for this launch.
     #[arg(long)]
     pub nickname: Option<String>,
     /// Capture ceiling for lives shared from the window; each live's presets can go lower.
-    #[arg(long, default_value_t = DEFAULT_FPS)]
-    pub fps: u32,
+    /// Overrides the saved setting for this launch.
+    #[arg(long)]
+    pub fps: Option<u32>,
+    /// Disables relays for this launch whatever the saved relay setting is.
     #[arg(long)]
     pub no_relay: bool,
-}
-impl Default for WindowArgs {
-    fn default() -> Self {
-        Self {
-            nickname: None,
-            fps: DEFAULT_FPS,
-            no_relay: false,
-        }
-    }
 }
 #[derive(Args, Debug)]
 pub struct CreateArgs {

@@ -27,6 +27,7 @@ use crate::render::surface::WindowSurface;
 use crate::render::tiles::{TileKey, TileRenderer};
 use crate::render::ui::UiFrame;
 use crate::room_view::RoomView;
+use crate::settings::{SettingsStore, now_unix};
 use crate::ui::start::{self, StartState};
 use crate::ui::state::{UiState, live_title};
 use crate::ui::{self, UiOutput, popout};
@@ -85,6 +86,10 @@ pub struct App {
     phase: Phase,
     state: UiState,
     pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
+    store: SettingsStore,
+    /// The intent an open in flight was started with; a join remembers the ticket that got us in,
+    /// a create remembers the room's own ticket.
+    pending_intent: Option<Intent>,
     /// The earliest instant any window's egui asked for its next frame; `about_to_wait` sleeps
     /// until then instead of forever.
     next_repaint: Option<Instant>,
@@ -106,6 +111,7 @@ impl App {
         secret: SecretKey,
         nickname: String,
         intent: Option<Intent>,
+        store: SettingsStore,
     ) -> Self {
         let mut app = Self {
             runtime,
@@ -122,7 +128,12 @@ impl App {
             tiles: None,
             popouts: PopOuts::new(),
             popout_windows: HashMap::new(),
+            store,
+            pending_intent: None,
         };
+        if let Some(message) = &app.store.load_error {
+            app.start.error = format!("settings not loaded, defaults in use: {message}");
+        }
         if let Some(intent) = intent {
             app.start.connecting = true;
             app.open(intent);
@@ -146,6 +157,7 @@ impl App {
     }
 
     fn open(&mut self, intent: Intent) {
+        self.pending_intent = Some(intent.clone());
         let launch = self.launch.clone();
         let secret = self.secret.clone();
         let nickname = self.start.nickname.clone();
@@ -160,6 +172,25 @@ impl App {
             let _ = done.send_event(AppEvent::RoomOpened(outcome.clone()));
             outcome
         }));
+    }
+
+    /// Persists what a successful open teaches us: the ticket to list under recent rooms, and the
+    /// nickname typed on the start screen unless a flag chose it. Failures are shown, not fatal.
+    fn remember_open(&mut self, room: &Room) {
+        let ticket = match self.pending_intent.take() {
+            Some(Intent::Join(ticket)) => ticket.to_string(),
+            Some(Intent::Create) | None => room.ticket().to_string(),
+        };
+        self.store.settings.remember_room(&ticket, now_unix());
+        if !self.launch.nickname_from_flag {
+            let nickname = self.start.nickname.trim();
+            if !nickname.is_empty() {
+                self.store.settings.nickname = Some(nickname.to_string());
+            }
+        }
+        if let Err(error) = self.store.save() {
+            self.state.status = format!("settings not saved: {error}");
+        }
     }
 
     fn request_redraw_all(&self) {
@@ -440,6 +471,7 @@ impl ApplicationHandler<AppEvent> for App {
                     main.window
                         .set_title(&format!("brp: {}", room.snapshot().nickname));
                 }
+                self.remember_open(&room);
                 self.phase = Phase::Room(Box::new(RoomView::new(room)));
             }
             AppEvent::RoomOpened(Err(message)) => {

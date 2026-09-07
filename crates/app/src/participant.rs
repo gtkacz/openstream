@@ -12,12 +12,14 @@ use crate::cli::WindowArgs;
 use crate::error::AppError;
 use crate::identity;
 use crate::launch::{self, Intent, Launch};
+use crate::settings::SettingsStore;
 use crate::window::{App, AppEvent};
 
 /// Runs the window to completion. `intent` from the command line opens the room immediately;
 /// `None` shows the start screen.
 pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Result<(), AppError> {
-    let launch = Launch::from(args);
+    let store = SettingsStore::load()?;
+    let launch = Launch::from_settings(&store.settings, &args)?;
     let secret = identity::load_or_create()?;
     let nickname = launch::default_nickname(&launch, &secret);
 
@@ -48,6 +50,7 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
         secret,
         nickname,
         intent,
+        store,
     );
     let outcome = event_loop
         .run_app(&mut app)
