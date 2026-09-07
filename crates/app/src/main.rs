@@ -9,15 +9,10 @@ use brp_app::{participant, publish};
 use brp_proto::RoomTicket;
 use clap::Parser;
 use std::process::ExitCode;
-use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
     brp_app::console::attach_parent_console();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let log = brp_app::logging::init();
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -44,6 +39,9 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
+            if let Some(log) = log {
+                eprintln!("log: {}", log.display());
+            }
             ExitCode::FAILURE
         }
     }

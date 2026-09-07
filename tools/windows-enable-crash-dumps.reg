@@ -1,0 +1,15 @@
+Windows Registry Editor Version 5.00
+
+; Asks Windows Error Reporting for a mini dump when brp.exe dies, so a fault in
+; native code (FFmpeg, the GPU driver, WASAPI) leaves a stack behind. The panic
+; hook cannot see those: the process is gone before Rust unwinds.
+;
+; Right-click > Merge, then accept the administrator prompt. Dumps land in
+; %LOCALAPPDATA%\CrashDumps. To undo, delete the brp.exe key below.
+;
+; Scoped to brp.exe on purpose. If no dump ever appears, the same two values
+; under the parent LocalDumps key turn the feature on for every application.
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\brp.exe]
+"DumpType"=dword:00000001
+"DumpCount"=dword:00000003

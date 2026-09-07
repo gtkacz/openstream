@@ -178,7 +178,31 @@ sustain high bitrates, and the members panel shows direct versus relayed per
 member. Settings are saved beside the identity key in `brp/settings.toml`:
 nickname, relay choice, frame rate ceiling, audio output device, and the
 tickets of recent rooms. A stored ticket contains the addresses of the peer
-that issued it, so treat the file as you would the tickets themselves.
+that issued it, so treat the file as you would the tickets themselves. The log
+beside them records nicknames, short public ids, and connection events, and no
+keys or tickets; a crash dump, unlike the log, contains process memory, so
+treat one as you would a screenshot of the session.
+
+## Diagnostics
+
+Every run writes a log beside the identity key and the settings:
+`~/.config/brp/brp.log` on Linux, `%APPDATA%\brp\config\brp.log` on Windows.
+The run before it is kept as `brp.log.1`, because a crashed run is read after
+the next launch has already started. `RUST_LOG` sets the level, `info` by
+default. A panic is logged with its location and a backtrace before the process
+dies, so the file explains a crash no terminal saw: the Windows build has no
+console of its own.
+
+A fault in native code (FFmpeg, the GPU driver, WASAPI) ends the process
+without reaching the panic hook. Windows records those in Event Viewer under
+Windows Logs > Application, where the `Application Error` entry for `brp.exe`
+names the faulting module and the exception code; `Report.wer` under
+`C:\ProgramData\Microsoft\Windows\WER\ReportArchive` carries the same
+metadata. For a stack as well, merge `windows-enable-crash-dumps.reg` from the
+release zip before the crash happens: it asks Windows Error Reporting for a
+mini dump of `brp.exe` in `%LOCALAPPDATA%\CrashDumps`. Merging it needs
+administrator rights and it is scoped to `brp.exe`; deleting the `brp.exe` key
+under `LocalDumps` undoes it.
 
 ## Workspace crates
 

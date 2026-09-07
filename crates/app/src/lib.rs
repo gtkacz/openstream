@@ -5,6 +5,7 @@ pub mod console;
 pub mod error;
 pub mod identity;
 pub mod launch;
+pub mod logging;
 pub mod participant;
 pub mod popouts;
 pub mod presets;
