@@ -170,6 +170,17 @@ impl SettingsStore {
         self.load_error = None;
         Ok(())
     }
+
+    /// Saves unless the file failed to load. After a load failure the defaults are in use, and
+    /// writing them would replace the user's file with defaults; only an explicit Save from the
+    /// dialog may do that. Returns whether a write happened.
+    pub fn save_unless_load_failed(&mut self) -> Result<bool, AppError> {
+        if self.load_error.is_some() {
+            return Ok(false);
+        }
+        self.save()?;
+        Ok(true)
+    }
 }
 
 /// Seconds since the Unix epoch, or zero if the clock is before it.
@@ -282,6 +293,25 @@ mod tests {
         store.load_error = Some("stale".into());
         store.save().unwrap();
         assert_eq!(store.load_error, None);
+    }
+
+    #[test]
+    fn a_failed_load_blocks_implicit_saves_until_the_error_is_cleared() {
+        let path = temp_path("save_unless_load_failed");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "this = = is not toml";
+        fs::write(&path, original).unwrap();
+        let mut store = SettingsStore::load_at(path.clone());
+        assert!(store.load_error.is_some());
+
+        store.settings.remember_room("t", 1);
+        assert!(!store.save_unless_load_failed().unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(store.load_error.is_some());
+
+        store.load_error = None;
+        assert!(store.save_unless_load_failed().unwrap());
+        assert_eq!(Settings::load(&path).unwrap(), store.settings);
     }
 
     #[test]

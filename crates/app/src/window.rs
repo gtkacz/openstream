@@ -188,7 +188,7 @@ impl App {
                 self.store.settings.nickname = Some(nickname.to_string());
             }
         }
-        if let Err(error) = self.store.save() {
+        if let Err(error) = self.store.save_unless_load_failed() {
             self.state.status = format!("settings not saved: {error}");
         }
     }
