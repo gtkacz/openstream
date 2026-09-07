@@ -30,21 +30,26 @@ jobs:
     steps:
       - name: Install build dependencies
         run: >
-          dnf install -y --setopt=install_weak_deps=False git gcc gcc-c++ clang clang-devel
-          pkgconf-pkg-config ffmpeg-free-devel pipewire-devel libxkbcommon-devel wayland-devel libX11-devel
+          dnf install -y --setopt=install_weak_deps=False git gcc gcc-c++ clang clang-devel xz
+          pkgconf-pkg-config pipewire-devel libxkbcommon-devel wayland-devel libX11-devel
           alsa-lib-devel
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/linux-ffmpeg
       - run: cargo build --release -p brp
+        env:
+          # $ORIGIN makes the binary load the FFmpeg libraries staged beside it. DT_RPATH rather
+          # than RUNPATH because libswresample is reached only through libavcodec, and RUNPATH
+          # does not govern that transitive lookup.
+          RUSTFLAGS: -C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--disable-new-dtags
       - name: Stage the tarball
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -eu
           name="brp-$VERSION-linux-x86_64"
-          mkdir -p "dist/$name"
-          cp target/release/brp LICENSE README.md "dist/$name/"
+          ./ci/stage-linux.sh "dist/$name"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4
         with:

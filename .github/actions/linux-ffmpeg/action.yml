@@ -1,0 +1,18 @@
+name: Linux FFmpeg
+description: The pinned BtbN LGPL shared FFmpeg build, the same release the Windows action installs. Exports FFMPEG_DIR and puts the libraries on LD_LIBRARY_PATH.
+runs:
+  using: composite
+  steps:
+    - name: Install FFmpeg (BtbN LGPL shared, pinned)
+      shell: bash
+      run: |
+        set -eu
+        release="autobuild-2026-09-05-13-10"
+        asset="ffmpeg-n8.1.2-50-g1a748fe2cd-linux64-lgpl-shared-8.1"
+        dir="$GITHUB_WORKSPACE/ffmpeg"
+        curl -fsSL -o ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/$release/$asset.tar.xz"
+        mkdir -p ffmpeg-extract
+        tar -xJf ffmpeg.tar.xz -C ffmpeg-extract
+        mv ffmpeg-extract/"$asset" "$dir"
+        echo "FFMPEG_DIR=$dir" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$dir/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"

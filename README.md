@@ -114,9 +114,18 @@ The development environment is Fedora 44 with KDE on Wayland. The application
 is intended to work on Wayland and X11 wherever the desktop portal is
 available.
 
-The Linux release tarball is built on Fedora 44 and links the distribution's
-FFmpeg 8 (`libavcodec.so.62`), PipeWire, and portal libraries; it runs on
-distributions shipping FFmpeg 8. Elsewhere, build from source.
+The Linux release tarball carries the four FFmpeg libraries the binary loads
+(`libavcodec.so.62`, `libavutil.so.60`, `libswscale.so.9`,
+`libswresample.so.6`) from the same pinned BtbN LGPL shared build the Windows
+zip uses, with their licence. The binary finds them beside itself wherever the
+extracted directory sits, so no FFmpeg needs to be installed. The
+tarball is built on Fedora 44 and links its glibc, so it runs on distributions
+with glibc 2.43 or newer; PipeWire, the desktop portal, and the graphics stack
+come from the system as described above. Elsewhere, build from source, either
+against the distribution's FFmpeg as shown or with `FFMPEG_DIR` pointing at an
+extracted BtbN build. CI builds and tests the Linux binary against that same
+BtbN build, so the FFmpeg under test is the one shipped. Every push also
+uploads `brp-linux-x86_64`, the same staged directory, in the run's artifacts.
 
 ## Windows
 

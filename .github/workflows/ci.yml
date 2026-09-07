@@ -10,17 +10,28 @@ jobs:
     steps:
       - name: Install build dependencies
         run: >
-          dnf install -y --setopt=install_weak_deps=False git gcc gcc-c++ clang clang-devel
-          pkgconf-pkg-config ffmpeg-free-devel pipewire-devel libxkbcommon-devel wayland-devel libX11-devel
+          dnf install -y --setopt=install_weak_deps=False git gcc gcc-c++ clang clang-devel xz
+          pkgconf-pkg-config pipewire-devel libxkbcommon-devel wayland-devel libX11-devel
           alsa-lib-devel
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/linux-ffmpeg
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: cargo build --release -p brp
+        env:
+          # Same rpath as the release job: the artifact must load the FFmpeg libraries staged beside it.
+          RUSTFLAGS: -C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--disable-new-dtags
+      - name: Stage the artifact
+        run: ./ci/stage-linux.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brp-linux-x86_64
+          path: dist
   windows:
     runs-on: windows-latest
     steps:
