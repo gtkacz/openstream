@@ -11,9 +11,8 @@ stream and renders it in a native `wgpu` window.
 
 > **Status:** video on Linux and Windows. A participant creates or joins a room
 > from a start screen, shares several monitors or windows with quality presets,
-> and watches other members' lives in a tile grid. Audio and pop-out windows
-> are in; persistent settings and release packaging are the next steps;
-> macOS is on the backlog.
+> and watches other members' lives in a tile grid. Audio, pop-out windows,
+> persistent settings, and tagged releases are in; macOS is on the backlog.
 
 ## How it works
 
@@ -59,6 +58,13 @@ cargo build --release
 # Share one live headlessly and print the ticket, creating a room or joining one
 ./target/release/brp publish --nickname alice [--ticket <ticket>] [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--no-relay]
 ```
+
+The Settings button on the start screen and in the status bar opens a dialog
+for the nickname, the relay choice (public relays, a custom relay URL, or no
+relay), the capture frame rate ceiling, and the audio output device. Settings
+apply when the next room opens. The start screen lists recent rooms with a Join
+button. Command line flags override the saved settings for that launch and are
+not saved.
 
 In the window, the left panel lists members with a direct-or-relayed badge and
 their lives; tick a live to watch it and pick its preset, and hover a tile for
@@ -108,6 +114,10 @@ The development environment is Fedora 44 with KDE on Wayland. The application
 is intended to work on Wayland and X11 wherever the desktop portal is
 available.
 
+The Linux release tarball is built on Fedora 44 and links the distribution's
+FFmpeg 8 (`libavcodec.so.62`), PipeWire, and portal libraries; it runs on
+distributions shipping FFmpeg 8. Elsewhere, build from source.
+
 ## Windows
 
 Windows 10 version 2004 or later with a GPU that has an HEVC or H.264 encoder
@@ -120,7 +130,9 @@ the same Windows 10 version 2004 minimum already required above. Every push
 builds the Windows binary on GitHub Actions: the `windows` job uploads
 `brp-windows-x86_64`, a zip with `brp.exe`, the four
 FFmpeg DLLs it links, and both licences. Download it from the run's artifacts,
-extract, and run `brp.exe` from that directory.
+extract, and run `brp.exe` from that directory. Tagged releases publish a zip
+of the same layout and a Linux tarball on the GitHub Releases page, with a
+`SHA256SUMS` file.
 
 The FFmpeg build is BtbN's LGPL shared build, which keeps the project MIT and
 limits the software fallback to AV1 and VP9. To build on Windows yourself,
@@ -153,8 +165,10 @@ presence messages verified against the author identity, and the media server
 accepts connections only from identities in its current membership set. Media
 is intended to flow peer-to-peer; a relayed connection works but may not
 sustain high bitrates, and the members panel shows direct versus relayed per
-member. Nothing else is persisted yet: nickname, relay setting, and recent
-rooms are entered each launch until the settings phase.
+member. Settings are saved beside the identity key in `brp/settings.toml`:
+nickname, relay choice, frame rate ceiling, audio output device, and the
+tickets of recent rooms. A stored ticket contains the addresses of the peer
+that issued it, so treat the file as you would the tickets themselves.
 
 ## Workspace crates
 
@@ -217,6 +231,14 @@ assembler, so the Windows CI job is its compiler.
 Set `RUST_LOG=debug` for diagnostic logging. Secret keys and tickets are not
 written to logs.
 
+### Releasing
+
+Bump `version` in the workspace `Cargo.toml`, commit, and push an annotated tag
+whose name is `v` plus that version (`git tag -a v0.1.0 -m "..."`). The release
+workflow refuses a tag that does not match the workspace version, builds the
+Linux tarball and the Windows zip, and publishes them with checksums and the
+tag's annotation as the release notes.
+
 ## Roadmap
 
 1. **Linux vertical slice** — done: one publisher, one viewer, portal capture,
@@ -232,8 +254,8 @@ written to logs.
    pending hardware: everything the machine plays except brp itself, Opus over
    the existing frame streams, one stream per publisher, per-publisher volume
    and a master mute.
-5. **Window management and polish** — pop-outs and fullscreen done; settings
-   UI and persistence and release packaging planned.
+5. **Window management and polish** — done: pop-outs and fullscreen, settings
+   UI and persistence, tagged releases for Windows and Linux.
 
 Backlog, unordered: macOS, per-application audio, zero-copy GPU paths on both
 OSes, lossless and 4:4:4 presets, congestion-driven preset switching, and
@@ -259,7 +281,9 @@ and implemented by
 Phase 5 is designed in
 [`docs/superpowers/specs/2026-09-06-phase5-windows-settings-release-design.md`](docs/superpowers/specs/2026-09-06-phase5-windows-settings-release-design.md);
 pop-outs and fullscreen are implemented by
-[`2026-09-06-plan5a-popouts.md`](docs/superpowers/plans/2026-09-06-plan5a-popouts.md).
+[`2026-09-06-plan5a-popouts.md`](docs/superpowers/plans/2026-09-06-plan5a-popouts.md);
+settings, persistence, and releases are implemented by
+[`2026-09-06-plan5b-settings-release.md`](docs/superpowers/plans/2026-09-06-plan5b-settings-release.md).
 
 ## License
 

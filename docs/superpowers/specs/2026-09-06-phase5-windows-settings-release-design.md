@@ -258,10 +258,18 @@ Verified on 2026-09-06 against the registry sources in the lock file:
 - `toml` 1.1.5 and `serde` 1.0 are already in `Cargo.lock` as transitive dependencies.
 - `softprops/action-gh-release@v2` attaches files listed under `files:` to the release for the pushed tag.
 
-## 13. Amendments from the 5a implementation run
+## 13. Amendments from the implementation run
 
 - **Main surface creation (5.1).** `GpuContext::new` takes the main window and returns the configured `WindowSurface` with it: wgpu picks the adapter against a surface, and a window has at most one surface, so the main surface cannot be created a second time by `WindowSurface::new`. Pop-outs use `WindowSurface::new`.
 - **Fullscreen state (5.3).** The requested fullscreen state lives on the pop-out record (`PopOutWindow { surface, fullscreen }`) rather than a separate set of window ids; same meaning, one map fewer.
 - **Constant name (11).** `POPOUT_DEFAULT_SIZE` is named `DEFAULT_WINDOW_SIZE` because the main window uses it too.
 - **Repaint scheduling (5.3).** `next_repaint` is the earliest deadline across windows and wakes every window, matching the `NewFrame` fan-out in section 7.
 - **Esc and popups (8.1).** Esc leaves fullscreen only when no egui popup is open; the popup state is sampled before the pop-out pass because the popup closes itself during the pass in reaction to the same Esc press. Otherwise dismissing the preset dropdown would also leave fullscreen.
+- **Audio settings shape (5.4).** The device lives under `[audio] output_device` as a nested `AudioSettings` struct so the TOML matches the documented shape; the spec's flat `audio_output` field name is not used.
+- **Store type (5.4).** `SettingsStore { settings, path, load_error }` carries the path and the load error the start screen shows; `Settings` stays pure.
+- **fps flag (5.4).** `WindowArgs.fps` became `Option<u32>` so an absent flag can defer to the file; `brp publish --fps` keeps its default of 60.
+- **Start screen (8.2).** Clicking a recent room fills the ticket field and submits Join; a new `StartAction::OpenSettings` opens the dialog and never becomes an intent.
+- **Release notes (5.7).** The publish job reads the annotated tag's message with `git tag -l --format='%(contents)'` into the release body; `softprops/action-gh-release` does not read tag annotations by itself.
+- **Implicit saves after a load failure (9.2).** `SettingsStore::save_unless_load_failed` guards the save that follows a room open: after a load failure the defaults are in use, and only the dialog's explicit Save may overwrite the user's file. The plan's unconditional save would have replaced a corrupt file with defaults.
+- **Nickname rule (5.4, 8.2).** One pure `settings::normalised_nickname` (trim; empty means none) serves the dialog's Save and the save after a room open. The dialog edits raw text (`SettingsDialog::nickname_text`) and normalises on Save so spaces can be typed; a saved nickname is copied into the start form when no `--nickname` flag was given, since the form is what the next open sends.
+- **`WindowArgs::default` (5.4).** Derived rather than hand-written: with `fps` an `Option`, every field is trivially default and clippy's `derivable_impls` rejects the manual impl.

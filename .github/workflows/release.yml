@@ -1,0 +1,93 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - id: check
+        name: Tag must equal the workspace version
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "brp") | .version')"
+          if [ "$tag" != "$version" ]; then
+            echo "tag v$tag does not match the workspace version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - name: Install build dependencies
+        run: >
+          dnf install -y --setopt=install_weak_deps=False git gcc gcc-c++ clang clang-devel
+          pkgconf-pkg-config ffmpeg-free-devel pipewire-devel libxkbcommon-devel wayland-devel libX11-devel
+          alsa-lib-devel
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p brp
+      - name: Stage the tarball
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          name="brp-$VERSION-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp target/release/brp LICENSE README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/windows-ffmpeg
+      - run: cargo build --release -p brp
+      - name: Stage the zip
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $name = "brp-$env:VERSION-windows-x86_64"
+          ./ci/stage-windows.ps1 -Destination "dist\$name"
+          Compress-Archive -Path "dist\$name" -DestinationPath "dist\$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+  publish:
+    needs: [version, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and release notes from the tag annotation
+        run: |
+          set -eu
+          (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS)
+          git fetch --no-tags origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME" || true
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body_path: notes.md

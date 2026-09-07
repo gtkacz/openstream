@@ -1,0 +1,28 @@
+name: Windows FFmpeg
+description: LLVM for bindgen and the pinned BtbN LGPL shared FFmpeg build. Exports FFMPEG_DIR and LIBCLANG_PATH and puts the DLLs on PATH.
+runs:
+  using: composite
+  steps:
+    - name: Ensure LLVM for bindgen
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $libclang = "C:\Program Files\LLVM\bin"
+        if (-not (Test-Path "$libclang\libclang.dll")) {
+          # choco is a native command: the error preference does not see its exit code.
+          choco install llvm -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=$libclang"
+    - name: Install FFmpeg (BtbN LGPL shared, pinned)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $release = "autobuild-2026-09-05-13-10"
+        $asset = "ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip"
+        $dir = Join-Path $env:GITHUB_WORKSPACE "ffmpeg"
+        Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/$release/$asset" -OutFile ffmpeg.zip
+        Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
+        Move-Item (Get-ChildItem ffmpeg-extract | Select-Object -First 1).FullName $dir
+        Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$dir"
+        Add-Content $env:GITHUB_PATH "$dir\bin"
