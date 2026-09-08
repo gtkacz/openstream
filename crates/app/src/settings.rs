@@ -6,6 +6,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use brp_audio::{AppKey, AudioSelection};
 use brp_net::RelaySetting;
 use directories::ProjectDirs;
 use iroh::RelayUrl;
@@ -72,6 +73,39 @@ impl RelayChoice {
 pub struct AudioSettings {
     /// A cpal device id in its `Display` form; `None` is the system default.
     pub output_device: Option<String>,
+    pub applications: AudioApplications,
+}
+
+/// Serialised as `[audio.applications] mode = "all" | "only"` with `names`. Both fields are always
+/// written: flipping to every application for a film and back must not lose the set. This
+/// deliberately differs from [`RelayChoice`]'s adjacently-tagged shape, whose variants carry
+/// genuinely different data.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioApplications {
+    pub mode: AudioMode,
+    pub names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioMode {
+    #[default]
+    All,
+    Only,
+}
+
+impl AudioApplications {
+    /// What the room captures with. Names go through [`AppKey`], so a hand-edited file with odd
+    /// casing still matches on Windows; mirrors [`RelayChoice::to_relay_setting`].
+    pub fn to_selection(&self) -> AudioSelection {
+        match self.mode {
+            AudioMode::All => AudioSelection::All,
+            AudioMode::Only => {
+                AudioSelection::Only(self.names.iter().map(|name| AppKey::new(name)).collect())
+            }
+        }
+    }
 }
 
 /// A room the user created or joined: the ticket that got them in, and when.
@@ -214,6 +248,7 @@ pub fn normalised_nickname(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn temp_path(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("brp-settings-{}-{test}", std::process::id()));
@@ -228,6 +263,10 @@ mod tests {
             relay: RelayChoice::Custom("https://relay.example.com/".into()),
             audio: AudioSettings {
                 output_device: Some("PipeWire:alsa_output.usb".into()),
+                applications: AudioApplications {
+                    mode: AudioMode::Only,
+                    names: vec!["firefox".into(), "game.exe".into()],
+                },
             },
             recent_rooms: vec![RecentRoom {
                 ticket: "brpticket".into(),
@@ -256,6 +295,9 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("[audio]"), "{text}");
+        assert!(text.contains("[audio.applications]"), "{text}");
+        assert!(text.contains("mode = \"only\""), "{text}");
+        assert!(text.contains("\"firefox\""), "{text}");
         assert!(text.contains("[[recent_rooms]]"), "{text}");
         let disabled = toml::to_string_pretty(&Settings {
             relay: RelayChoice::Disabled,
@@ -429,6 +471,65 @@ mod tests {
             RelayChoice::Custom("nope".into())
                 .to_relay_setting()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn the_mode_selects_all_or_only_the_named_applications() {
+        assert_eq!(
+            AudioApplications::default().to_selection(),
+            AudioSelection::All
+        );
+        let only = AudioApplications {
+            mode: AudioMode::Only,
+            names: vec!["firefox".into(), "game.exe".into()],
+        };
+        assert_eq!(
+            only.to_selection(),
+            AudioSelection::Only(BTreeSet::from([
+                AppKey::new("firefox"),
+                AppKey::new("game.exe"),
+            ]))
+        );
+        let kept = AudioApplications {
+            mode: AudioMode::All,
+            names: vec!["firefox".into()],
+        };
+        assert_eq!(
+            kept.to_selection(),
+            AudioSelection::All,
+            "the names are kept in both modes but only in force under Only"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_hand_edited_name_is_normalised_by_the_conversion() {
+        let odd = AudioApplications {
+            mode: AudioMode::Only,
+            names: vec![r"C:\Games\GAME.EXE".into()],
+        };
+        assert_eq!(
+            odd.to_selection(),
+            AudioSelection::Only(BTreeSet::from([AppKey::new("game.exe")])),
+            "the conversion goes through AppKey, so odd casing and a full path still match"
+        );
+    }
+
+    #[test]
+    fn an_unknown_application_mode_fails_the_parse() {
+        let settings: Result<Settings, _> =
+            toml::from_str("[audio.applications]\nmode = \"sometimes\"\n");
+        assert!(settings.is_err());
+    }
+
+    #[test]
+    fn a_file_without_an_applications_table_shares_every_application() {
+        let settings: Settings = toml::from_str("[audio]\noutput_device = \"x\"\n").unwrap();
+        assert_eq!(settings.audio.applications, AudioApplications::default());
+        assert_eq!(
+            settings.audio.applications.to_selection(),
+            AudioSelection::All
         );
     }
 }

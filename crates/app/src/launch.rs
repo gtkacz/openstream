@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use brp_audio::{CpalOutput, PlatformAudioCapture};
+use brp_audio::{AudioSelection, CpalOutput, PlatformAudioCapture};
 use brp_capture::PlatformCapture;
 use brp_net::RelaySetting;
 use brp_proto::RoomTicket;
@@ -36,6 +36,8 @@ pub struct Launch {
     pub relay: RelaySetting,
     /// cpal device id to play through; `None` is the system default.
     pub audio_output: Option<String>,
+    /// Which applications the room's audio carries.
+    pub audio_applications: AudioSelection,
 }
 
 impl Launch {
@@ -51,6 +53,7 @@ impl Launch {
             fps: args.fps.unwrap_or(settings.fps),
             relay,
             audio_output: settings.audio.output_device.clone(),
+            audio_applications: settings.audio.applications.to_selection(),
         })
     }
 }
@@ -86,7 +89,7 @@ pub async fn open_room(
         capture: Arc::new(PlatformCapture),
         audio_capture: Arc::new(PlatformAudioCapture::new(std::process::id())),
         audio_output: Arc::new(CpalOutput::new(launch.audio_output.clone())),
-        audio_applications: brp_audio::AudioSelection::All,
+        audio_applications: launch.audio_applications.clone(),
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(move || {
@@ -112,7 +115,10 @@ pub async fn open_room(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{AudioSettings, RelayChoice};
+    use std::collections::BTreeSet;
+
+    use brp_audio::AppKey;
+    use crate::settings::{AudioApplications, AudioMode, AudioSettings, RelayChoice};
 
     fn saved() -> Settings {
         Settings {
@@ -121,6 +127,10 @@ mod tests {
             relay: RelayChoice::Custom("https://relay.example.com/".into()),
             audio: AudioSettings {
                 output_device: Some("dev".into()),
+                applications: AudioApplications {
+                    mode: AudioMode::Only,
+                    names: vec!["firefox".into(), "game.exe".into()],
+                },
             },
             recent_rooms: Vec::new(),
         }
@@ -134,6 +144,13 @@ mod tests {
         assert_eq!(launch.fps, 30);
         assert!(matches!(launch.relay, RelaySetting::Custom(_)));
         assert_eq!(launch.audio_output.as_deref(), Some("dev"));
+        assert_eq!(
+            launch.audio_applications,
+            AudioSelection::Only(BTreeSet::from([
+                AppKey::new("firefox"),
+                AppKey::new("game.exe"),
+            ]))
+        );
     }
 
     #[test]
@@ -149,6 +166,13 @@ mod tests {
         assert_eq!(launch.fps, 120);
         assert_eq!(launch.relay, RelaySetting::Disabled);
         assert_eq!(launch.audio_output.as_deref(), Some("dev"));
+        assert_eq!(
+            launch.audio_applications,
+            AudioSelection::Only(BTreeSet::from([
+                AppKey::new("firefox"),
+                AppKey::new("game.exe"),
+            ]))
+        );
     }
 
     #[test]
