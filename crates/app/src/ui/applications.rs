@@ -175,11 +175,11 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
     let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     if done {
         let applied = picker.applied();
-        state.applications = None;
+        state.cancel_applications();
         return Some(PickerOutcome::Applied(applied));
     }
     if cancelled || escape || !open {
-        state.applications = None;
+        state.cancel_applications();
         return None;
     }
     state.applications = Some(picker);

@@ -345,7 +345,11 @@ impl App {
                 PickerOutcome::Refresh => (RoomCommand::ChooseApplications, false),
                 PickerOutcome::Applied(applications) => {
                     let command = RoomCommand::SetAudioApplications(applications.to_selection());
-                    self.store.settings.audio.applications = applications;
+                    self.store.settings.audio.applications = applications.clone();
+                    // Neither window is modal: if the Settings dialog is still open with a draft
+                    // taken before this Done, a later Save would otherwise overwrite this choice
+                    // on disk with the pre-edit one.
+                    self.settings_dialog.draft.audio.applications = applications;
                     (command, true)
                 }
             };

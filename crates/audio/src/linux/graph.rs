@@ -15,7 +15,7 @@ pub struct Node {
     pub id: u32,
     pub media_class: String,
     pub name: Option<String>,
-    /// The `client.id` property; resolved to a pid through [`Graph::add_client`].
+    /// The `client.id` property; resolved to a [`Client`] through [`Graph::add_client`].
     pub client: Option<u32>,
 }
 
@@ -136,9 +136,13 @@ impl Graph {
 
     /// The applications behind the tracked nodes, collapsed by identity: what `sources()` reports.
     /// A node whose owner has no identity cannot be selected, so it cannot be a row either. The
-    /// first label seen for an identity wins; nodes are keyed by id, so that is deterministic.
+    /// first *real* label seen for an identity wins, so a later client with an empty
+    /// `application.name` cannot demote one already found; nodes are keyed by id, so that is
+    /// deterministic. Reports only nodes that passed the selection predicate in [`Graph::add_node`]
+    /// — a caller that wants every audible application, selected or not, must build its `Graph`
+    /// with [`AudioSelection::All`].
     pub fn sources(&self) -> Vec<AudioSource> {
-        let mut labels: BTreeMap<AppKey, String> = BTreeMap::new();
+        let mut labels: BTreeMap<AppKey, Option<String>> = BTreeMap::new();
         for node in self.nodes.values() {
             let Some(client) = node.client.and_then(|id| self.clients.get(&id)) else {
                 continue;
@@ -146,15 +150,22 @@ impl Graph {
             let Some(key) = client.key.clone() else {
                 continue;
             };
-            let label = match client.label.as_deref() {
-                Some(label) if !label.is_empty() => label.to_string(),
-                _ => key.as_str().to_string(),
-            };
-            labels.entry(key).or_insert(label);
+            let real_label = client
+                .label
+                .as_deref()
+                .filter(|label| !label.is_empty())
+                .map(str::to_string);
+            let entry = labels.entry(key).or_insert(None);
+            if entry.is_none() {
+                *entry = real_label;
+            }
         }
         labels
             .into_iter()
-            .map(|(key, label)| AudioSource { key, label })
+            .map(|(key, label)| {
+                let label = label.unwrap_or_else(|| key.as_str().to_string());
+                AudioSource { key, label }
+            })
             .collect()
     }
 
@@ -448,7 +459,24 @@ mod tests {
     }
 
     #[test]
-    fn an_unselected_node_is_still_listed() {
+    fn a_later_real_label_upgrades_a_row_that_first_fell_back_to_the_key() {
+        let mut graph = graph(AudioSelection::All);
+        graph.add_client(50, app(1000, "firefox", ""));
+        graph.add_client(51, app(1001, "firefox", "Firefox"));
+        graph.add_node(node(10, Some(50)));
+        graph.add_node(node(20, Some(51)));
+        assert_eq!(
+            graph.sources(),
+            vec![AudioSource {
+                key: AppKey::new("firefox"),
+                label: "Firefox".into(),
+            }],
+            "a real label seen later must not stay shadowed by an earlier fallback"
+        );
+    }
+
+    #[test]
+    fn a_playing_application_is_listed() {
         let mut graph = graph(AudioSelection::All);
         graph.add_client(50, app(1000, "spotify", "Spotify"));
         graph.add_node(node(10, Some(50)));

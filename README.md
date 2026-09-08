@@ -295,10 +295,10 @@ the workflow so it cannot start another release.
    and a master mute.
 5. **Window management and polish** — done: pop-outs and fullscreen, settings
    UI and persistence, tagged releases for Windows and Linux.
-6. **Per-application audio** — done on Linux; Windows pending hardware: share
-   every application except brp, which stays the default, or only the
-   applications you select, stored by executable name so the choice survives
-   restarts.
+6. **Per-application audio** — done on Linux pending the manual two-instance
+   check; Windows pending hardware: share every application except brp, which
+   stays the default, or only the applications you select, stored by executable
+   name so the choice survives restarts.
 
 Backlog, unordered: macOS, zero-copy GPU paths on both OSes, lossless and
 4:4:4 presets, congestion-driven preset switching, self-hosted relay
