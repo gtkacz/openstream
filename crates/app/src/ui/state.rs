@@ -221,6 +221,7 @@ pub fn live_title(snapshot: &RoomSnapshot, key: TileKey) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brp_audio::AudioSelection;
     use brp_capture::{SourceDescriptor, SourceId};
     use brp_net::PathKind;
     use brp_proto::{Codec, LiveInfo, Preset};
@@ -300,6 +301,7 @@ mod tests {
             own_audio: OwnAudioView {
                 enabled: true,
                 state: AudioCaptureState::Idle,
+                selection: AudioSelection::All,
                 subscribers: 0,
                 packets_encoded: 0,
             },
@@ -353,6 +355,7 @@ mod tests {
             own_audio: OwnAudioView {
                 enabled: true,
                 state: AudioCaptureState::Idle,
+                selection: AudioSelection::All,
                 subscribers: 0,
                 packets_encoded: 0,
             },

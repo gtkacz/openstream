@@ -1,9 +1,10 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use brp_audio::{
-    AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSink, AudioSource,
+    AppKey, AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSink, AudioSource,
     SyntheticTone,
 };
 use brp_capture::{CaptureBackend, CaptureSession, SourceInfo, SourceRequest, SyntheticSource};
@@ -23,6 +24,7 @@ fn registry(grace: Duration) -> Arc<LiveRegistry> {
             frequency_hz: 440.0,
             amplitude: 0.5,
         }),
+        AudioSelection::All,
         grace,
         Arc::new(|| {}),
     )
@@ -75,6 +77,7 @@ async fn encoders_start_on_first_subscription_and_stop_after_the_grace() {
             frequency_hz: 440.0,
             amplitude: 0.5,
         }),
+        AudioSelection::All,
         GRACE,
         Arc::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -137,6 +140,7 @@ async fn removing_a_preset_stops_its_encoder_and_ends_its_subscription() {
             frequency_hz: 440.0,
             amplitude: 0.5,
         }),
+        AudioSelection::All,
         GRACE,
         Arc::new(|| {}),
     );
@@ -180,6 +184,7 @@ fn live_limit_and_preset_validation_are_enforced() {
             frequency_hz: 440.0,
             amplitude: 0.5,
         }),
+        AudioSelection::All,
         GRACE,
         Arc::new(|| {}),
     );
@@ -290,6 +295,7 @@ async fn a_failing_capture_clears_has_audio_and_rejects_until_retoggled() {
     let registry = LiveRegistry::new(
         Arc::new(FakeCodecs),
         Arc::new(FailingCapture),
+        AudioSelection::All,
         GRACE,
         Arc::new(|| {}),
     );
@@ -335,6 +341,7 @@ async fn a_slow_capture_start_does_not_hold_the_registry_lock() {
     let registry = LiveRegistry::new(
         Arc::new(FakeCodecs),
         Arc::new(SlowCapture),
+        AudioSelection::All,
         GRACE,
         Arc::new(|| {}),
     );
@@ -387,6 +394,7 @@ async fn a_capture_that_dies_is_treated_as_failed_by_housekeeping() {
     let registry = LiveRegistry::new(
         Arc::new(FakeCodecs),
         Arc::new(DyingCapture),
+        AudioSelection::All,
         GRACE,
         Arc::new(|| {}),
     );
@@ -446,4 +454,165 @@ async fn stop_all_stops_running_audio() {
             .is_none(),
         "packets receiver should end when stop_all stops capture"
     );
+}
+
+fn only(keys: [AppKey; 1]) -> AudioSelection {
+    AudioSelection::Only(BTreeSet::from(keys))
+}
+
+#[tokio::test]
+async fn an_edit_while_idle_only_stores_the_selection_and_the_next_capture_uses_it() {
+    let registry = registry(GRACE);
+    let live = synthetic_live(&registry, "desk").await;
+    registry.set_audio_applications(AudioSelection::Only(BTreeSet::new()));
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Idle);
+    assert_eq!(
+        registry.audio_view().selection,
+        AudioSelection::Only(BTreeSet::new())
+    );
+    assert!(
+        registry.live_infos()[0].has_audio,
+        "an empty selection is silence, not a failure, so presence is unaffected"
+    );
+
+    let mut audio = registry.subscribe_audio(live).unwrap();
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Capturing);
+    assert!(
+        registry.live_infos()[0].has_audio,
+        "live_infos is unaffected by the selection, even while capturing nothing"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), audio.packets.recv())
+            .await
+            .is_err(),
+        "the capture honours the stored selection, so nothing is sent"
+    );
+}
+
+#[tokio::test]
+async fn an_edit_while_capturing_swaps_the_session_and_keeps_the_publisher() {
+    let registry = registry(GRACE);
+    let live = synthetic_live(&registry, "desk").await;
+    let mut audio = registry.subscribe_audio(live).unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    registry.set_audio_applications(only([SyntheticTone::tone_key()]));
+    let view = registry.audio_view();
+    assert_eq!(
+        (view.state, view.subscribers),
+        (AudioCaptureState::Capturing, 1),
+        "the same publisher, so the same subscriber"
+    );
+    let next = tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
+        .await
+        .unwrap()
+        .expect("the subscription survives the swap");
+    assert!(
+        next.seq > first.seq,
+        "the sequence space continued: {} then {}",
+        first.seq,
+        next.seq
+    );
+    assert!(registry.live_infos()[0].has_audio);
+}
+
+/// Succeeds once and fails afterwards: the swap a selection edit performs is the second start.
+struct SwapFailsCapture {
+    starts: AtomicUsize,
+}
+
+impl AudioCapture for SwapFailsCapture {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        Ok(Vec::new())
+    }
+    fn start(
+        &self,
+        selection: AudioSelection,
+        sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+        if self.starts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return SyntheticTone {
+                frequency_hz: 440.0,
+                amplitude: 0.5,
+            }
+            .start(selection, sink);
+        }
+        Err(AudioError::PipeWire("the daemon went away".into()))
+    }
+}
+
+#[tokio::test]
+async fn a_swap_that_fails_to_start_drops_has_audio_and_rejects_new_subscribers() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(SwapFailsCapture {
+            starts: AtomicUsize::new(0),
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let live = synthetic_live(&registry, "desk").await;
+    let mut audio = registry.subscribe_audio(live).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    registry.set_audio_applications(only([SyntheticTone::tone_key()]));
+    assert!(matches!(
+        registry.audio_view().state,
+        AudioCaptureState::Failed(ref m) if m.contains("went away")
+    ));
+    assert!(!registry.live_infos()[0].has_audio);
+    assert!(matches!(
+        registry.subscribe_audio(live),
+        Err(SubscribeRejected::NoAudio)
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
+            .await
+            .unwrap()
+            .is_none(),
+        "no fallback to the old session: the publisher stops and the subscription ends"
+    );
+}
+
+#[tokio::test]
+async fn an_edit_clears_a_stale_capture_failure() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(FailingCapture),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let live = synthetic_live(&registry, "desk").await;
+    assert!(matches!(
+        registry.subscribe_audio(live),
+        Err(SubscribeRejected::NoAudio)
+    ));
+    assert!(!registry.live_infos()[0].has_audio);
+
+    registry.set_audio_applications(only([AppKey::new("firefox")]));
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Idle);
+    assert!(
+        registry.live_infos()[0].has_audio,
+        "editing a selection is also the retry path"
+    );
+}
+
+#[test]
+fn the_registry_reports_what_the_backend_lists() {
+    let registry = registry(GRACE);
+    let listed: Vec<String> = registry
+        .sources()
+        .unwrap()
+        .into_iter()
+        .map(|source| source.label)
+        .collect();
+    assert_eq!(listed, ["Tone", "Silent"]);
 }

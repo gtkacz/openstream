@@ -1,5 +1,6 @@
 //! Read-only views the window renders. Cloned out of the room on every version bump.
 
+use brp_audio::AudioSelection;
 use brp_net::PathKind;
 use brp_proto::{LiveInfo, Preset};
 use iroh::PublicKey;
@@ -39,6 +40,9 @@ pub enum AudioCaptureState {
 pub struct OwnAudioView {
     pub enabled: bool,
     pub state: AudioCaptureState,
+    /// What the room hears. The picker pre-checks its rows from this, and the panel reads mode
+    /// `Only` with an empty set as "no applications selected" rather than "capturing".
+    pub selection: AudioSelection,
     pub subscribers: usize,
     pub packets_encoded: u64,
 }

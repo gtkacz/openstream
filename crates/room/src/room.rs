@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brp_audio::{AudioCapture, AudioOutput, AudioOutputSession};
+use brp_audio::{AudioCapture, AudioOutput, AudioOutputSession, AudioSelection};
 use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::{FrameNotify, Mixer};
@@ -127,6 +127,7 @@ impl Room {
         let registry = LiveRegistry::new(
             config.encoders.clone(),
             config.audio_capture.clone(),
+            AudioSelection::All,
             config.timings.encoder_grace,
             registry_notify,
         );

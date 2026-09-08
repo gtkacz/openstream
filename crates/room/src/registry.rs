@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use brp_audio::{AudioCapture, AudioCaptureSession, AudioSelection};
+use brp_audio::{AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSource};
 use brp_capture::{CaptureFrame, CaptureSession};
 use brp_net::{AudioSubscription, LiveSource, SubscribeRejected, Subscription};
 use brp_pipeline::{AudioPublisher, LatestSlot, Pacer, Publisher};
@@ -80,6 +80,7 @@ struct RunningAudio {
 
 struct AudioState {
     enabled: bool,
+    selection: AudioSelection,
     running: Option<RunningAudio>,
     last_error: Option<String>,
 }
@@ -113,6 +114,7 @@ impl LiveRegistry {
     pub fn new(
         encoders: Arc<dyn EncoderFactory>,
         audio_capture: Arc<dyn AudioCapture>,
+        selection: AudioSelection,
         grace: Duration,
         on_change: ChangeNotify,
     ) -> Arc<Self> {
@@ -123,6 +125,7 @@ impl LiveRegistry {
                 next_live_id: 1,
                 audio: AudioState {
                     enabled: true,
+                    selection,
                     running: None,
                     last_error: None,
                 },
@@ -281,6 +284,71 @@ impl LiveRegistry {
         (self.on_change)();
     }
 
+    /// Replaces which applications the capture carries. With nothing running that is all it does,
+    /// and the next subscriber starts with the new value. Editing a selection also clears a
+    /// recorded failure, so it is a retry path like the share-audio retoggle.
+    pub fn set_audio_applications(&self, selection: AudioSelection) {
+        // The same lock a first start holds: a swap and a start must not overlap, and the swap's
+        // start blocks just as long.
+        let _starting = lock(&self.audio_start);
+        let mut inner = lock(&self.inner);
+        inner.audio.selection = selection.clone();
+        inner.audio.last_error = None;
+        let Some(running) = take_audio(&mut inner.audio) else {
+            drop(inner);
+            (self.on_change)();
+            return;
+        };
+        drop(inner);
+
+        // The publisher outlives the swap, so the fan-out, the audio sequence space, and every
+        // viewer's carrier survive it; the jitter buffer emits silence for the gap and re-primes.
+        let RunningAudio {
+            session,
+            publisher,
+            idle_since,
+        } = running;
+        // Stopped before the new one starts: two sessions feeding one publisher would sum the
+        // desktop into itself at double amplitude for the overlap.
+        session.stop();
+        match self.audio_capture.start(selection, publisher.sink()) {
+            Ok(session) => {
+                let mut inner = lock(&self.inner);
+                if !inner.audio.advertises() {
+                    // Share audio was turned off while a slow daemon was answering.
+                    drop(inner);
+                    stop_audio(RunningAudio {
+                        session,
+                        publisher,
+                        idle_since,
+                    });
+                    (self.on_change)();
+                    return;
+                }
+                inner.audio.running = Some(RunningAudio {
+                    session,
+                    publisher,
+                    idle_since,
+                });
+            }
+            Err(error) => {
+                // No fallback to the old session: reviving it would keep sharing applications the
+                // user just deselected. This is phase 4's capture-failure path.
+                publisher.stop();
+                let message = error.to_string();
+                tracing::warn!(%message, "audio capture failed to restart for a new selection");
+                lock(&self.inner).audio.last_error = Some(message);
+            }
+        }
+        (self.on_change)();
+    }
+
+    /// What the platform reports as playing audio now. Takes no registry lock: the backend's own
+    /// deadline is what bounds it.
+    pub fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        self.audio_capture.sources()
+    }
+
     pub fn audio_enabled(&self) -> bool {
         lock(&self.inner).audio.enabled
     }
@@ -297,6 +365,7 @@ impl LiveRegistry {
         OwnAudioView {
             enabled: audio.enabled,
             state,
+            selection: audio.selection.clone(),
             subscribers: audio
                 .running
                 .as_ref()
@@ -527,12 +596,10 @@ impl LiveRegistry {
     /// Opens the encoder and starts the platform capture with the registry unlocked. A failure
     /// stops the publisher it already built, which joins its encode thread.
     fn start_audio(&self) -> Result<RunningAudio, String> {
+        let selection = lock(&self.inner).audio.selection.clone();
         let encoder = self.encoders.open_audio().map_err(|e| e.to_string())?;
         let publisher = AudioPublisher::start(encoder);
-        match self
-            .audio_capture
-            .start(AudioSelection::All, publisher.sink())
-        {
+        match self.audio_capture.start(selection, publisher.sink()) {
             Ok(session) => Ok(RunningAudio {
                 session,
                 publisher,
