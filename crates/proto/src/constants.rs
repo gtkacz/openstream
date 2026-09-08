@@ -70,6 +70,9 @@ pub const MAX_AUDIO_PACKET_BYTES: usize = 4096;
 /// backend waits for its own stream to become linkable before calling the capture dead. Long
 /// enough for a busy daemon, short enough that a wedged one does not hold a subscriber forever.
 pub const AUDIO_CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounds one picker click. The enumeration runs on the window thread through the command-drain
+/// path, so borrowing capture's five seconds would freeze the UI on a sick daemon.
+pub const AUDIO_SOURCE_LIST_TIMEOUT: Duration = Duration::from_secs(1);
 /// Silence pushed ahead of a track's first packet. The decoder produces 20 ms per 20 ms tick, so
 /// a track that starts empty never builds a reserve and every device callback larger than one
 /// packet underruns: this covers a 1024-frame quantum (21 ms, PipeWire's stock default) plus the

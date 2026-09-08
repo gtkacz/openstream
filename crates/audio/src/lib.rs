@@ -4,12 +4,14 @@ pub mod chunk;
 pub mod cpal_output;
 pub mod error;
 pub mod fake_output;
+pub mod selection;
 pub mod synthetic;
 
 pub use chunk::*;
 pub use cpal_output::{CpalOutput, OutputDevice, output_devices};
 pub use error::AudioError;
 pub use fake_output::{FakeOutput, FakeOutputHandle};
+pub use selection::{AppKey, AudioSelection, AudioSource};
 pub use synthetic::SyntheticTone;
 
 #[cfg(target_os = "linux")]
