@@ -81,13 +81,17 @@ same and makes that window borderless fullscreen. In a pop-out, F11 toggles
 fullscreen, Esc leaves it, and `back to grid` or closing the window puts the
 live back in the grid. A live is decoded once wherever it is shown.
 
-The own-lives panel also has a "Share audio" checkbox, on by default. The tile
+The own-lives panel also has a "Share audio" checkbox, on by default, beside
+a "Choose applications…" button. The button opens a window listing what is
+playing, with two radio buttons — all applications except brp, or only the
+ones you tick — applied on Done and remembered in `settings.toml`. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
 that member in the members panel, and the status bar has a "mute all" for
-every publisher at once. On Linux, capture links to every application's
-PipeWire output except brp's own; on Windows, WASAPI process loopback in
-exclude mode does the same, requiring Windows 10 version 2004. The Windows
-audio path is compiled and linted on CI but has not run on hardware.
+every publisher at once. On Linux, capture links to the selected
+applications' PipeWire output, always excluding brp's own; on Windows, WASAPI
+process loopback in exclude mode shares every application except brp, and the
+picker is not yet wired up there. Requires Windows 10 version 2004. The
+Windows audio path is compiled and linted on CI but has not run on hardware.
 
 On Windows the binary opens no console window. Started from a terminal with
 arguments it prints to that terminal, but the shell does not wait for it, so
@@ -106,9 +110,10 @@ sudo dnf install gcc clang clang-devel pkgconf-pkg-config \
 At runtime, install and run `xdg-desktop-portal` with a compositor backend and
 PipeWire. The portal's ScreenCast interface supplies the monitor/window picker
 and capture stream. PipeWire also serves audio: brp captures every
-application's output except its own and plays received audio through the
-default output device. A working Vulkan/GL-capable `wgpu` graphics backend is
-also required for the window.
+application's output except its own by default, or only the selected
+applications, and plays received audio through the default output device. A
+working Vulkan/GL-capable `wgpu` graphics backend is also required for the
+window.
 
 The development environment is Fedora 44 with KDE on Wayland. The application
 is intended to work on Wayland and X11 wherever the desktop portal is
@@ -290,13 +295,17 @@ the workflow so it cannot start another release.
    and a master mute.
 5. **Window management and polish** — done: pop-outs and fullscreen, settings
    UI and persistence, tagged releases for Windows and Linux.
+6. **Per-application audio** — done on Linux; Windows pending hardware: share
+   every application except brp, which stays the default, or only the
+   applications you select, stored by executable name so the choice survives
+   restarts.
 
-Backlog, unordered: macOS, per-application audio, zero-copy GPU paths on both
-OSes, lossless and 4:4:4 presets, congestion-driven preset switching,
-self-hosted relay documentation, a send volume per shared application,
-viewer-side visibility of which applications a publisher is mixing, microphone
-capture and voice chat behind an echo-cancellation dependency, and a
-self-updating application list in the audio picker.
+Backlog, unordered: macOS, zero-copy GPU paths on both OSes, lossless and
+4:4:4 presets, congestion-driven preset switching, self-hosted relay
+documentation, a send volume per shared application, viewer-side visibility
+of which applications a publisher is mixing, microphone capture and voice
+chat behind an echo-cancellation dependency, and a self-updating application
+list in the audio picker.
 
 The product model, protocol, constraints, and design rationale are in
 [`docs/superpowers/specs/2026-09-04-p2p-screen-sharing-design.md`](docs/superpowers/specs/2026-09-04-p2p-screen-sharing-design.md).
@@ -321,6 +330,10 @@ pop-outs and fullscreen are implemented by
 [`2026-09-06-plan5a-popouts.md`](docs/superpowers/plans/2026-09-06-plan5a-popouts.md);
 settings, persistence, and releases are implemented by
 [`2026-09-06-plan5b-settings-release.md`](docs/superpowers/plans/2026-09-06-plan5b-settings-release.md).
+Phase 6 is designed in
+[`docs/superpowers/specs/2026-09-08-phase6-per-application-audio-design.md`](docs/superpowers/specs/2026-09-08-phase6-per-application-audio-design.md);
+the Linux half is implemented by
+[`2026-09-08-plan6a-per-application-audio-linux.md`](docs/superpowers/plans/2026-09-08-plan6a-per-application-audio-linux.md).
 
 ## License
 
