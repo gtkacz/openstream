@@ -21,9 +21,10 @@ use pw::spa::sys::{SPA_AUDIO_CHANNEL_FL, SPA_AUDIO_CHANNEL_FR, SPA_AUDIO_MAX_CHA
 use pw::spa::utils::{Direction, SpaTypes};
 use pw::types::ObjectType;
 
-use self::graph::{Graph, Input, LinkPlan, Node, NodeVerdict, OWN_STREAM_NAME, Port};
+use self::graph::{Client, Graph, Input, LinkPlan, Node, NodeVerdict, OWN_STREAM_NAME, Port};
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
 use crate::error::AudioError;
+use crate::selection::{AppKey, AudioSelection};
 
 pub struct PipeWireCapture {
     process_id: u32,
@@ -199,7 +200,7 @@ fn run(
 
     let state = Rc::new(State {
         core: core.clone(),
-        graph: RefCell::new(Graph::new(process_id)),
+        graph: RefCell::new(Graph::new(process_id, own_binary(), AudioSelection::All)),
         stream_node: RefCell::new(None),
         inputs: RefCell::new(Inputs::default()),
         links: RefCell::new(Vec::new()),
@@ -287,20 +288,14 @@ impl State {
         let Some(props) = global.props else { return };
         match global.type_ {
             ObjectType::Client => {
-                let pid = props
-                    .get(*pw::keys::SEC_PID)
-                    .and_then(|pid| pid.parse().ok());
-                self.graph.borrow_mut().add_client(global.id, pid);
+                self.graph
+                    .borrow_mut()
+                    .add_client(global.id, client_of(props));
             }
             ObjectType::Node => {
                 let id = global.id;
-                let name = props.get(*pw::keys::NODE_NAME).map(str::to_string);
-                let node = Node {
-                    id,
-                    media_class: props.get(*pw::keys::MEDIA_CLASS).unwrap_or("").to_string(),
-                    name: name.clone(),
-                    client: props.get(*pw::keys::CLIENT_ID).and_then(|c| c.parse().ok()),
-                };
+                let node = node_of(id, props);
+                let name = node.name.clone();
                 let verdict = self.graph.borrow_mut().add_node(node);
                 match verdict {
                     NodeVerdict::Own => {
@@ -317,6 +312,13 @@ impl State {
                             node = id,
                             name = name.as_deref().unwrap_or(""),
                             "could not resolve the pid owning this audio output node; leaving it unlinked"
+                        );
+                    }
+                    NodeVerdict::NotSelected => {
+                        tracing::debug!(
+                            node = id,
+                            name = name.as_deref().unwrap_or(""),
+                            "this application is not in the audio selection; leaving it unlinked"
                         );
                     }
                     NodeVerdict::Ignored => {}
@@ -439,4 +441,58 @@ fn format_pod() -> Vec<u8> {
 
 fn pw_error(error: pw::Error) -> AudioError {
     AudioError::PipeWire(error.to_string())
+}
+
+/// brp's own executable identity, excluded from capture in both modes. An unreadable
+/// `current_exe` leaves it empty, which matches no reported binary, so exclusion then rests on the
+/// pid alone.
+fn own_binary() -> AppKey {
+    match std::env::current_exe() {
+        Ok(path) => AppKey::new(&path.to_string_lossy()),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "could not read our own executable path; a second brp instance will not be \
+                 recognised by name"
+            );
+            AppKey::new("")
+        }
+    }
+}
+
+/// What a Client global says about its owner. The binary property is the identity: a node's own
+/// properties often lack it while its client carries it.
+fn client_of(props: &pw::spa::utils::dict::DictRef) -> Client {
+    let pid: Option<u32> = props
+        .get(*pw::keys::SEC_PID)
+        .and_then(|pid| pid.parse().ok());
+    Client {
+        pid,
+        // The fallback is a fallback: every client observed on the dev machine carries the binary.
+        // A client that reaches the daemon through pipewire-pulse has the pulse daemon's verified
+        // pid, so falling back to it can name `pipewire-pulse` rather than the application.
+        key: props
+            .get(*pw::keys::APP_PROCESS_BINARY)
+            .map(AppKey::new)
+            .or_else(|| pid.and_then(binary_of_pid)),
+        label: props.get(*pw::keys::APP_NAME).map(str::to_string),
+    }
+}
+
+/// A node global as the graph wants it.
+fn node_of(id: u32, props: &pw::spa::utils::dict::DictRef) -> Node {
+    Node {
+        id,
+        media_class: props.get(*pw::keys::MEDIA_CLASS).unwrap_or("").to_string(),
+        name: props.get(*pw::keys::NODE_NAME).map(str::to_string),
+        client: props.get(*pw::keys::CLIENT_ID).and_then(|c| c.parse().ok()),
+    }
+}
+
+/// The basename of a running process's executable, read through `/proc/<pid>/exe` rather than
+/// `comm`, which the kernel truncates to fifteen characters.
+fn binary_of_pid(pid: u32) -> Option<AppKey> {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|path| AppKey::new(&path.to_string_lossy()))
 }
