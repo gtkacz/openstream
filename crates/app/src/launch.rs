@@ -117,8 +117,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    use brp_audio::AppKey;
     use crate::settings::{AudioApplications, AudioMode, AudioSettings, RelayChoice};
+    use brp_audio::AppKey;
 
     fn saved() -> Settings {
         Settings {
