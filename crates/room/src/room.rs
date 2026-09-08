@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brp_audio::{AudioCapture, AudioOutput, AudioOutputSession, AudioSelection};
+use brp_audio::{AudioCapture, AudioOutput, AudioOutputSession, AudioSelection, AudioSource};
 use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::{FrameNotify, Mixer};
@@ -57,6 +57,9 @@ pub struct RoomConfig {
     pub capture: Arc<dyn CaptureBackend>,
     pub audio_capture: Arc<dyn AudioCapture>,
     pub audio_output: Arc<dyn AudioOutput>,
+    /// Which applications this participant's audio carries, as persisted. In force from the first
+    /// capture rather than from the first time the picker is opened.
+    pub audio_applications: AudioSelection,
     pub encoders: Arc<dyn EncoderFactory>,
     pub decoders: Arc<dyn DecoderFactory>,
     pub on_change: ChangeNotify,
@@ -127,7 +130,7 @@ impl Room {
         let registry = LiveRegistry::new(
             config.encoders.clone(),
             config.audio_capture.clone(),
-            AudioSelection::All,
+            config.audio_applications,
             config.timings.encoder_grace,
             registry_notify,
         );
@@ -359,6 +362,15 @@ impl Room {
 
     pub fn set_audio(&self, enabled: bool) {
         self.registry.set_audio(enabled);
+    }
+
+    pub fn set_audio_applications(&self, selection: AudioSelection) {
+        self.registry.set_audio_applications(selection);
+    }
+
+    /// Lists what is playing audio now, for the application picker.
+    pub fn audio_sources(&self) -> Result<Vec<AudioSource>, RoomError> {
+        Ok(self.registry.sources()?)
     }
 
     pub fn set_volume(&self, publisher: PublicKey, gain: f32) {

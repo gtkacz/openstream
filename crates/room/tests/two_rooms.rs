@@ -1,8 +1,9 @@
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brp_audio::{FakeOutput, FakeOutputHandle, SyntheticTone};
+use brp_audio::{AudioSelection, FakeOutput, FakeOutputHandle, SyntheticTone};
 use brp_capture::{
     CaptureBackend, CaptureError, FrameSink, SourceDescriptor, SourceId, SourceListing,
     SourceRequest, StartFuture, SyntheticSource,
@@ -29,6 +30,7 @@ pub fn config(nickname: &str) -> RoomConfig {
             amplitude: 0.5,
         }),
         audio_output: Arc::new(FakeOutput::new().0),
+        audio_applications: AudioSelection::All,
         encoders: Arc::new(FakeCodecs),
         decoders: Arc::new(FakeCodecs),
         on_change: Arc::new(|| {}),
@@ -576,6 +578,79 @@ async fn toggling_share_audio_off_and_on_gets_the_carrier_back() {
         is_audible(&output.render(1024))
     })
     .await;
+
+    b.leave().await;
+    a.leave().await;
+}
+
+/// Spec 7's selection edit: chunks stop for one backend start, but the publisher, the sequence
+/// space, and the viewer's carrier are untouched. A publisher restart would have moved the
+/// carrier, which is what makes this the assertion that proves the swap.
+#[tokio::test]
+async fn a_selection_edit_swaps_the_capture_without_moving_the_carrier() {
+    let a = Room::create(config("alice")).await.unwrap();
+    let (bob_cfg, output) = config_with_output("bob");
+    let b = Room::join(bob_cfg, a.ticket()).await.unwrap();
+    wait_until("mutual presence", Duration::from_secs(5), || {
+        a.snapshot().members.len() == 1 && b.snapshot().members.len() == 1
+    })
+    .await;
+    let live = a
+        .start_live(SourceKind::Monitor, None, "desk".into())
+        .await
+        .unwrap();
+    wait_until("catalog", Duration::from_secs(5), || {
+        b.snapshot().members[0].lives.len() == 1
+    })
+    .await;
+    b.watch(a.id(), live, SOURCE_PRESET_ID).unwrap();
+    wait_until("audible", Duration::from_secs(5), || {
+        is_audible(&output.render(1024))
+    })
+    .await;
+
+    let listed: Vec<String> = a
+        .audio_sources()
+        .unwrap()
+        .into_iter()
+        .map(|source| source.key.as_str().to_string())
+        .collect();
+    assert_eq!(listed, ["tone", "silent"]);
+
+    a.set_audio_applications(AudioSelection::Only(BTreeSet::from([
+        SyntheticTone::tone_key(),
+    ])));
+    wait_until("still audible", Duration::from_secs(5), || {
+        is_audible(&output.render(1024))
+    })
+    .await;
+    let carrier = |room: &Room| -> Vec<u32> {
+        room.snapshot()
+            .watches
+            .iter()
+            .filter(|w| w.audio)
+            .map(|w| w.live_id)
+            .collect()
+    };
+    assert_eq!(carrier(&b), vec![live]);
+
+    a.set_audio_applications(AudioSelection::Only(BTreeSet::new()));
+    wait_until("silence", Duration::from_secs(5), || {
+        !is_audible(&output.render(1024))
+    })
+    .await;
+    assert_eq!(carrier(&b), vec![live], "the carrier did not move");
+    assert!(
+        b.snapshot()
+            .watches
+            .iter()
+            .all(|w| w.state == WatchState::Live),
+        "the watch was not disturbed"
+    );
+    assert!(
+        b.snapshot().members[0].has_audio,
+        "an empty selection is silence, so presence still advertises audio"
+    );
 
     b.leave().await;
     a.leave().await;

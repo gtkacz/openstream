@@ -10,6 +10,8 @@ pub enum RoomError {
     #[error(transparent)]
     Codec(#[from] brp_codec::CodecError),
     #[error(transparent)]
+    Audio(#[from] brp_audio::AudioError),
+    #[error(transparent)]
     Proto(#[from] brp_proto::ProtoError),
     #[error("gossip failed: {0}")]
     Gossip(String),

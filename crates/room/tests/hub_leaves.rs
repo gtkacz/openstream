@@ -26,6 +26,7 @@ fn config(nickname: &str) -> RoomConfig {
             amplitude: 0.5,
         }),
         audio_output: Arc::new(FakeOutput::new().0),
+        audio_applications: brp_audio::AudioSelection::All,
         encoders: Arc::new(FakeCodecs),
         decoders: Arc::new(FakeCodecs),
         on_change: Arc::new(|| {}),

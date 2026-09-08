@@ -32,6 +32,8 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         capture: Arc::new(PlatformCapture),
         audio_capture: Arc::new(PlatformAudioCapture::new(std::process::id())),
         audio_output: Arc::new(CpalOutput::new(None)),
+        // The headless publisher reads no settings, so it shares every application as it always has.
+        audio_applications: brp_audio::AudioSelection::All,
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(|| {}),

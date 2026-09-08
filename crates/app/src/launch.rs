@@ -86,6 +86,7 @@ pub async fn open_room(
         capture: Arc::new(PlatformCapture),
         audio_capture: Arc::new(PlatformAudioCapture::new(std::process::id())),
         audio_output: Arc::new(CpalOutput::new(launch.audio_output.clone())),
+        audio_applications: brp_audio::AudioSelection::All,
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(move || {
