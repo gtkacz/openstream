@@ -13,6 +13,7 @@ use wasapi::{AudioClient, Direction, SampleType, StreamMode, WaveFormat, initial
 
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
 use crate::error::AudioError;
+use crate::selection::{AudioSelection, AudioSource};
 
 /// How long one wait for the capture event may take before the loop checks the stop flag.
 const EVENT_TIMEOUT_MS: u32 = 1000;
@@ -34,7 +35,24 @@ struct Session {
 }
 
 impl AudioCapture for ProcessLoopbackCapture {
-    fn start(&self, sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        Err(AudioError::Unsupported(
+            "choosing which applications to share is not implemented on Windows yet".into(),
+        ))
+    }
+
+    fn start(
+        &self,
+        selection: AudioSelection,
+        sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+        // Sharing more than was asked for is the failure this feature exists to prevent, so an
+        // unimplemented selection fails visibly instead. `All` is untouched.
+        if selection != AudioSelection::All {
+            return Err(AudioError::Unsupported(
+                "sharing only selected applications is not implemented on Windows yet".into(),
+            ));
+        }
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), AudioError>>();
         let stop = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));

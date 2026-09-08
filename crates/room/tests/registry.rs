@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use brp_audio::{AudioCapture, AudioCaptureSession, AudioError, AudioSink, SyntheticTone};
+use brp_audio::{
+    AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSink, AudioSource,
+    SyntheticTone,
+};
 use brp_capture::{CaptureBackend, CaptureSession, SourceInfo, SourceRequest, SyntheticSource};
 use brp_net::{LiveSource, SubscribeRejected};
 use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID};
@@ -270,7 +273,14 @@ async fn the_first_audio_subscriber_starts_capture_and_the_grace_stops_it() {
 struct FailingCapture;
 
 impl AudioCapture for FailingCapture {
-    fn start(&self, _sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        Ok(Vec::new())
+    }
+    fn start(
+        &self,
+        _selection: AudioSelection,
+        _sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
         Err(AudioError::Unsupported("no loopback here".into()))
     }
 }
@@ -303,13 +313,20 @@ async fn a_failing_capture_clears_has_audio_and_rejects_until_retoggled() {
 struct SlowCapture;
 
 impl AudioCapture for SlowCapture {
-    fn start(&self, sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        Ok(Vec::new())
+    }
+    fn start(
+        &self,
+        selection: AudioSelection,
+        sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
         std::thread::sleep(Duration::from_millis(300));
         SyntheticTone {
             frequency_hz: 440.0,
             amplitude: 0.5,
         }
-        .start(sink)
+        .start(selection, sink)
     }
 }
 
@@ -353,7 +370,14 @@ impl AudioCaptureSession for DeadSession {
 }
 
 impl AudioCapture for DyingCapture {
-    fn start(&self, _sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        Ok(Vec::new())
+    }
+    fn start(
+        &self,
+        _selection: AudioSelection,
+        _sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
         Ok(Box::new(DeadSession))
     }
 }

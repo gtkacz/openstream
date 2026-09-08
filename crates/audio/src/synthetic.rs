@@ -10,6 +10,7 @@ use brp_proto::monotonic_us;
 
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
 use crate::error::AudioError;
+use crate::selection::{AppKey, AudioSelection, AudioSource};
 
 const CHUNK: Duration = Duration::from_millis(10);
 
@@ -24,8 +25,39 @@ struct Session {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+impl SyntheticTone {
+    /// The identity the tone answers to: a selection naming it is audible.
+    pub fn tone_key() -> AppKey {
+        AppKey::new("tone")
+    }
+
+    /// A second listed identity that never produces samples, so a test can select something the
+    /// platform reports and still hear nothing.
+    pub fn silent_key() -> AppKey {
+        AppKey::new("silent")
+    }
+}
+
 impl AudioCapture for SyntheticTone {
-    fn start(&self, mut sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        Ok(vec![
+            AudioSource {
+                key: Self::tone_key(),
+                label: "Tone".into(),
+            },
+            AudioSource {
+                key: Self::silent_key(),
+                label: "Silent".into(),
+            },
+        ])
+    }
+
+    fn start(
+        &self,
+        selection: AudioSelection,
+        mut sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+        let audible = selection.admits(Some(&Self::tone_key()));
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let tone = *self;
@@ -46,10 +78,14 @@ impl AudioCapture for SyntheticTone {
                     phase = (phase + step) % std::f32::consts::TAU;
                     samples.extend_from_slice(&[value, value]);
                 }
-                sink(AudioChunk {
-                    samples,
-                    capture_ts_us: monotonic_us(),
-                });
+                // A selection that does not name the tone leaves the stream idle with no chunks
+                // and no error, exactly as a silent desktop does.
+                if audible {
+                    sink(AudioChunk {
+                        samples,
+                        capture_ts_us: monotonic_us(),
+                    });
+                }
                 index = index.wrapping_add(1);
             }
         });
@@ -92,7 +128,10 @@ mod tests {
             frequency_hz: 440.0,
             amplitude: 0.5,
         }
-        .start(Box::new(move |c| sink_chunks.lock().unwrap().push(c)))
+        .start(
+            AudioSelection::All,
+            Box::new(move |c| sink_chunks.lock().unwrap().push(c)),
+        )
         .unwrap();
         thread::sleep(Duration::from_millis(120));
         assert!(session.error().is_none());
@@ -111,5 +150,70 @@ mod tests {
                 .windows(2)
                 .all(|w| w[1].capture_ts_us > w[0].capture_ts_us)
         );
+    }
+
+    #[test]
+    fn the_tone_lists_itself_and_a_silent_neighbour() {
+        let tone = SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        };
+        let listed: Vec<(String, String)> = tone
+            .sources()
+            .unwrap()
+            .into_iter()
+            .map(|source| (source.key.as_str().to_string(), source.label))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("tone".to_string(), "Tone".to_string()),
+                ("silent".to_string(), "Silent".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_selection_without_the_tone_delivers_no_chunks() {
+        let chunks = Arc::new(Mutex::new(Vec::new()));
+        let sink_chunks = chunks.clone();
+        let session = SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }
+        .start(
+            AudioSelection::Only(std::collections::BTreeSet::from([
+                SyntheticTone::silent_key(),
+            ])),
+            Box::new(move |c| sink_chunks.lock().unwrap().push(c)),
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(120));
+        assert!(
+            session.error().is_none(),
+            "an idle selection is not a failure"
+        );
+        session.stop();
+        assert!(chunks.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_selection_naming_the_tone_delivers_chunks() {
+        let chunks = Arc::new(Mutex::new(Vec::new()));
+        let sink_chunks = chunks.clone();
+        let session = SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }
+        .start(
+            AudioSelection::Only(std::collections::BTreeSet::from(
+                [SyntheticTone::tone_key()],
+            )),
+            Box::new(move |c| sink_chunks.lock().unwrap().push(c)),
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(120));
+        session.stop();
+        assert!(!chunks.lock().unwrap().is_empty());
     }
 }

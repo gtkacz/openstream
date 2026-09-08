@@ -10,7 +10,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use brp_proto::constants::{AUDIO_CAPTURE_START_TIMEOUT, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+use brp_proto::constants::{
+    AUDIO_CAPTURE_START_TIMEOUT, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AUDIO_SOURCE_LIST_TIMEOUT,
+};
 use brp_proto::monotonic_us;
 use pipewire as pw;
 use pw::spa::param::ParamType;
@@ -24,7 +26,7 @@ use pw::types::ObjectType;
 use self::graph::{Client, Graph, Input, LinkPlan, Node, NodeVerdict, OWN_STREAM_NAME, Port};
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
 use crate::error::AudioError;
-use crate::selection::{AppKey, AudioSelection};
+use crate::selection::{AppKey, AudioSelection, AudioSource};
 
 pub struct PipeWireCapture {
     process_id: u32,
@@ -43,7 +45,39 @@ struct Session {
 }
 
 impl AudioCapture for PipeWireCapture {
-    fn start(&self, sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        let (tx, rx) = mpsc::channel::<Result<Vec<AudioSource>, AudioError>>();
+        let process_id = self.process_id;
+        let thread = thread::Builder::new()
+            .name("brp-audio-pw-list".into())
+            .spawn(move || {
+                let _ = tx.send(list(process_id));
+            })
+            .map_err(|e| {
+                AudioError::PipeWire(format!("failed to spawn the PipeWire thread: {e}"))
+            })?;
+        // This runs on the window thread through the command-drain path, so it is bounded far more
+        // tightly than a capture start. The loop arms the same deadline, so a thread still wedged
+        // past it ends on its own rather than being joined here.
+        match rx.recv_timeout(AUDIO_SOURCE_LIST_TIMEOUT) {
+            Ok(result) => {
+                let _ = thread.join();
+                result
+            }
+            Err(RecvTimeoutError::Timeout) => Err(AudioError::PipeWire(format!(
+                "the application list did not arrive within {AUDIO_SOURCE_LIST_TIMEOUT:?}"
+            ))),
+            Err(RecvTimeoutError::Disconnected) => Err(AudioError::PipeWire(
+                "PipeWire thread exited before listing".into(),
+            )),
+        }
+    }
+
+    fn start(
+        &self,
+        selection: AudioSelection,
+        sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), AudioError>>();
         let (quit_tx, quit_rx) = pw::channel::channel();
         let error = Arc::new(Mutex::new(None));
@@ -52,7 +86,7 @@ impl AudioCapture for PipeWireCapture {
         let thread = thread::Builder::new()
             .name("brp-audio-pw".into())
             .spawn(move || {
-                if let Err(e) = run(process_id, sink, quit_rx, ready_tx.clone()) {
+                if let Err(e) = run(process_id, selection, sink, quit_rx, ready_tx.clone()) {
                     let message = e.to_string();
                     let _ = ready_tx.send(Err(e));
                     *error_slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(message);
@@ -127,6 +161,7 @@ struct Inputs {
 
 fn run(
     process_id: u32,
+    selection: AudioSelection,
     sink: AudioSink,
     quit: pw::channel::Receiver<()>,
     ready: mpsc::Sender<Result<(), AudioError>>,
@@ -200,7 +235,7 @@ fn run(
 
     let state = Rc::new(State {
         core: core.clone(),
-        graph: RefCell::new(Graph::new(process_id, own_binary(), AudioSelection::All)),
+        graph: RefCell::new(Graph::new(process_id, own_binary(), selection)),
         stream_node: RefCell::new(None),
         inputs: RefCell::new(Inputs::default()),
         links: RefCell::new(Vec::new()),
@@ -281,6 +316,93 @@ fn run(
         Some(message) => AudioError::PipeWire(message),
         None => AudioError::PipeWire("the PipeWire loop exited unexpectedly".into()),
     })
+}
+
+/// One `pw-dump`-style roundtrip: connect, listen, ask for a `done`, and quit the loop when it
+/// arrives. Capture's long-lived listeners are the wrong shape for a question that has an answer.
+fn list(process_id: u32) -> Result<Vec<AudioSource>, AudioError> {
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(pw_error)?;
+    let context = pw::context::ContextRc::new(&mainloop, None).map_err(pw_error)?;
+    let core = context.connect_rc(None).map_err(pw_error)?;
+    let registry = core.get_registry().map_err(pw_error)?;
+
+    let seen_clients = Rc::new(RefCell::new(Vec::<(u32, Client)>::new()));
+    let seen_nodes = Rc::new(RefCell::new(Vec::<Node>::new()));
+    let _registry_listener = {
+        let clients = seen_clients.clone();
+        let nodes = seen_nodes.clone();
+        registry
+            .add_listener_local()
+            .global(move |global| {
+                let Some(props) = global.props else { return };
+                match global.type_ {
+                    ObjectType::Client => clients.borrow_mut().push((global.id, client_of(props))),
+                    ObjectType::Node => nodes.borrow_mut().push(node_of(global.id, props)),
+                    _ => {}
+                }
+            })
+            .register()
+    };
+
+    // Issued after the registry bind, so every global the server already had arrives before the
+    // matching `done`: methods are handled in order and events are delivered in order.
+    let asked = core.sync(0).map_err(pw_error)?.seq();
+    let done = Rc::new(Cell::new(false));
+    let core_error = Rc::new(RefCell::new(None::<String>));
+    let _core_listener = {
+        let quit_on_done = mainloop.clone();
+        let quit_on_error = mainloop.clone();
+        let done = done.clone();
+        let core_error = core_error.clone();
+        core.add_listener_local()
+            .done(move |id, seq| {
+                if id == pw::core::PW_ID_CORE && seq.seq() == asked {
+                    done.set(true);
+                    quit_on_done.quit();
+                }
+            })
+            .error(move |id, seq, res, message| {
+                tracing::warn!(id, seq, res, message, "PipeWire object reported an error");
+                if id == pw::core::PW_ID_CORE {
+                    *core_error.borrow_mut() = Some(message.to_string());
+                    quit_on_error.quit();
+                }
+            })
+            .register()
+    };
+
+    // A daemon that never answers must not hold the window thread past its own deadline.
+    let _deadline = {
+        let quit = mainloop.clone();
+        let timer = mainloop.loop_().add_timer(move |_| quit.quit());
+        timer
+            .update_timer(Some(AUDIO_SOURCE_LIST_TIMEOUT), None)
+            .into_result()
+            .map_err(|e| AudioError::PipeWire(format!("could not arm the list deadline: {e}")))?;
+        timer
+    };
+    mainloop.run();
+
+    if let Some(message) = core_error.borrow_mut().take() {
+        return Err(AudioError::PipeWire(message));
+    }
+    if !done.get() {
+        return Err(AudioError::PipeWire(format!(
+            "the application list did not complete within {AUDIO_SOURCE_LIST_TIMEOUT:?}"
+        )));
+    }
+    // A node can be announced before the Client global it names, so the graph is fed after the
+    // roundtrip rather than during it. Everything foreign is tracked, whatever is selected: the
+    // list reports what is playing, and our own pid and binary are what keep brp out of it.
+    let mut graph = Graph::new(process_id, own_binary(), AudioSelection::All);
+    for (id, client) in seen_clients.take() {
+        graph.add_client(id, client);
+    }
+    for node in seen_nodes.take() {
+        graph.add_node(node);
+    }
+    Ok(graph.sources())
 }
 
 impl State {

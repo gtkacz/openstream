@@ -1,6 +1,7 @@
 //! The contracts between the platform backends and the pipeline.
 
 use crate::error::AudioError;
+use crate::selection::{AudioSelection, AudioSource};
 
 /// Interleaved stereo float at 48 kHz, any length. Backends deliver what the platform hands them;
 /// the pipeline cuts frames.
@@ -13,7 +14,18 @@ pub struct AudioChunk {
 pub type AudioSink = Box<dyn FnMut(AudioChunk) + Send + 'static>;
 
 pub trait AudioCapture: Send + Sync {
-    fn start(&self, sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError>;
+    /// The applications the platform reports as producing audio right now, collapsed by identity
+    /// and never including brp's own. Only what is audible now: unioning that with a selection
+    /// whose applications are closed is the caller's business.
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError>;
+
+    /// Starts capturing what `selection` names. The selection is an argument, not state: a backend
+    /// never learns that it can change, because a change swaps the session.
+    fn start(
+        &self,
+        selection: AudioSelection,
+        sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError>;
 }
 
 pub trait AudioCaptureSession: Send {

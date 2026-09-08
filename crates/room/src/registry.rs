@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use brp_audio::{AudioCapture, AudioCaptureSession};
+use brp_audio::{AudioCapture, AudioCaptureSession, AudioSelection};
 use brp_capture::{CaptureFrame, CaptureSession};
 use brp_net::{AudioSubscription, LiveSource, SubscribeRejected, Subscription};
 use brp_pipeline::{AudioPublisher, LatestSlot, Pacer, Publisher};
@@ -529,7 +529,10 @@ impl LiveRegistry {
     fn start_audio(&self) -> Result<RunningAudio, String> {
         let encoder = self.encoders.open_audio().map_err(|e| e.to_string())?;
         let publisher = AudioPublisher::start(encoder);
-        match self.audio_capture.start(publisher.sink()) {
+        match self
+            .audio_capture
+            .start(AudioSelection::All, publisher.sink())
+        {
             Ok(session) => Ok(RunningAudio {
                 session,
                 publisher,
