@@ -267,11 +267,11 @@ written to logs.
 
 ### Releasing
 
-Bump `version` in the workspace `Cargo.toml`, commit, and push an annotated tag
-whose name is `v` plus that version (`git tag -a v0.1.0 -m "..."`). The release
-workflow refuses a tag that does not match the workspace version, builds the
-Linux tarball and the Windows zip, and publishes them with checksums and the
-tag's annotation as the release notes.
+Every push to `main` whose subject does not start with `fix:` automatically bumps
+the workspace minor version, commits and tags it, builds the Linux tarball and
+Windows zip, and publishes a GitHub Release with checksums. Commits starting with
+`fix:` do not release; the generated `chore(release): ...` commit is ignored by
+the workflow so it cannot start another release.
 
 ## Roadmap
 
@@ -292,8 +292,11 @@ tag's annotation as the release notes.
    UI and persistence, tagged releases for Windows and Linux.
 
 Backlog, unordered: macOS, per-application audio, zero-copy GPU paths on both
-OSes, lossless and 4:4:4 presets, congestion-driven preset switching, and
-self-hosted relay documentation.
+OSes, lossless and 4:4:4 presets, congestion-driven preset switching,
+self-hosted relay documentation, a send volume per shared application,
+viewer-side visibility of which applications a publisher is mixing, microphone
+capture and voice chat behind an echo-cancellation dependency, and a
+self-updating application list in the audio picker.
 
 The product model, protocol, constraints, and design rationale are in
 [`docs/superpowers/specs/2026-09-04-p2p-screen-sharing-design.md`](docs/superpowers/specs/2026-09-04-p2p-screen-sharing-design.md).
