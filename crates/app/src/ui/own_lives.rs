@@ -1,10 +1,12 @@
 //! Bottom panel: this participant's lives with per-preset encoder state and the controls that edit
 //! presets, plus the share buttons.
 
+use brp_audio::AudioSelection;
 use brp_proto::constants::{MAX_BITRATE_KBPS, MAX_LIVES_PER_PARTICIPANT, MIN_BITRATE_KBPS};
 use brp_proto::{Codec, SourceKind};
 use brp_room::{AudioCaptureState, OwnLiveView, RoomSnapshot};
 
+use super::applications::selection_summary;
 use super::state::UiState;
 use crate::commands::RoomCommand;
 use crate::presets;
@@ -51,16 +53,25 @@ pub fn draw(
                 if ui.checkbox(&mut share_audio, "Share audio").changed() {
                     commands.push(RoomCommand::SetAudio(share_audio));
                 }
+                if ui.button("Choose applications…").clicked() {
+                    commands.push(RoomCommand::ChooseApplications);
+                }
+                ui.weak(selection_summary(&snapshot.own_audio.selection));
                 match &snapshot.own_audio.state {
                     AudioCaptureState::Off => {}
                     AudioCaptureState::Idle => {
                         ui.weak("waiting for a listener");
                     }
-                    AudioCaptureState::Capturing => {
-                        let n = snapshot.own_audio.subscribers;
-                        let plural = if n == 1 { "" } else { "s" };
-                        ui.weak(format!("capturing · {n} listener{plural}"));
-                    }
+                    AudioCaptureState::Capturing => match &snapshot.own_audio.selection {
+                        AudioSelection::Only(keys) if keys.is_empty() => {
+                            ui.weak("no applications selected");
+                        }
+                        _ => {
+                            let n = snapshot.own_audio.subscribers;
+                            let plural = if n == 1 { "" } else { "s" };
+                            ui.weak(format!("capturing · {n} listener{plural}"));
+                        }
+                    },
                     AudioCaptureState::Failed(error) => {
                         ui.colored_label(
                             egui::Color32::LIGHT_RED,

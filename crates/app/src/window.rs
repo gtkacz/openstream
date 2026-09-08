@@ -19,7 +19,7 @@ use winit::{
 };
 
 use crate::cli::WindowArgs;
-use crate::commands::WindowCommand;
+use crate::commands::{RoomCommand, WindowCommand};
 use crate::launch::{self, Intent, Launch};
 use crate::popouts::PopOuts;
 use crate::render::GpuContext;
@@ -29,6 +29,7 @@ use crate::render::tiles::{TileKey, TileRenderer};
 use crate::render::ui::UiFrame;
 use crate::room_view::RoomView;
 use crate::settings::{SettingsStore, normalised_nickname, now_unix};
+use crate::ui::applications::{self as applications_ui, PickerOutcome};
 use crate::ui::settings::{self as settings_ui, SettingsDialog};
 use crate::ui::start::{self, StartAction, StartState};
 use crate::ui::state::{UiState, live_title};
@@ -273,6 +274,7 @@ impl App {
         let room_open = matches!(self.phase, Phase::Room(_));
         let now = now_unix();
         let mut saved = None;
+        let mut picked = None;
         let mut ui_frame = main.ui.run(&main.window, [size.0, size.1], |root| {
             match &self.phase {
                 Phase::Start => {
@@ -293,6 +295,11 @@ impl App {
                 settings_ui::draw(root.ctx(), &mut self.settings_dialog, room_open)
             {
                 saved = Some(settings);
+            }
+            // Accumulated outside the closure for the same reason `saved` is: egui may run this
+            // pass twice, and Done closes the picker, so the second run would produce nothing.
+            if let Some(outcome) = applications_ui::draw(root.ctx(), &mut self.state) {
+                picked = Some(outcome);
             }
         });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
@@ -331,6 +338,36 @@ impl App {
             && let Some(main) = &self.main
         {
             main.window.request_redraw();
+        }
+
+        if let Some(outcome) = picked {
+            let (command, persist) = match outcome {
+                PickerOutcome::Refresh => (RoomCommand::ChooseApplications, false),
+                PickerOutcome::Applied(applications) => {
+                    let command = RoomCommand::SetAudioApplications(applications.to_selection());
+                    self.store.settings.audio.applications = applications;
+                    (command, true)
+                }
+            };
+            let stored = self.store.settings.audio.applications.clone();
+            if let Phase::Room(view) = &mut self.phase {
+                view.apply(
+                    vec![command],
+                    &self.runtime,
+                    &self.proxy,
+                    &mut self.state,
+                    &stored,
+                );
+            }
+            // Saved after the command is applied, because `RoomView::apply` clears the status line
+            // and a save failure belongs on it. A failure is a status line, not a blocked
+            // selection: the choice already applies for this session.
+            if persist && let Err(error) = self.store.save_unless_load_failed() {
+                self.state.status = format!("settings not saved: {error}");
+            }
+            if let Some(main) = &self.main {
+                main.window.request_redraw();
+            }
         }
 
         if output.open_settings || start_action == Some(StartAction::OpenSettings) {

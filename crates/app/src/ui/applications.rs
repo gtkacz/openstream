@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 
 use brp_audio::{AppKey, AudioSelection, AudioSource};
 
+use super::state::UiState;
 use crate::settings::{AudioApplications, AudioMode};
 
 /// A row in the picker: an identity, what to call it, and whether the platform reports it playing
@@ -111,6 +112,78 @@ pub fn selection_summary(selection: &AudioSelection) -> String {
             format!("{} application{plural}", keys.len())
         }
     }
+}
+
+const MAX_LIST_HEIGHT: f32 = 400.0;
+
+/// What one pass of the picker produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickerOutcome {
+    /// Refresh was clicked: enumerate again and merge into the open draft.
+    Refresh,
+    /// Done was clicked: apply this to the room and store it.
+    Applied(AudioApplications),
+}
+
+/// Draws the picker when one is open. Esc, Cancel, and the title bar's close button all discard
+/// the draft; the main window has no other Esc consumer, since the fullscreen rule lives in the
+/// pop-out windows and each has an egui context of its own.
+pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
+    // Cloned so the window closure does not borrow `state` while it draws, as `picker.rs` does.
+    let mut picker = state.applications.clone()?;
+    let rows = picker.rows();
+    let (mut done, mut cancelled, mut refresh) = (false, false, false);
+    let mut open = true;
+    egui::Window::new("Applications the room hears")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.radio_value(&mut picker.only, false, "All applications (except brp)");
+            ui.radio_value(&mut picker.only, true, "Only the applications I select");
+            if rows.is_empty() {
+                ui.weak("nothing is playing audio");
+            }
+            let only = picker.only;
+            egui::ScrollArea::vertical()
+                .max_height(MAX_LIST_HEIGHT)
+                .show(ui, |ui| {
+                    for row in &rows {
+                        let mut chosen = picker.is_chosen(&row.key);
+                        let label = if row.playing {
+                            row.label.clone()
+                        } else {
+                            format!("{} (not playing)", row.label)
+                        };
+                        // Under "all" the list stays visible but disabled: what was chosen is
+                        // still there and a flip back loses nothing.
+                        let response =
+                            ui.add_enabled(only, egui::Checkbox::new(&mut chosen, label));
+                        if response.changed() {
+                            picker.toggle(&row.key, chosen);
+                        }
+                    }
+                });
+            ui.separator();
+            ui.horizontal(|ui| {
+                refresh = ui.button("Refresh").clicked();
+                done = ui.button("Done").clicked();
+                cancelled = ui.button("Cancel").clicked();
+            });
+        });
+    let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    if done {
+        let applied = picker.applied();
+        state.applications = None;
+        return Some(PickerOutcome::Applied(applied));
+    }
+    if cancelled || escape || !open {
+        state.applications = None;
+        return None;
+    }
+    state.applications = Some(picker);
+    refresh.then_some(PickerOutcome::Refresh)
 }
 
 #[cfg(test)]
@@ -220,6 +293,22 @@ mod tests {
                 mode: AudioMode::All,
                 names: vec!["firefox".into()],
             }
+        );
+    }
+
+    #[test]
+    fn the_outcome_of_done_carries_the_choice_and_its_selection() {
+        let mut picker = ApplicationPicker::new(Vec::new(), &AudioApplications::default());
+        picker.only = true;
+        picker.toggle(&AppKey::new("firefox"), true);
+        let outcome = PickerOutcome::Applied(picker.applied());
+        let PickerOutcome::Applied(applied) = outcome else {
+            panic!("Done applies a choice");
+        };
+        assert_eq!(applied.mode, AudioMode::Only);
+        assert_eq!(
+            applied.to_selection(),
+            AudioSelection::Only(BTreeSet::from([AppKey::new("firefox")]))
         );
     }
 
