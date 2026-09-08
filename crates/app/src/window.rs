@@ -316,7 +316,13 @@ impl App {
         if let Phase::Room(view) = &mut self.phase
             && had_commands
         {
-            view.apply(output.commands, &self.runtime, &self.proxy, &mut self.state);
+            view.apply(
+                output.commands,
+                &self.runtime,
+                &self.proxy,
+                &mut self.state,
+                &self.store.settings.audio.applications,
+            );
         }
         if had_window_commands {
             self.apply_window_commands(event_loop, output.window_commands);
@@ -393,7 +399,13 @@ impl App {
         if let Phase::Room(view) = &mut self.phase
             && had_commands
         {
-            view.apply(output.commands, &self.runtime, &self.proxy, &mut self.state);
+            view.apply(
+                output.commands,
+                &self.runtime,
+                &self.proxy,
+                &mut self.state,
+                &self.store.settings.audio.applications,
+            );
         }
         if had_window_commands {
             self.apply_window_commands(event_loop, output.window_commands);

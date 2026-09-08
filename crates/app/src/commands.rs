@@ -1,6 +1,7 @@
 //! What the panels ask the room to do. Panels only emit these; the window applies them after the
 //! egui pass, so widget code never holds the room.
 
+use brp_audio::AudioSelection;
 use brp_capture::SourceId;
 use brp_proto::{Preset, SourceKind};
 use iroh::PublicKey;
@@ -30,6 +31,10 @@ pub enum RoomCommand {
     SetVolume { publisher: PublicKey, gain: f32 },
     /// Silences all playback without touching the per-publisher gains.
     SetMasterMute(bool),
+    /// Replaces which applications this participant's audio carries.
+    SetAudioApplications(AudioSelection),
+    /// Lists what is playing audio and opens the application picker, or refreshes an open one.
+    ChooseApplications,
 }
 
 /// A command a panel wants applied to the windows, not the room: which live gets its own window

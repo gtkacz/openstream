@@ -1,6 +1,7 @@
 //! The participant window's egui chrome. Panels read the room snapshot and window-local state and
 //! emit room commands; they never touch the room.
 
+pub mod applications;
 pub mod members;
 pub mod own_lives;
 pub mod picker;

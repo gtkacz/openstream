@@ -15,6 +15,7 @@ use winit::event_loop::EventLoopProxy;
 use crate::commands::RoomCommand;
 use crate::render::GpuContext;
 use crate::render::tiles::{TileKey, TileRenderer};
+use crate::settings::AudioApplications;
 use crate::ui::state::UiState;
 use crate::window::AppEvent;
 
@@ -76,13 +77,15 @@ impl RoomView {
         }
     }
 
-    /// Applies the commands one egui pass produced. Errors land in the status line.
+    /// Applies the commands one egui pass produced. Errors land in the status line. `stored` seeds
+    /// a picker these commands open: under `all` only the settings still hold the chosen names.
     pub fn apply(
         &mut self,
         commands: Vec<RoomCommand>,
         runtime: &Handle,
         proxy: &EventLoopProxy<AppEvent>,
         state: &mut UiState,
+        stored: &AudioApplications,
     ) {
         if commands.is_empty() {
             return;
@@ -136,6 +139,20 @@ impl RoomView {
                     self.room.set_master_mute(muted);
                     Ok(())
                 }
+                RoomCommand::SetAudioApplications(selection) => {
+                    self.room.set_audio_applications(selection);
+                    Ok(())
+                }
+                // Mirrors `Share { source: None }`: the enumeration runs here on the command-drain
+                // path, which is how the interim Windows `Unsupported` reaches the user as a
+                // status line with no capability flag anywhere in the tree.
+                RoomCommand::ChooseApplications => match self.room.audio_sources() {
+                    Ok(sources) => {
+                        state.open_applications(sources, stored);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
             };
             if let Err(error) = result {
                 state.status = error.to_string();

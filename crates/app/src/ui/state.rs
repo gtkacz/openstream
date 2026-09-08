@@ -3,13 +3,16 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use brp_audio::AudioSource;
 use brp_capture::{SourceDescriptor, SourceId};
 use brp_proto::SourceKind;
 use brp_proto::constants::STATS_LOG_INTERVAL;
 use brp_room::{MemberView, RoomSnapshot, WatchView};
 
+use super::applications::ApplicationPicker;
 use crate::commands::RoomCommand;
 use crate::render::tiles::TileKey;
+use crate::settings::AudioApplications;
 
 /// The source list the user is choosing from, on platforms without a picker of their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +32,8 @@ pub struct UiState {
     pub share_pending: bool,
     /// Open while the user picks a source from the platform's list.
     pub picker: Option<SourcePicker>,
+    /// Open while the user edits which applications the room hears.
+    pub applications: Option<ApplicationPicker>,
     monitor_shares: u32,
     window_shares: u32,
     /// Preset picked for a remote live before it is watched.
@@ -94,6 +99,20 @@ impl UiState {
     /// Closes the picker without sharing; a no-op when none is open.
     pub fn cancel_picker(&mut self) {
         self.picker = None;
+    }
+
+    /// Opens the application picker, or replaces the list of one already open — Refresh takes the
+    /// same path, and the draft must survive it.
+    pub fn open_applications(&mut self, reported: Vec<AudioSource>, stored: &AudioApplications) {
+        match &mut self.applications {
+            Some(picker) => picker.refresh(reported),
+            None => self.applications = Some(ApplicationPicker::new(reported, stored)),
+        }
+    }
+
+    /// Closes it, discarding the draft.
+    pub fn cancel_applications(&mut self) {
+        self.applications = None;
     }
 
     /// Feeds the cumulative byte counters of a snapshot into the upload and per-encoder meters.
@@ -477,5 +496,32 @@ mod tests {
         assert_eq!(live_title(&snapshot, (id, 5)), None);
         snapshot.members.clear();
         assert_eq!(live_title(&snapshot, (id, 4)), None);
+    }
+
+    #[test]
+    fn opening_the_application_picker_twice_refreshes_it_without_discarding_the_draft() {
+        use crate::settings::AudioApplications;
+        use brp_audio::{AppKey, AudioSource};
+
+        let listed = |key: &str| {
+            vec![AudioSource {
+                key: AppKey::new(key),
+                label: key.to_string(),
+            }]
+        };
+        let mut state = UiState::new();
+        state.open_applications(listed("firefox"), &AudioApplications::default());
+        let picker = state.applications.as_mut().expect("opened");
+        picker.only = true;
+        picker.toggle(&AppKey::new("firefox"), true);
+
+        state.open_applications(listed("spotify"), &AudioApplications::default());
+        let picker = state.applications.as_ref().expect("still open");
+        assert!(picker.only, "a refresh must not discard the edit");
+        assert!(picker.is_chosen(&AppKey::new("firefox")));
+        assert_eq!(picker.rows().len(), 2);
+
+        state.cancel_applications();
+        assert!(state.applications.is_none());
     }
 }
