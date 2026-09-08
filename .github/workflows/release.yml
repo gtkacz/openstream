@@ -1,30 +1,59 @@
 name: release
 on:
   push:
-    tags: ['v*']
+    branches: [main]
 permissions:
   contents: write
+concurrency:
+  group: release-main
+  cancel-in-progress: false
 jobs:
-  version:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.check.outputs.version }}
+      should_release: ${{ steps.bump.outputs.should_release }}
+      version: ${{ steps.bump.outputs.version }}
+      commit: ${{ steps.bump.outputs.commit }}
+      tag: ${{ steps.bump.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - id: check
-        name: Tag must equal the workspace version
+      - id: bump
+        name: Bump the minor version unless this is a fix
         run: |
           set -eu
-          tag="${GITHUB_REF_NAME#v}"
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "brp") | .version')"
-          if [ "$tag" != "$version" ]; then
-            echo "tag v$tag does not match the workspace version $version" >&2
+          message="$(git log -1 --pretty=%s)"
+          if [[ "$message" == fix:* || "$message" == 'chore(release):'* ]]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          current="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "brp") | .version')"
+          if [[ ! "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "workspace version is not a plain semver release: $current" >&2
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          next="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).0"
+          sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"$next\"/" Cargo.toml
+          cargo metadata --no-deps --format-version 1 >/dev/null
+          NEXT="$next" perl -0pi -e 's/(^name = "brp(?:-[^\"]+)?"\nversion = ")[^\"]+/$1$ENV{NEXT}/mg' Cargo.lock
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): v$next"
+          tag="v$next"
+          git tag -a "$tag" -m "Release $tag" -m "$message"
+          git push origin HEAD:main
+          git push origin "$tag"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
   linux:
-    needs: version
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     container: fedora:44
     steps:
@@ -34,6 +63,8 @@ jobs:
           pkgconf-pkg-config pipewire-devel libxkbcommon-devel wayland-devel libX11-devel
           alsa-lib-devel
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: ./.github/actions/linux-ffmpeg
@@ -45,7 +76,7 @@ jobs:
           RUSTFLAGS: -C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--disable-new-dtags
       - name: Stage the tarball
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -eu
           name="brp-$VERSION-linux-x86_64"
@@ -56,10 +87,13 @@ jobs:
           name: linux
           path: dist/*.tar.gz
   windows:
-    needs: version
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: ./.github/actions/windows-ffmpeg
@@ -67,7 +101,7 @@ jobs:
       - name: Stage the zip
         shell: pwsh
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
           $name = "brp-$env:VERSION-windows-x86_64"
@@ -78,10 +112,13 @@ jobs:
           name: windows
           path: dist/*.zip
   publish:
-    needs: [version, linux, windows]
+    needs: [prepare, linux, windows]
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -90,15 +127,12 @@ jobs:
         run: |
           set -eu
           (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS)
-          # checkout leaves a lightweight tag at the same ref; force the fetch so the
-          # annotated tag object (and its message) replaces it rather than being rejected.
-          git fetch --no-tags --force origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          # A lightweight tag has no annotation object, so %(contents) falls back to printing the
-          # commit message; the empty-file check below cannot catch that case on its own.
-          [ "$(git tag -l --format='%(objecttype)' "$GITHUB_REF_NAME")" = tag ] || { echo "$GITHUB_REF_NAME is not an annotated tag; use git tag -a" >&2; exit 1; }
-          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
-          [ -s notes.md ] || { echo "no annotation on $GITHUB_REF_NAME; use git tag -a" >&2; exit 1; }
+          tag="${{ needs.prepare.outputs.tag }}"
+          git fetch --no-tags origin "+refs/tags/$tag:refs/tags/$tag"
+          git tag -l --format='%(contents)' "$tag" > notes.md
+          [ -s notes.md ] || { echo "no annotation on $tag; use git tag -a" >&2; exit 1; }
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
           files: dist/*
           body_path: notes.md
