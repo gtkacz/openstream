@@ -44,7 +44,12 @@ egui-winit = "0.36"
 pollster = "1.0"
 bytemuck = { version = "1.25", features = ["derive"] }
 windows-capture = "2.0"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }
 cpal = "0.18"
 libc = "0.2"
 wasapi = "0.24"

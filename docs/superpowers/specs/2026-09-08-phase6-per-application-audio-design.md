@@ -7,7 +7,7 @@ Status: approved design, 2026-09-08. Refines [`2026-09-06-phase4-audio-design.md
 - A publisher chooses what the room hears: every application except brp itself, which is phase 4's behaviour and stays the default, or only a named set of applications.
 - A selection is stored by executable identity, so it survives brp restarting, the application restarting, and the application not running at all. An application selected before it launches becomes audible when it starts, with no further interaction.
 - No protocol change. Audio remains one publisher-level Opus stream with one `has_audio` flag, so a viewer needs no new code and an old viewer is unaffected.
-- Linux is implemented and verified in plan 1. Windows is designed here and implemented in plan 2, when hardware is available.
+- Linux and Windows are implemented. Their manual hardware verification remains outstanding.
 
 ## 2. Non-goals
 
@@ -89,9 +89,9 @@ The capture stream, the links, the linkability deadline, and the core-error hand
 - **Enumeration.** `sources()` connects, registers a registry listener, issues one `core.sync` roundtrip, and quits its loop on the matching `done` — the `pw-dump` idiom rather than the long-lived listeners capture uses. Nodes collapse by key, so three Firefox streams are one row, and brp's own key is never listed. Bounded by `AUDIO_SOURCE_LIST_TIMEOUT`.
 - **Unchanged by construction.** A selected application that launches later links on its node's global event. A selection whose applications are all silent leaves the stream idle with no chunks and no error, exactly as a silent desktop does today.
 
-### 5.3 Windows backend (plan 2)
+### 5.3 Windows backend
 
-`All` keeps today's single exclude-mode client, untouched. Until plan 2 lands, the Windows backend answers `Unsupported` to both `sources()` and `start(Only(..))`, and `start(All, ..)` behaves exactly as it does today.
+`All` keeps the single exclude-mode client. `Only` enumerates sessions, resolves the selected applications' process roots, and maintains one include-tree client per root.
 
 - **Enumeration.** The default render device's `IAudioSessionManager2` session enumerator; for each session, `get_process_id`, then the executable path through `OpenProcess` and `QueryFullProcessImageNameW`, and a label from `get_display_name` falling back to the basename. Sessions in `Active` and `Inactive` are listed and `Expired` ones are not, so an application that has just gone quiet does not vanish mid-decision. brp's own pid and basename are excluded. Rows collapse by key.
 - **Client roots.** For each selected key, the candidate pids are walked up their parent chain while the parent's basename still matches; the topmost such ancestor is the root, roots are deduplicated, and one include-tree client is opened per root. The walk is a pure function over an injected `pid -> (parent, basename)` map; only the `CreateToolhelp32Snapshot` pass that fills the map is Windows code.
@@ -100,7 +100,7 @@ The capture stream, the links, the linkability deadline, and the core-error hand
 - **Ready.** With zero matching processes `start` succeeds with no clients and emits nothing, mirroring Linux's idle stream. *Ready* therefore means the first reconciliation pass finished, not that a client is streaming.
 - **Per-pid failures.** An activation that fails because the process exited between enumeration and activation is logged once and skipped, mirroring phase 4's stance that per-object errors are routine.
 
-### 5.4 Capture-side mixer (plan 2)
+### 5.4 Capture-side mixer
 
 `audio::mix`, platform-neutral and compiled on both targets so the Linux runner tests it. Per-source ring buffers feeding one chunk stream: a source starved for a quantum contributes silence and counts an underrun, and a source lagging past `CAPTURE_MIX_MAX_LAG` is trimmed — `pipeline::Mixer`'s discipline verbatim. Every process-loopback client rides the same audio-engine clock, so this absorbs thread scheduling rather than rate drift. An emitted chunk carries the earliest contributing sample's `capture_ts_us`; audio's jitter buffer keys on sequence, so that field is informational and wants no precision engineering.
 
@@ -129,7 +129,7 @@ The capture stream, the links, the linkability deadline, and the core-error hand
   names = ["firefox", "game.exe"]
   ```
 
-- **Commands.** `RoomCommand::SetAudioApplications(AudioSelection)` and `RoomCommand::ChooseApplications`. The latter mirrors `Share { source: None }` verbatim: `room_view` calls `audio_sources()`, opens the picker on `Ok`, and sets the status line on `Err` — which is how the interim Windows `Unsupported` message reaches the user with no capability flag anywhere in the tree.
+- **Commands.** `RoomCommand::SetAudioApplications(AudioSelection)` and `RoomCommand::ChooseApplications`. The latter mirrors `Share { source: None }` verbatim: `room_view` calls `audio_sources()`, opens the picker on `Ok`, and sets the status line on an enumeration error.
 - **Picker.** A new `ui/applications.rs` beside `picker.rs`; the two shapes differ enough that merging them would tangle both. `UiState` gains `applications: Option<ApplicationPicker>` holding the reported list plus the draft mode and draft set. Done applies and persists, Cancel discards. Refresh re-issues the enumeration and merges the result by replacing the reported list while preserving the draft, since a refresh mid-edit must not discard the edit. The window registers with the popup-open state added in commit `9ee7d1d`, so Esc dismisses the picker and cannot leak through to the fullscreen handler.
 - **Persistence.** Done updates the settings and calls phase 5's `save_unless_load_failed`, so a corrupt settings file stays untouched. A save failure is a status line, not a blocked selection: the selection still applies for the session.
 
@@ -153,7 +153,7 @@ Unchanged. Audio stays one publisher-level Opus stream with one `has_audio` flag
 
 ## 8. User interface
 
-- **Own lives panel.** Beside the existing "Share audio" checkbox, a "Choose applications…" button and a one-line summary: "all applications", "3 applications", or "no applications selected". Enabled while share audio is off. On interim Windows the click produces the `Unsupported` status line.
+- **Own lives panel.** Beside the existing "Share audio" checkbox, a "Choose applications…" button and a one-line summary: "all applications", "3 applications", or "no applications selected". Enabled while share audio is off on both platforms.
 - **The picker.** Two radio buttons — "All applications (except brp)" and "Only the applications I select". Under "All" the check-list stays visible but disabled, so what was chosen is still visible and a flip back loses nothing. Rows are the union of what is playing and what is selected: playing first, then selected-but-absent marked as not playing, each group alphabetical by label so a Refresh does not reshuffle. A selected-but-absent row is labelled with its stored key, since a closed application has no friendly name to report. An empty platform list reads "nothing is playing audio", mirroring `picker.rs`. Refresh, Done, Cancel.
 - Nothing on the viewer side changes.
 
@@ -209,7 +209,7 @@ All three live in `proto::constants` beside phase 4's audio constants.
 ## 13. Plan split
 
 - **Plan 1, Linux.** The `audio` contracts, the Linux predicate and enumeration, the registry swap, the room and settings plumbing, the picker, every test above the backend, and the manual verification.
-- **Plan 2, Windows.** Session enumeration, the ancestry walk, include-mode clients, the reconciliation loop, `audio::mix` with its tests, the two `windows-sys` features, and the deferred hardware verification. Removing the interim `Unsupported` answers is part of this plan.
+- **Plan 2, Windows.** Implemented: session enumeration, the ancestry walk, include-mode clients, the reconciliation loop, `audio::mix` with its tests, and the two `windows-sys` features. Hardware verification remains deferred.
 
 ## 14. References
 
@@ -230,3 +230,10 @@ Verified on 2026-09-08:
 - **Test coverage the run leaves behind.** The Linux `list()` enumeration roundtrip and the picker's egui `draw()` have no automated coverage — the first needs a live daemon, the second an interactive session. Everything else in section 11's unit list is covered: the selection vocabulary, the graph's link predicate and source collapsing, the synthetic tone's selection gating, the registry's session swap (including a failed swap and the retry path), a two-room integration test proving a selection edit does not move the viewer's audio carrier, the settings round trip, and the picker's draft logic.
 - **Windows.** The Windows backend answers `AudioError::Unsupported` to `sources()` and to `start(Only(..), ..)`; `start(All, ..)` is untouched. It was never compiled or run during this session — the Windows CI job is the compile oracle, and CI has not been run yet.
 - **Manual verification (11).** Section 11's manual two-instance verification was not run during this implementation session and remains outstanding.
+
+## 16. Windows implementation amendment, 2026-09-09
+
+- The Windows half is implemented: `sources()` enumerates active and inactive sessions on the default render device, resolves executable identities, excludes brp, and collapses rows by `AppKey`.
+- `Only` walks a Tool Help process snapshot to the topmost same-executable ancestor, keeps one include-tree WASAPI client per root, and reconciles the client set once a second so late launches join automatically.
+- A platform-neutral capture mixer emits one 20 ms stream, counts starved-source underruns, and trims sources beyond the 40 ms lag bound. Its alignment, starvation, timestamp, lag, and lifetime rules run in the hardware-free suite.
+- The audio crate passes Linux tests and clippy and compiles and passes clippy for `x86_64-pc-windows-msvc`. Real Windows audio hardware verification remains outstanding.

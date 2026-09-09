@@ -4,6 +4,10 @@ pub mod chunk;
 pub mod cpal_output;
 pub mod error;
 pub mod fake_output;
+#[cfg(any(windows, test))]
+pub(crate) mod mix;
+#[cfg(any(windows, test))]
+pub(crate) mod process_tree;
 pub mod selection;
 pub mod synthetic;
 

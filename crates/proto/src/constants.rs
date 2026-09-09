@@ -73,6 +73,12 @@ pub const AUDIO_CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bounds one picker click. The enumeration runs on the window thread through the command-drain
 /// path, so borrowing capture's five seconds would freeze the UI on a sick daemon.
 pub const AUDIO_SOURCE_LIST_TIMEOUT: Duration = Duration::from_secs(1);
+/// How often the Windows backend reconciles selected executable identities against live audio
+/// sessions. Session notifications are not reliable enough to make capture depend on them.
+pub const AUDIO_SESSION_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Maximum samples retained per Windows process-loopback client before old capture is trimmed.
+/// Two Opus frames absorb scheduling jitter without turning it into persistent latency.
+pub const CAPTURE_MIX_MAX_LAG: Duration = Duration::from_millis(40);
 /// Silence pushed ahead of a track's first packet. The decoder produces 20 ms per 20 ms tick, so
 /// a track that starts empty never builds a reserve and every device callback larger than one
 /// packet underruns: this covers a 1024-frame quantum (21 ms, PipeWire's stock default) plus the

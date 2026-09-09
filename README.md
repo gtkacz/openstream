@@ -87,10 +87,11 @@ playing, with two radio buttons — all applications except brp, or only the
 ones you tick — applied on Done and remembered in `settings.toml`. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
 that member in the members panel, and the status bar has a "mute all" for
-every publisher at once. On Linux, capture links to the selected
-applications' PipeWire output, always excluding brp's own; on Windows, WASAPI
-process loopback in exclude mode shares every application except brp, and the
-picker is not yet wired up there. Requires Windows 10 version 2004. The
+every publisher at once. On Linux, capture links to the selected applications'
+PipeWire output, always excluding brp's own. On Windows, the default remains
+one WASAPI process-loopback client in exclude mode; a selection enumerates
+audio sessions and opens one include-tree client per selected application root,
+mixed into the same publisher stream. Requires Windows 10 version 2004. The
 Windows audio path is compiled and linted on CI but has not run on hardware.
 
 On Windows the binary opens no console window. Started from a terminal with
@@ -164,9 +165,9 @@ cargo build --release
 ```
 
 No Windows machine has run the result yet. Everything Windows-specific compiles
-and passes the hardware-free suite on the CI runner; the picker, the
-duplication fallback, the hardware codecs, and the console behaviour are
-verified by reading, not by running, until one does.
+and passes the hardware-free suite on the CI runner; per-application audio,
+the picker, the duplication fallback, the hardware codecs, and the console
+behaviour are verified by reading, not by running, until one does.
 
 ## Identity and privacy
 
@@ -295,10 +296,10 @@ the workflow so it cannot start another release.
    and a master mute.
 5. **Window management and polish** — done: pop-outs and fullscreen, settings
    UI and persistence, tagged releases for Windows and Linux.
-6. **Per-application audio** — done on Linux pending the manual two-instance
-   check; Windows pending hardware: share every application except brp, which
-   stays the default, or only the applications you select, stored by executable
-   name so the choice survives restarts.
+6. **Per-application audio** — implemented on Linux and Windows pending their
+   manual hardware checks: share every application except brp, which stays the
+   default, or only the applications you select, stored by executable name so
+   the choice survives restarts.
 
 Backlog, unordered: macOS, zero-copy GPU paths on both OSes, lossless and
 4:4:4 presets, congestion-driven preset switching, self-hosted relay
@@ -332,8 +333,9 @@ settings, persistence, and releases are implemented by
 [`2026-09-06-plan5b-settings-release.md`](docs/superpowers/plans/2026-09-06-plan5b-settings-release.md).
 Phase 6 is designed in
 [`docs/superpowers/specs/2026-09-08-phase6-per-application-audio-design.md`](docs/superpowers/specs/2026-09-08-phase6-per-application-audio-design.md);
-the Linux half is implemented by
-[`2026-09-08-plan6a-per-application-audio-linux.md`](docs/superpowers/plans/2026-09-08-plan6a-per-application-audio-linux.md).
+the Linux implementation plan is
+[`2026-09-08-plan6a-per-application-audio-linux.md`](docs/superpowers/plans/2026-09-08-plan6a-per-application-audio-linux.md),
+and the spec's section 16 records the Windows implementation.
 
 ## License
 

@@ -143,9 +143,8 @@ impl RoomView {
                     self.room.set_audio_applications(selection);
                     Ok(())
                 }
-                // Mirrors `Share { source: None }`: the enumeration runs here on the command-drain
-                // path, which is how the interim Windows `Unsupported` reaches the user as a
-                // status line with no capability flag anywhere in the tree.
+                // Mirrors `Share { source: None }`: enumeration runs here on the command-drain
+                // path, so a platform listing failure reaches the user as a status line.
                 RoomCommand::ChooseApplications => match self.room.audio_sources() {
                     Ok(sources) => {
                         state.open_applications(sources, stored);

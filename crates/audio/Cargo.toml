@@ -17,3 +17,4 @@ pipewire.workspace = true
 [target.'cfg(windows)'.dependencies]
 cpal.workspace = true
 wasapi.workspace = true
+windows-sys.workspace = true
