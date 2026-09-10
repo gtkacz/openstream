@@ -124,7 +124,8 @@ pub struct App {
 
 impl App {
     /// An `intent` from the command line opens the room at once behind the connecting start
-    /// screen; `None` waits for the user.
+    /// screen; `None` waits for the user. A `start_error` is shown on the start screen: it is how
+    /// a `join` argument that did not parse reaches a user whose browser gave us no console.
     // One parameter per thing the window is built from; a struct would be built and unpacked in
     // one place.
     #[allow(clippy::too_many_arguments)]
@@ -135,6 +136,7 @@ impl App {
         secret: SecretKey,
         nickname: String,
         intent: Option<Intent>,
+        start_error: Option<String>,
         store: SettingsStore,
         install: Option<Install>,
     ) -> Self {
@@ -161,7 +163,11 @@ impl App {
             relaunch: None,
         };
         if let Some(message) = &app.store.load_error {
-            app.start.error = format!("settings not loaded, defaults in use: {message}");
+            app.start
+                .show_error(&format!("settings not loaded, defaults in use: {message}"));
+        }
+        if let Some(message) = &start_error {
+            app.start.show_error(message);
         }
         if let Some(intent) = intent {
             app.start.connecting = true;

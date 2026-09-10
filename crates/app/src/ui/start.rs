@@ -64,6 +64,15 @@ impl StartState {
         self.connecting = false;
         self.error = message;
     }
+
+    /// Adds a message to the error line. An earlier message stays on its own line: the settings
+    /// load error and a bad link can both be true at launch, and neither should hide the other.
+    pub fn show_error(&mut self, message: &str) {
+        if !self.error.is_empty() {
+            self.error.push('\n');
+        }
+        self.error.push_str(message);
+    }
 }
 
 /// Characters of a ticket shown at each end on the start screen; the middle is elided.
@@ -286,5 +295,14 @@ mod tests {
             "no room member answered within the join timeout"
         );
         assert_eq!(state.submit(StartAction::Create), Some(Intent::Create));
+    }
+
+    #[test]
+    fn show_error_keeps_an_earlier_message_on_its_own_line() {
+        let mut state = StartState::new("alice".into());
+        state.show_error("settings not loaded");
+        assert_eq!(state.error, "settings not loaded");
+        state.show_error("invalid ticket: bad kind");
+        assert_eq!(state.error, "settings not loaded\ninvalid ticket: bad kind");
     }
 }

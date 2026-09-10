@@ -18,8 +18,14 @@ use crate::settings::SettingsStore;
 use crate::window::{App, AppEvent};
 
 /// Runs the window to completion. `intent` from the command line opens the room immediately;
-/// `None` shows the start screen.
-pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Result<(), AppError> {
+/// `None` shows the start screen, with `start_error` on it when the command line had a ticket
+/// that did not parse.
+pub fn run(
+    runtime: &Runtime,
+    intent: Option<Intent>,
+    start_error: Option<String>,
+    args: WindowArgs,
+) -> Result<(), AppError> {
     let store = SettingsStore::load()?;
     let launch = Launch::from_settings(&store.settings, &args)?;
     let secret = identity::load_or_create()?;
@@ -70,6 +76,7 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
         secret,
         nickname,
         intent,
+        start_error,
         store,
         install,
     );

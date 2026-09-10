@@ -23,14 +23,21 @@ fn main() -> ExitCode {
         }
     };
     let result = match cli.command {
-        None => participant::run(&runtime, None, WindowArgs::default()),
+        None => participant::run(&runtime, None, None, WindowArgs::default()),
         Some(Command::Publish(args)) => runtime.block_on(publish::run(args)),
         Some(Command::Create(args)) => {
-            participant::run(&runtime, Some(Intent::Create), args.window)
+            participant::run(&runtime, Some(Intent::Create), None, args.window)
         }
         Some(Command::Join(args)) => match link::parse_ticket(&args.ticket) {
-            Ok(ticket) => participant::run(&runtime, Some(Intent::Join(ticket)), args.window),
-            Err(error) => Err(AppError::Ticket(error)),
+            Ok(ticket) => participant::run(&runtime, Some(Intent::Join(ticket)), None, args.window),
+            // A browser launches the binary without a console, so the error must reach the
+            // window, not stderr.
+            Err(error) => participant::run(
+                &runtime,
+                None,
+                Some(AppError::Ticket(error).to_string()),
+                args.window,
+            ),
         },
     };
     match result {
