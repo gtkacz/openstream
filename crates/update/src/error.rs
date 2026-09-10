@@ -1,9 +1,13 @@
+//! The one error type every step of an update returns.
+
 use std::path::PathBuf;
 
 use thiserror::Error;
 
 use crate::RELEASES_URL;
 
+/// Why an update could not be checked, downloaded, or installed. Every variant's `Display` is
+/// shown to the user as it is, so it says what happened and what state the install is left in.
 #[derive(Debug, Error)]
 pub enum UpdateError {
     #[error("github: {0}")]

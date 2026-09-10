@@ -131,8 +131,9 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// Building the client resolves the TLS stack. With iroh's `tls-ring` the only provider in
-    /// the tree, rustls installs it; a second provider in the tree would make this panic.
+    /// `client()` installs ring itself, so building it never depends on some other crate having
+    /// set the process-level provider first. This proves it: rustls panics when a `Client` is
+    /// built with none, and the ordering of that install is easy to lose in a refactor.
     #[test]
     fn the_http_client_builds_with_the_tls_stack_in_the_tree() {
         client().unwrap();

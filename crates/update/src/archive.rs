@@ -220,9 +220,12 @@ mod tests {
 
     #[test]
     fn a_tarball_with_an_escaping_nested_or_foreign_entry_is_rejected_before_writing() {
+        // Inside this test's own directory rather than a fixed system path, so the assertion
+        // that nothing was written cannot be answered by some unrelated file on the host.
+        let absolute = temp_dir("tar_bad_absolute").join("escaped");
         for (case, name) in [
             ("parent", format!("{TOP}/../escape")),
-            ("absolute", "/tmp/escape".to_string()),
+            ("absolute", absolute.display().to_string()),
             ("nested", format!("{TOP}/sub/brp")),
             ("wrong_top", "brp-9.9.9-other/brp".to_string()),
         ] {
@@ -243,7 +246,7 @@ mod tests {
             // The good entry before the bad one may have been written; the bad one never is.
             assert!(!dir.join("escape").exists(), "{case}");
             assert!(!out.join("sub").exists(), "{case}");
-            assert!(!Path::new("/tmp/escape").exists(), "{case}");
+            assert!(!absolute.exists(), "{case}");
         }
     }
 

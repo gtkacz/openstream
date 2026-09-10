@@ -17,6 +17,8 @@ pub struct Install {
 }
 
 impl Install {
+    /// The install the running process belongs to. Errors when the platform will not name the
+    /// running binary, which leaves updates noticeable but not applicable.
     pub fn current() -> Result<Self, UpdateError> {
         Self::at(std::env::current_exe()?)
     }

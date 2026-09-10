@@ -28,6 +28,7 @@ pub struct UpdateState {
 }
 
 impl UpdateState {
+    /// Nothing found and nothing in flight; the launch check fills `available` later.
     pub fn new(can_apply: bool) -> Self {
         Self {
             available: None,

@@ -64,7 +64,9 @@ mod tests {
 /// The process to start once this one has left the room.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Relaunch {
+    /// The installed binary, which the swap has already repointed at the new version.
     pub exe: PathBuf,
+    /// The whole command line for the new process, already built; nothing is added at spawn.
     pub args: Vec<OsString>,
 }
 

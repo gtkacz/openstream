@@ -39,10 +39,12 @@ pub const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// GitHub requires a user agent; the version is the only detail sent.
 pub const USER_AGENT: &str = concat!("brp/", env!("CARGO_PKG_VERSION"));
 
+/// The half of a release asset's name that says which build this process can run.
 #[cfg(windows)]
 pub const PLATFORM: &str = "windows-x86_64";
 #[cfg(not(windows))]
 pub const PLATFORM: &str = "linux-x86_64";
+/// The archive format the publish job uses for this platform, and so the one `extract` reads.
 #[cfg(windows)]
 pub const ARCHIVE_EXTENSION: &str = ".zip";
 #[cfg(not(windows))]
