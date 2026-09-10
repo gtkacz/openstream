@@ -29,7 +29,12 @@ fn register() -> io::Result<()> {
     linux::register()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn register() -> io::Result<()> {
+    windows::register()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn register() -> io::Result<()> {
     Ok(())
 }
@@ -160,6 +165,137 @@ mod linux {
                 desktop_entry(Path::new("/b/brp"))
             );
             let _ = fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use std::ffi::OsStr;
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
+        RegCreateKeyExW, RegSetValueExW,
+    };
+
+    /// The per-user class for the scheme; no elevation is needed under HKEY_CURRENT_USER.
+    const CLASS_KEY: &str = r"Software\Classes\brp";
+
+    /// One string value under the class: `subkey` relative to the class (empty for the class
+    /// itself), `name` of the value (`None` for the default value), and its data.
+    pub struct ClassValue {
+        pub subkey: &'static str,
+        pub name: Option<&'static str>,
+        pub data: String,
+    }
+
+    /// Everything the shell needs to hand `brp://` links to `exe`: what the scheme is, that it is
+    /// a URL protocol, an icon, and the command. Pure, so the shape is checked without a registry.
+    pub fn class_values(exe: &Path) -> Vec<ClassValue> {
+        let exe = exe.display();
+        vec![
+            ClassValue {
+                subkey: "",
+                name: None,
+                data: "URL:brp".to_string(),
+            },
+            ClassValue {
+                subkey: "",
+                name: Some("URL Protocol"),
+                data: String::new(),
+            },
+            ClassValue {
+                subkey: "DefaultIcon",
+                name: None,
+                data: format!("\"{exe}\",0"),
+            },
+            ClassValue {
+                subkey: r"shell\open\command",
+                name: None,
+                data: format!("\"{exe}\" join \"%1\""),
+            },
+        ]
+    }
+
+    pub fn register() -> io::Result<()> {
+        let exe = std::env::current_exe()?;
+        for value in class_values(&exe) {
+            let path = if value.subkey.is_empty() {
+                CLASS_KEY.to_string()
+            } else {
+                format!("{CLASS_KEY}\\{}", value.subkey)
+            };
+            set_string(&path, value.name, &value.data)?;
+        }
+        Ok(())
+    }
+
+    fn wide(text: &str) -> Vec<u16> {
+        OsStr::new(text)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Creates `path` under HKEY_CURRENT_USER if needed and sets one REG_SZ value; `None` names
+    /// the key's default value. Overwrites, so the same call is the update path.
+    fn set_string(path: &str, name: Option<&str>, data: &str) -> io::Result<()> {
+        let path = wide(path);
+        let name = name.map(wide);
+        let data = wide(data);
+        let mut key: HKEY = ptr::null_mut();
+        // SAFETY: every pointer is to a live NUL-terminated buffer, or null where the API allows
+        // it; the key is closed before every return that follows its creation.
+        unsafe {
+            let created = RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                path.as_ptr(),
+                0,
+                ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_WRITE,
+                ptr::null(),
+                &mut key,
+                ptr::null_mut(),
+            );
+            if created != ERROR_SUCCESS {
+                return Err(io::Error::from_raw_os_error(created as i32));
+            }
+            // cbData counts bytes including the terminating NUL, as REG_SZ requires.
+            let set = RegSetValueExW(
+                key,
+                name.as_ref().map_or(ptr::null(), |n| n.as_ptr()),
+                0,
+                REG_SZ,
+                data.as_ptr().cast(),
+                (data.len() * 2) as u32,
+            );
+            RegCloseKey(key);
+            if set != ERROR_SUCCESS {
+                return Err(io::Error::from_raw_os_error(set as i32));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_command_quotes_the_exe_and_passes_the_url() {
+            let values = class_values(Path::new(r"C:\Program Files\brp\brp.exe"));
+            let command = values
+                .iter()
+                .find(|v| v.subkey == r"shell\open\command")
+                .expect("command value");
+            assert_eq!(command.data, r#""C:\Program Files\brp\brp.exe" join "%1""#);
+            assert!(values.iter().any(|v| v.name == Some("URL Protocol")));
         }
     }
 }
