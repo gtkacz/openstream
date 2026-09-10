@@ -335,8 +335,10 @@ impl App {
         }
     }
 
-    /// Re-snapshots the room and closes pop-outs whose watch has ended. Runs at the start of every
-    /// redraw, whichever window asked, so all windows draw from the same snapshot.
+    /// Re-snapshots the room and closes pop-outs whose watch has ended. Runs from `user_event` on
+    /// a room-version change or the statistics tick, not from the render path, so every window
+    /// redrawn in the same batch draws the same snapshot and steady video redraws never repeat
+    /// this housekeeping.
     fn refresh_room(&mut self) {
         let Phase::Room(view) = &mut self.phase else {
             return;
@@ -356,7 +358,6 @@ impl App {
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
-        self.refresh_room();
         // Winit has no minimize event, so this is the one place to ask; occlusion and zero size
         // arrive as events and are folded in by `window_event` instead.
         let minimized = self.window_ref(id).and_then(Window::is_minimized);
@@ -768,7 +769,11 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::UpdateReady(Err(message)) => {
                 self.update.failed(message);
             }
-            AppEvent::RoomChanged | AppEvent::NewFrame | AppEvent::Tick => {}
+            // A room-version bump and the statistics tick are the two relevant state changes:
+            // the former reconciles watch membership promptly, the latter also catches a relay
+            // address change and advances age labels even when nothing is watched.
+            AppEvent::RoomChanged | AppEvent::Tick => self.refresh_room(),
+            AppEvent::NewFrame => {}
         }
         self.request_redraw_all();
     }
