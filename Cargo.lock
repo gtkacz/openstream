@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "brp"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "brp-audio",
  "brp-capture",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "brp-audio"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "brp-proto",
  "cpal",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "brp-capture"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ashpd",
  "brp-proto",
@@ -544,7 +544,7 @@ dependencies = [
 
 [[package]]
 name = "brp-codec"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "brp-proto",
  "ffmpeg-sys-next",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "brp-net"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "brp-proto",
  "iroh",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "brp-pipeline"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "brp-audio",
  "brp-capture",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "brp-proto"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "iroh-base",
  "iroh-tickets",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "brp-room"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "brp-audio",
  "brp-capture",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "brp-update"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "flate2",
  "reqwest",
