@@ -26,7 +26,11 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
     let nickname = launch::default_nickname(&launch, &secret);
     let install = match Install::current() {
         Ok(install) => {
-            brp_update::cleanup_stale(&install);
+            // Only an update can have left those files, and an update only ever runs in a release
+            // layout; beside a dev build or a hand-copied binary they belong to someone else.
+            if install.is_release_layout() {
+                brp_update::cleanup_stale(&install);
+            }
             Some(install)
         }
         Err(error) => {

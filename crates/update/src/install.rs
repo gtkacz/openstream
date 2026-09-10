@@ -46,6 +46,9 @@ impl Install {
 /// Removes the previous version's `.old` files and any staging directory an earlier run left.
 /// Best effort: on Windows the process that was just replaced may still be exiting, in which
 /// case its files are removed by the launch after this one.
+///
+/// Callers gate this on [`Install::is_release_layout`]: elsewhere a matching name is someone
+/// else's file, not a leftover of ours.
 pub fn cleanup_stale(install: &Install) {
     let entries = match fs::read_dir(&install.dir) {
         Ok(entries) => entries,
