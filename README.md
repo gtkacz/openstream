@@ -221,9 +221,10 @@ to the page's server, but browser history, chat logs, and clipboard managers
 keep the whole link, so treat a link exactly as you would the ticket. The join
 page is one static file on GitHub Pages that loads nothing from third parties.
 
-The log beside them records nicknames, short public ids, and connection
-events, and no keys or tickets; a crash dump, unlike the log, contains process
-memory, so treat one as you would a screenshot of the session.
+The log beside the identity key and the settings records nicknames, short
+public ids, and connection events, and no keys or tickets; a crash dump,
+unlike the log, contains process memory, so treat one as you would a
+screenshot of the session.
 
 The launch update check is one HTTPS request to github.com carrying only a
 `brp/<version>` user agent; it tells GitHub that a brp of that version started
@@ -345,10 +346,11 @@ the workflow so it cannot start another release.
    manual hardware checks: share every application except brp, which stays the
    default, or only the applications you select, stored by executable name so
    the choice survives restarts.
-7. **Join links** — done on Linux, Windows pending its hardware check: one
-   `https://` link that opens the app into the room, the app registering itself
-   as the `brp://` handler on Windows and Linux, and a static join page on
-   GitHub Pages with the download as the fallback.
+7. **Join links** — done on Linux pending the manual browser check and the
+   Pages deployment, Windows pending its hardware check: one `https://` link
+   that opens the app into the room, the app registering itself as the
+   `brp://` handler on Windows and Linux, and a static join page on GitHub
+   Pages with the download as the fallback.
 8. **Self-update** — done pending the first release pair: the launch check,
    the in-app update with checksum verification and rollback, and the relaunch
    into the same room.
