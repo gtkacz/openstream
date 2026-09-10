@@ -42,9 +42,15 @@ are postcard-encoded on the versioned media ALPN `brp/media/1`.
 ## Usage
 
 Run `brp` with no arguments, or double-click `brp.exe` on Windows, to open the
-start screen: pick a nickname, then Create room, or paste a ticket and Join
-room. The status bar's Copy ticket button gives you the ticket to hand to
-others. From a terminal the same window can be opened directly:
+start screen: pick a nickname, then Create room, or paste a ticket or a link and
+Join room. The status bar's Copy link button gives you an `https://` link that
+opens brp into the room on a machine that has it and offers the download on one
+that does not; Copy ticket gives the bare ticket for the terminal. Each time
+the window starts it registers brp as the handler for `brp://` links, pointing
+at the binary that is running: a hidden `brp.desktop` under
+`~/.local/share/applications` on Linux, the `brp` class under
+`HKEY_CURRENT_USER\Software\Classes` on Windows. From a terminal the same window
+can be opened directly:
 
 ```
 cargo build --release
@@ -52,11 +58,11 @@ cargo build --release
 # Open a new room in the participant window
 ./target/release/brp create [--nickname N] [--fps 60] [--no-relay]
 
-# Join a room in the participant window
-./target/release/brp join <ticket> [--nickname N] [--fps 60] [--no-relay]
+# Join a room in the participant window; a ticket, a share link, or a brp:// link
+./target/release/brp join <ticket-or-link> [--nickname N] [--fps 60] [--no-relay]
 
 # Share one live headlessly and print the ticket, creating a room or joining one
-./target/release/brp publish --nickname alice [--ticket <ticket>] [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--no-relay]
+./target/release/brp publish --nickname alice [--ticket <ticket-or-link>] [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--no-relay]
 ```
 
 The Settings button on the start screen and in the status bar opens a dialog
@@ -208,9 +214,16 @@ member. Settings are saved beside the identity key in `brp/settings.toml`:
 nickname, relay choice, frame rate ceiling, audio output device, the tickets of
 recent rooms, and whether to check for updates. A stored ticket contains the
 addresses of the peer that issued it, so treat the file as you would the
-tickets themselves. The log beside them records nicknames, short public ids, and
-connection events, and no keys or tickets; a crash dump, unlike the log,
-contains process memory, so treat one as you would a screenshot of the session.
+tickets themselves.
+
+A share link carries the ticket in its fragment, which the browser never sends
+to the page's server, but browser history, chat logs, and clipboard managers
+keep the whole link, so treat a link exactly as you would the ticket. The join
+page is one static file on GitHub Pages that loads nothing from third parties.
+
+The log beside them records nicknames, short public ids, and connection
+events, and no keys or tickets; a crash dump, unlike the log, contains process
+memory, so treat one as you would a screenshot of the session.
 
 The launch update check is one HTTPS request to github.com carrying only a
 `brp/<version>` user agent; it tells GitHub that a brp of that version started
@@ -332,7 +345,11 @@ the workflow so it cannot start another release.
    manual hardware checks: share every application except brp, which stays the
    default, or only the applications you select, stored by executable name so
    the choice survives restarts.
-7. **Self-update** — done pending the first release pair: the launch check,
+7. **Join links** — done on Linux, Windows pending its hardware check: one
+   `https://` link that opens the app into the room, the app registering itself
+   as the `brp://` handler on Windows and Linux, and a static join page on
+   GitHub Pages with the download as the fallback.
+8. **Self-update** — done pending the first release pair: the launch check,
    the in-app update with checksum verification and rollback, and the relaunch
    into the same room.
 
@@ -371,6 +388,10 @@ Phase 6 is designed in
 the Linux implementation plan is
 [`2026-09-08-plan6a-per-application-audio-linux.md`](docs/superpowers/plans/2026-09-08-plan6a-per-application-audio-linux.md),
 and the spec's section 16 records the Windows implementation.
+Phase 7 is designed in
+[`docs/superpowers/specs/2026-09-10-phase7-join-links-design.md`](docs/superpowers/specs/2026-09-10-phase7-join-links-design.md)
+and implemented by
+[`2026-09-10-plan7-join-links.md`](docs/superpowers/plans/2026-09-10-plan7-join-links.md).
 
 ## License
 

@@ -173,3 +173,12 @@ README: the Usage section describes Copy link and that a link opens the app; a s
 - Desktop Entry Specification, `Exec` quoting and field codes; Shared MIME-info `x-scheme-handler/*`; `xdg-mime default`.
 - Microsoft, "Registering an Application to a URI Scheme": `URL Protocol` value and `shell\open\command`.
 - GitHub Pages, publishing with a custom GitHub Actions workflow: `actions/upload-pages-artifact`, `actions/deploy-pages`.
+
+## 15. Amendments from the implementation run
+
+- `link::share_link` takes `&str`, not `&RoomTicket`: both callers already hold the string form, and the status bar's view stores the ticket as text.
+- `StartState::show_error` appends newline-separated, and `App::new` routes both the settings load error and the `start_error` through it, so section 5.3's "appended after the settings load error" is a method rather than a format string.
+- The Windows registry values are described by a pure `class_values(exe)` list with one unit test on the command string; the write itself is untested, as section 11 says.
+- Windows runtime verification remains outstanding; the Windows CI job compiled the handler.
+- `App::new` gained `#[allow(clippy::too_many_arguments)]`: the `start_error` parameter made eight, the workspace lint gate is `-D warnings`, and the attribute already appears on `ui/tiles.rs` and `room/src/watcher.rs`; a parameter struct would have exceeded the task's footprint in the most bug-prone file.
+- The `windows-sys` feature list also gained `Win32_Security`: `RegCreateKeyExW` takes a `SECURITY_ATTRIBUTES` pointer and windows-sys gates it behind that feature; without it the Windows build compiled only through feature unification from other dependencies. Section 5.2's "with the `Win32_System_Registry` feature added" therefore reads as "with the `Win32_Security` and `Win32_System_Registry` features added".
