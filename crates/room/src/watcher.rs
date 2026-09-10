@@ -335,7 +335,8 @@ impl Watcher {
         }
     }
 
-    /// Spec 6.6: a watched preset the publisher removed falls back to Source while the live remains.
+    /// Spec 6.6: a watched preset the publisher removed falls back to Source, or to the best preset
+    /// still offered once Source is gone too, while the live remains.
     fn fallback_preset(&self, publisher: PublicKey, live_id: u32, preset_id: u32) -> Option<u32> {
         let membership = lock(&self.membership);
         let live = membership
@@ -344,12 +345,14 @@ impl Watcher {
             .lives
             .iter()
             .find(|l| l.id == live_id)?;
-        let still_offered = live.presets.iter().any(|p| p.id == preset_id);
-        if !still_offered && preset_id != SOURCE_PRESET_ID {
-            Some(SOURCE_PRESET_ID)
-        } else {
-            None
+        if live.presets.iter().any(|p| p.id == preset_id) {
+            return None;
         }
+        live.presets
+            .iter()
+            .find(|p| p.id == SOURCE_PRESET_ID)
+            .or_else(|| live.presets.first())
+            .map(|p| p.id)
     }
 
     fn live_exists(&self, publisher: PublicKey, live_id: u32) -> bool {

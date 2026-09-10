@@ -162,9 +162,13 @@ fn live_rows(
     ui.horizontal(|ui| {
         ui.add_space(12.0);
         ui.label("Templates:");
+        // The last preset cannot be unticked: a live that offers nothing cannot be watched.
+        let last_one = info.presets.len() == 1;
         for template in presets::templates_for(info) {
             let mut enabled = info.presets.iter().any(|p| p.id == template.id);
-            if ui.checkbox(&mut enabled, template.name.as_str()).changed() {
+            let locked = enabled && last_one;
+            let checkbox = egui::Checkbox::new(&mut enabled, template.name.as_str());
+            if ui.add_enabled(!locked, checkbox).changed() {
                 commands.push(RoomCommand::SetPresets {
                     live_id: info.id,
                     presets: presets::toggle_template(info, template.id),

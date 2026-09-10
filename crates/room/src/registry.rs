@@ -657,6 +657,9 @@ fn validate_presets(
     height: u32,
     fps: u32,
 ) -> Result<(), RoomError> {
+    if presets.is_empty() {
+        return Err(RoomError::Proto(ProtoError::Invalid("no presets".into())));
+    }
     if presets.len() > MAX_PRESETS_PER_LIVE {
         return Err(RoomError::Proto(ProtoError::Invalid(
             "too many presets".into(),

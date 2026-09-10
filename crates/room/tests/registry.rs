@@ -204,9 +204,13 @@ fn live_limit_and_preset_validation_are_enforced() {
         SourceKind::Window,
         Box::new(DummySession),
         Arc::new(CaptureFan::default()),
-        vec![],
+        template_presets(64, 32, 30, Codec::H264),
     );
     assert!(matches!(over, Err(brp_room::RoomError::TooManyLives)));
+    assert!(matches!(
+        registry.set_presets(1, Vec::new()),
+        Err(brp_room::RoomError::Proto(_))
+    ));
     let bad = vec![brp_proto::Preset {
         id: 1,
         name: "huge".into(),

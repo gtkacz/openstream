@@ -1,6 +1,6 @@
 # Slice 2: rooms, multiple lives, and the participant window
 
-Status: approved design, 2026-09-04. Frame-rate amendment approved 2026-09-05 (section 3, 5.2, 7, 10). Refines phase 2 of `2026-09-04-p2p-screen-sharing-design.md`, which remains the master spec. Where this document is silent, the master spec applies.
+Status: approved design, 2026-09-04. Frame-rate amendment approved 2026-09-05 (section 3, 5.2, 7, 10). Source-toggle amendment approved 2026-09-10 (section 6.6). Refines phase 2 of `2026-09-04-p2p-screen-sharing-design.md`, which remains the master spec. Where this document is silent, the master spec applies.
 
 ## 1. Goals
 
@@ -104,7 +104,7 @@ The viewer unsubscribes from the old preset and subscribes to the new one. The t
 
 ### 6.6 Preset changes by the publisher
 
-Adding a preset rebroadcasts presence. Removing a preset stops its encoder and ends its subscriptions with live-ended on those control streams; viewers fall back to the live's Source preset automatically. Changing a preset's bitrate or codec restarts its encoder on the next subscription and, if one is running, immediately.
+Adding a preset rebroadcasts presence. Removing a preset stops its encoder and ends its subscriptions with live-ended on those control streams; viewers fall back to the live's Source preset automatically, or to the best preset still offered when the publisher has unticked Source. The last preset cannot be removed, so a live always offers something to watch. Changing a preset's bitrate or codec restarts its encoder on the next subscription and, if one is running, immediately.
 
 ## 7. The participant window
 

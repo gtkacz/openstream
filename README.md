@@ -69,12 +69,13 @@ not saved.
 In the window, the left panel lists members with a direct-or-relayed badge and
 their lives; tick a live to watch it and pick its preset, and hover a tile for
 the preset selector and the stats overlay. The bottom panel lists your own
-lives with a frame-rate control, a codec selector, template checkboxes, a
-bitrate per preset, the measured encode rate, and a stop button; Stop sharing
-ends every live at once. Share monitor and Share window open the desktop
-portal on Linux and an in-app list of monitors or windows on Windows. `--fps`
-is the capture ceiling for lives shared from the window and defaults to the
-saved frame rate ceiling (60 out of the box).
+lives with a frame-rate control, a codec selector, template checkboxes
+(untick Source to cap what viewers can ask for), a bitrate per preset, the
+measured encode rate, and a stop button; Stop sharing ends every live at
+once. Share monitor and Share window open the desktop portal on Linux and an
+in-app list of monitors or windows on Windows. `--fps` is the capture ceiling
+for lives shared from the window and defaults to the saved frame rate ceiling
+(60 out of the box).
 
 Hovering a tile shows `pop out` and `fullscreen`. Pop out moves the live into a
 window of its own, which you can drag to another monitor; fullscreen does the

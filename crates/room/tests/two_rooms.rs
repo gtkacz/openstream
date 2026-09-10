@@ -276,6 +276,59 @@ async fn preset_changes_propagate_and_a_removed_preset_falls_back_to_source() {
     a.leave().await;
 }
 
+#[tokio::test]
+async fn removing_source_moves_a_watcher_to_the_best_remaining_preset() {
+    let (a, b) = joined_pair().await;
+    let live = a
+        .start_live(SourceKind::Monitor, None, "desk".into())
+        .await
+        .unwrap();
+    let mut presets = a.snapshot().own_lives[0].info.presets.clone();
+    presets.push(Preset {
+        id: 2,
+        name: "tiny".into(),
+        width: 32,
+        height: 16,
+        fps: 30,
+        bitrate_kbps: 1_000,
+        codec: Codec::H264,
+    });
+    a.set_presets(live, presets.clone()).unwrap();
+    wait_until("two presets", Duration::from_secs(5), || {
+        b.snapshot().members[0]
+            .lives
+            .first()
+            .is_some_and(|l| l.presets.len() == 2)
+    })
+    .await;
+
+    let handle = b.watch(a.id(), live, SOURCE_PRESET_ID).unwrap();
+    wait_until("source frames", Duration::from_secs(5), || {
+        handle.slot.try_take().is_some_and(|f| f.width == 64)
+    })
+    .await;
+
+    a.set_presets(live, presets[1..].to_vec()).unwrap();
+    wait_until(
+        "fallback to the remaining preset",
+        Duration::from_secs(10),
+        || {
+            b.snapshot()
+                .watches
+                .first()
+                .is_some_and(|w| w.preset_id == 2 && w.state == WatchState::Live)
+        },
+    )
+    .await;
+    wait_until("tiny frames", Duration::from_secs(5), || {
+        handle.slot.try_take().is_some_and(|f| f.width == 32)
+    })
+    .await;
+
+    b.leave().await;
+    a.leave().await;
+}
+
 /// Counts capture sessions actually opened, so the test can prove the ninth `start_live` never
 /// touches capture (which for real users is a desktop portal permission dialog).
 struct CountingCapture {
