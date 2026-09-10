@@ -190,6 +190,7 @@ One `UpdateError` (`thiserror`): `Http`, `NoRedirect`, `Version`, `Checksum`, `A
 - A relaunch from the start screen drops the launch's flags, because a bare `brp` takes none.
 - A dev build at a version older than the latest release sees the notice with the URL and no button.
 - Two updates in a row while the process from the first is still exiting on Windows fail at removing the earlier `.old`, with the error shown; retrying a moment later succeeds.
+- Closing the window during a download drops the update task's handle, with two safe outcomes: the download stops and leaves a staging directory the next launch removes, or the swap had already begun and runs to the end with nobody left to relaunch, so the next manual launch runs the new version.
 
 ## 11. Testing
 

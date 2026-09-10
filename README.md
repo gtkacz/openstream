@@ -74,7 +74,9 @@ of the directory brp runs from, and relaunches: from a room, straight back into
 that room; from the start screen, to the start screen. The check can be turned
 off in Settings and applies from the next launch. A build from source sees the
 notice with a link and no button, since only an extracted release directory is
-replaced.
+replaced. Closing the window during a download cancels it, or, if the files
+were already being swapped, finishes the swap without relaunching; the next
+launch runs the new version.
 
 In the window, the left panel lists members with a direct-or-relayed badge and
 their lives; tick a live to watch it and pick its preset, and hover a tile for
