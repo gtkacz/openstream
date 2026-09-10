@@ -30,6 +30,9 @@ pub struct Settings {
     pub relay: RelayChoice,
     pub audio: AudioSettings,
     pub recent_rooms: Vec<RecentRoom>,
+    /// Ask GitHub for the latest release at launch. On by default and documented as a network
+    /// request, which is why it can be turned off.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -40,6 +43,7 @@ impl Default for Settings {
             relay: RelayChoice::Default,
             audio: AudioSettings::default(),
             recent_rooms: Vec::new(),
+            check_updates: true,
         }
     }
 }
@@ -272,6 +276,7 @@ mod tests {
                 ticket: "brpticket".into(),
                 last_joined_unix: 1_788_000_000,
             }],
+            check_updates: false,
         }
     }
 
@@ -299,6 +304,7 @@ mod tests {
         assert!(text.contains("mode = \"only\""), "{text}");
         assert!(text.contains("\"firefox\""), "{text}");
         assert!(text.contains("[[recent_rooms]]"), "{text}");
+        assert!(text.contains("check_updates = false"), "{text}");
         let disabled = toml::to_string_pretty(&Settings {
             relay: RelayChoice::Disabled,
             ..Settings::default()
@@ -321,6 +327,13 @@ mod tests {
     fn a_missing_file_loads_the_defaults() {
         let path = temp_path("missing");
         assert_eq!(Settings::load(&path).unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn a_file_from_before_the_updater_checks_for_updates() {
+        let settings: Settings = toml::from_str("fps = 24\n").unwrap();
+        assert!(settings.check_updates);
+        assert!(Settings::default().check_updates);
     }
 
     #[test]

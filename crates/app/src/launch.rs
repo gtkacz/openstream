@@ -133,6 +133,7 @@ mod tests {
                 },
             },
             recent_rooms: Vec::new(),
+            check_updates: true,
         }
     }
 

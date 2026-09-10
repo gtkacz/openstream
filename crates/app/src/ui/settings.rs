@@ -146,6 +146,13 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                             }
                         });
                     ui.end_row();
+
+                    ui.label("Updates");
+                    ui.checkbox(
+                        &mut dialog.draft.check_updates,
+                        "Check for updates at launch (from the next launch)",
+                    );
+                    ui.end_row();
                 });
             if let Some(error) = &dialog.devices_error {
                 ui.colored_label(
