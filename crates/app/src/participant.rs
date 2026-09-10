@@ -12,6 +12,7 @@ use winit::event_loop::{EventLoop, EventLoopProxy};
 
 use crate::cli::WindowArgs;
 use crate::error::AppError;
+use crate::handler;
 use crate::identity;
 use crate::launch::{self, Intent, Launch};
 use crate::settings::SettingsStore;
@@ -26,6 +27,7 @@ pub fn run(
     start_error: Option<String>,
     args: WindowArgs,
 ) -> Result<(), AppError> {
+    handler::register_scheme_handler();
     let store = SettingsStore::load()?;
     let launch = Launch::from_settings(&store.settings, &args)?;
     let secret = identity::load_or_create()?;
