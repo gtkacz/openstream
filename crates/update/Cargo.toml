@@ -7,6 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 reqwest.workspace = true
+# `rustls-no-provider` (see the workspace `reqwest` entry) leaves the process-wide crypto
+# provider unset; ring is iroh's `tls-ring` provider, so installing it here matches the one
+# already in the tree instead of adding a second (aws_lc_rs is rustls's default and must stay off).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 sha2.workspace = true
 tar.workspace = true
 flate2.workspace = true
