@@ -170,6 +170,23 @@ mod tests {
     }
 
     #[test]
+    fn a_target_at_or_above_the_source_rate_admits_every_frame() {
+        // The registry now always builds a `Pacer` for a subscribed preset, even one at or above
+        // the source rate (previously no pacer ran at all in that case, so nothing paced the
+        // preset). Frames spaced no closer than the target interval must still all be admitted:
+        // this must stay a no-op for admission whenever there is no overload.
+        let mut at_source_rate = Pacer::new(60);
+        let admitted: Vec<bool> = (0..10).map(|i| at_source_rate.admit(i * 16_667)).collect();
+        assert_eq!(admitted, [true; 10], "fps == source rate must drop nothing");
+
+        let mut above_source_rate = Pacer::new(120);
+        let admitted: Vec<bool> = (0..10)
+            .map(|i| above_source_rate.admit(i * 16_667))
+            .collect();
+        assert_eq!(admitted, [true; 10], "fps > source rate must drop nothing");
+    }
+
+    #[test]
     fn sustained_overload_steps_the_rate_down_after_the_streak_threshold() {
         let mut pacer = Pacer::new(60);
         assert_eq!(pacer.current_fps(), 60);

@@ -19,34 +19,66 @@ enum InputLayout {
     I420,
 }
 
-/// How many `libsvtav1` instances are currently open in this process. Guards the count so a
-/// failed or dropped encoder always releases its slot, including on an early `?` return from
-/// `open`.
-static ACTIVE_SOFTWARE_ENCODERS: AtomicUsize = AtomicUsize::new(0);
+/// Sum of the `lp` (logical processors) values currently committed to open `libsvtav1` instances
+/// in this process. SVT-AV1 cannot change its thread count after the encoder starts, so this is
+/// not a count of encoders to divide evenly by (that recomputes a fresh average on every open but
+/// never revisits an already-running encoder's share, so the running total can exceed the
+/// machine's cores as soon as a second encoder opens). Instead each new encoder reserves a claim
+/// against this shared total, so the aggregate the process has committed is tracked directly and
+/// never invalidated by an encoder that opened earlier.
+static TOTAL_COMMITTED_LP: AtomicUsize = AtomicUsize::new(0);
 
-struct SoftwareEncoderSlot;
+/// How large a claim a newly-opening software encoder should reserve from `TOTAL_COMMITTED_LP`,
+/// given `already_committed` (the sum every other currently-open software encoder holds) and the
+/// machine's total logical processors. Takes half of whatever is left (floored, minimum 1 since
+/// SVT-AV1 needs at least one thread to run at all).
+///
+/// Because each claim only ever takes half the remainder, the running total climbs toward `cpus`
+/// but stays strictly below it through as many concurrent opens as there are halvings to give
+/// (roughly `log2(cpus)` of them) — unlike an even split recomputed from the encoder count, which
+/// already overshoots with just two encoders (the first claims all of `cpus`, the second claims
+/// `cpus / 2`, for a total of 1.5x `cpus`). Only once the remainder is exhausted does an
+/// additional concurrent open add its unavoidable one-thread minimum on top; that is the
+/// unavoidable floor for running more encoders than the machine has cores for, since a live
+/// encoder's `lp` can't be revisited or reduced after the fact.
+fn claim_software_encoder_lp(cpus: usize, already_committed: usize) -> usize {
+    let remaining = cpus.saturating_sub(already_committed);
+    (remaining / 2).max(1)
+}
+
+/// Reserves and, on drop, releases one encoder's claim against `TOTAL_COMMITTED_LP`. The
+/// compare-and-swap retry means concurrent opens each see an up-to-date `already_committed` rather
+/// than racing on a stale read.
+struct SoftwareEncoderSlot {
+    lp: usize,
+}
 
 impl SoftwareEncoderSlot {
     fn acquire() -> Self {
-        ACTIVE_SOFTWARE_ENCODERS.fetch_add(1, Ordering::Relaxed);
-        Self
+        let cpus = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1);
+        let mut already_committed = TOTAL_COMMITTED_LP.load(Ordering::Relaxed);
+        let lp = loop {
+            let claim = claim_software_encoder_lp(cpus, already_committed);
+            match TOTAL_COMMITTED_LP.compare_exchange_weak(
+                already_committed,
+                already_committed + claim,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break claim,
+                Err(actual) => already_committed = actual,
+            }
+        };
+        Self { lp }
     }
 }
 
 impl Drop for SoftwareEncoderSlot {
     fn drop(&mut self) {
-        ACTIVE_SOFTWARE_ENCODERS.fetch_sub(1, Ordering::Relaxed);
+        TOTAL_COMMITTED_LP.fetch_sub(self.lp, Ordering::Relaxed);
     }
-}
-
-/// Logical processors to hand SVT-AV1's `lp` parameter: the machine's parallelism split across
-/// every currently active software encoder, so several subscribed presets each get a bounded
-/// share instead of each independently claiming every core.
-fn software_encoder_lp(active_count: usize) -> usize {
-    let cpus = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1);
-    (cpus / active_count.max(1)).max(1)
 }
 
 pub struct FfmpegEncoder {
@@ -59,8 +91,8 @@ pub struct FfmpegEncoder {
     next_seq: u64,
     next_pts: i64,
     in_flight: VecDeque<(i64, u64)>,
-    // Held only for `libsvtav1`; `None` for a hardware encoder. Releases this encoder's share of
-    // `ACTIVE_SOFTWARE_ENCODERS` when dropped.
+    // Held only for `libsvtav1`; `None` for a hardware encoder. Releases this encoder's claim
+    // against `TOTAL_COMMITTED_LP` when dropped.
     _software_slot: Option<SoftwareEncoderSlot>,
 }
 
@@ -77,10 +109,10 @@ impl FfmpegEncoder {
         } else {
             InputLayout::Nv12
         };
-        // Acquired before the config is built so the probed active count already includes this
-        // instance; dropping `software_slot` on any later `?` failure releases it again.
+        // Reserved before the config is built so the claim is committed up front; dropping
+        // `software_slot` on any later `?` failure releases it again.
         let software_slot = (name == "libsvtav1").then(SoftwareEncoderSlot::acquire);
-        let software_lp = software_encoder_lp(ACTIVE_SOFTWARE_ENCODERS.load(Ordering::Relaxed));
+        let software_lp = software_slot.as_ref().map_or(0, |slot| slot.lp);
         let mut ctx = CodecContext::alloc(codec)?;
         unsafe {
             let c = &mut *ctx.0;
@@ -299,24 +331,84 @@ impl VideoEncoder for FfmpegEncoder {
 
 #[cfg(test)]
 mod tests {
-    use super::software_encoder_lp;
+    use std::sync::atomic::Ordering;
+
+    use super::{SoftwareEncoderSlot, TOTAL_COMMITTED_LP, claim_software_encoder_lp};
 
     #[test]
-    fn a_single_active_encoder_gets_every_available_core() {
+    fn a_lone_encoder_claims_only_half_the_machine_reserving_room_for_more() {
+        // Unlike an even split recomputed from the encoder count, the first encoder does not
+        // claim every core: that headroom is exactly what keeps a second encoder from pushing the
+        // committed total over `cpus`.
+        assert_eq!(claim_software_encoder_lp(16, 0), 8);
+    }
+
+    #[test]
+    fn sequential_claims_never_push_the_committed_total_past_the_machine() {
+        let cpus = 64;
+        let mut committed = 0usize;
+        for _ in 0..6 {
+            let claim = claim_software_encoder_lp(cpus, committed);
+            assert!(claim >= 1, "every open still gets at least one thread");
+            committed += claim;
+            assert!(
+                committed <= cpus,
+                "running total {committed} exceeds the machine's {cpus} cores"
+            );
+        }
+    }
+
+    #[test]
+    fn a_claim_is_never_smaller_than_one_logical_processor() {
+        assert_eq!(claim_software_encoder_lp(4, 4), 1, "remainder exhausted");
         assert_eq!(
-            software_encoder_lp(1),
-            std::thread::available_parallelism().unwrap().get()
+            claim_software_encoder_lp(4, 3),
+            1,
+            "remainder rounds down to zero"
+        );
+        assert_eq!(
+            claim_software_encoder_lp(1, 0),
+            1,
+            "a single-core machine still gets a usable claim"
         );
     }
 
     #[test]
-    fn several_active_encoders_split_the_cores_and_never_reach_zero() {
-        let cpus = std::thread::available_parallelism().unwrap().get();
-        assert_eq!(software_encoder_lp(2), (cpus / 2).max(1));
+    fn releasing_an_earlier_claim_frees_room_for_the_next_one() {
+        // Mirrors what `SoftwareEncoderSlot::drop` does to `TOTAL_COMMITTED_LP`: an encoder that
+        // stops hands its claim back, so the next one to open sees the freed capacity rather than
+        // treating the stopped encoder's old share as still spoken for.
+        let cpus = 16;
+        let first = claim_software_encoder_lp(cpus, 0); // 8
+        let second = claim_software_encoder_lp(cpus, first); // 4
+        let committed_after_first_stops = first + second - first; // release `first`
+        let third = claim_software_encoder_lp(cpus, committed_after_first_stops);
+        assert_eq!(committed_after_first_stops + third, second + third);
+        assert!(committed_after_first_stops + third <= cpus);
+    }
+
+    #[test]
+    fn slots_track_a_real_shared_total_and_release_correctly_on_drop() {
+        // Exercises the real `TOTAL_COMMITTED_LP` static through acquire/drop directly (rather
+        // than through `FfmpegEncoder::open`, which needs a real libsvtav1 build), across an
+        // open-open-close-open sequence: closing an encoder must free exactly its own claim, and
+        // the next open must see that freed room rather than the stale, still-running total.
+        let before = TOTAL_COMMITTED_LP.load(Ordering::Relaxed);
+        let a = SoftwareEncoderSlot::acquire();
+        let b = SoftwareEncoderSlot::acquire();
         assert_eq!(
-            software_encoder_lp(cpus * 10),
-            1,
-            "always at least one logical processor"
+            TOTAL_COMMITTED_LP.load(Ordering::Relaxed),
+            before + a.lp + b.lp
         );
+        drop(a);
+        assert_eq!(TOTAL_COMMITTED_LP.load(Ordering::Relaxed), before + b.lp);
+        let c = SoftwareEncoderSlot::acquire();
+        assert_eq!(
+            TOTAL_COMMITTED_LP.load(Ordering::Relaxed),
+            before + b.lp + c.lp
+        );
+        drop(b);
+        drop(c);
+        assert_eq!(TOTAL_COMMITTED_LP.load(Ordering::Relaxed), before);
     }
 }
