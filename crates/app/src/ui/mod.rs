@@ -11,6 +11,7 @@ pub mod start;
 pub mod state;
 pub mod status;
 pub mod tiles;
+pub mod update;
 
 use std::collections::HashSet;
 
