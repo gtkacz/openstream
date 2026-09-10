@@ -613,10 +613,11 @@ dependencies = [
 
 [[package]]
 name = "brp-update"
-version = "0.6.0"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "reqwest",
+ "rustls",
  "sha2",
  "tar",
  "thiserror 2.0.20",
