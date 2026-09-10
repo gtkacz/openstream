@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+pub mod archive;
 pub mod error;
 pub mod install;
 pub mod release;
