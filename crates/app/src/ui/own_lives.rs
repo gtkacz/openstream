@@ -11,7 +11,7 @@ use super::state::UiState;
 use crate::commands::RoomCommand;
 use crate::presets;
 
-/// Draws the own-lives panel: share buttons plus one row group per own live, pushing
+/// Draws the own-lives panel: share and stop buttons plus one row group per own live, pushing
 /// `Share`/`StopLive`/`SetPresets` commands for user edits.
 pub fn draw(
     ui: &mut egui::Ui,
@@ -44,6 +44,18 @@ pub fn draw(
                         kind: SourceKind::Window,
                         source: None,
                     });
+                }
+                let can_stop = !snapshot.own_lives.is_empty();
+                if ui
+                    .add_enabled(can_stop, egui::Button::new("Stop sharing"))
+                    .clicked()
+                {
+                    commands.extend(
+                        snapshot
+                            .own_lives
+                            .iter()
+                            .map(|live| RoomCommand::StopLive(live.info.id)),
+                    );
                 }
                 if state.share_pending {
                     ui.weak("starting the share");
