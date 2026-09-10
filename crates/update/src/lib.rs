@@ -7,9 +7,11 @@
 use std::time::Duration;
 
 pub mod error;
+pub mod install;
 pub mod release;
 
 pub use error::UpdateError;
+pub use install::{Install, cleanup_stale};
 pub use release::{Release, Version};
 
 /// The releases of the renamed repository. GitHub redirects the old name here, and would redirect
