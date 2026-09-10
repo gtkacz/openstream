@@ -145,7 +145,14 @@ impl Room {
             .accept(iroh_gossip::ALPN, gossip.clone())
             .spawn();
 
-        let bootstrap_ids: Vec<EndpointId> = bootstrap.iter().map(|addr| addr.id).collect();
+        // Gossip ignores a bootstrap peer equal to itself, so waiting for a neighbour that our own
+        // id was meant to supply can only end in a timeout. A ticket naming nobody else is a room
+        // of one, which is what `subscribe` with an empty bootstrap opens.
+        let bootstrap_ids: Vec<EndpointId> = bootstrap
+            .iter()
+            .map(|addr| addr.id)
+            .filter(|id| *id != me)
+            .collect();
         let (sender, receiver) = gossip::join(
             &gossip,
             TopicId::from_bytes(topic),
@@ -258,6 +265,31 @@ impl Room {
     /// A ticket listing this participant as bootstrap, so anyone online can invite.
     pub fn ticket(&self) -> RoomTicket {
         RoomTicket::new(self.topic, vec![self.endpoint.addr()])
+    }
+
+    /// A ticket for this participant's own way back in, for a process that is about to restart:
+    /// the topic plus every *other* current member. `ticket()` is no use here, because it names
+    /// this node, and a node cannot bootstrap through itself.
+    ///
+    /// Each member is named with the addresses the endpoint currently holds for it, since with
+    /// relays disabled an id on its own resolves to nothing. Alone in the room there is nobody to
+    /// bootstrap through and the ticket falls back to `ticket()`, which keeps the topic and still
+    /// encodes: the ticket format has no reading for an empty bootstrap list.
+    pub async fn rejoin_ticket(&self) -> RoomTicket {
+        let members: Vec<PublicKey> = lock(&self.membership).members().map(|m| m.id).collect();
+        let mut bootstrap = Vec::with_capacity(members.len());
+        for id in members {
+            bootstrap.push(match self.endpoint.remote_info(id).await {
+                Some(info) => {
+                    EndpointAddr::from_parts(id, info.into_addrs().map(|a| a.into_addr()))
+                }
+                None => EndpointAddr::from(id),
+            });
+        }
+        if bootstrap.is_empty() {
+            return self.ticket();
+        }
+        RoomTicket::new(self.topic, bootstrap)
     }
 
     /// Waits for relay registration so the ticket carries a relay address. Always bounded, because

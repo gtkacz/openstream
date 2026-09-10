@@ -675,11 +675,16 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::UpdateReady(Ok(())) => {
                 if let Some(install) = &self.install {
+                    // Taken here rather than kept on the view: it asks the endpoint what it knows
+                    // about each member, which is too much for a redraw and is only ever needed
+                    // at this one moment, with the room still open.
                     let ticket = match &self.phase {
-                        Phase::Room(view) => Some(view.ticket.as_str()),
+                        Phase::Room(view) => {
+                            Some(self.runtime.block_on(view.room.rejoin_ticket()).to_string())
+                        }
                         Phase::Start => None,
                     };
-                    self.relaunch = Some(Relaunch::new(install, ticket, &self.args));
+                    self.relaunch = Some(Relaunch::new(install, ticket.as_deref(), &self.args));
                 }
                 event_loop.exit();
             }
