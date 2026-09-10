@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use brp_room::Room;
+use brp_update::{Install, Release};
 use iroh::SecretKey;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
@@ -22,6 +23,7 @@ use crate::cli::WindowArgs;
 use crate::commands::{RoomCommand, WindowCommand};
 use crate::launch::{self, Intent, Launch};
 use crate::popouts::PopOuts;
+use crate::relaunch::Relaunch;
 use crate::render::GpuContext;
 use crate::render::grid::{self, PixelRect};
 use crate::render::surface::WindowSurface;
@@ -33,6 +35,7 @@ use crate::ui::applications::{self as applications_ui, PickerOutcome};
 use crate::ui::settings::{self as settings_ui, SettingsDialog};
 use crate::ui::start::{self, StartAction, StartState};
 use crate::ui::state::{UiState, live_title};
+use crate::ui::update::{PROGRESS_STEP_BYTES, UpdateState};
 use crate::ui::{self, UiOutput, popout};
 
 /// Initial inner size of the main window and of every pop-out, in physical pixels.
@@ -51,6 +54,12 @@ pub enum AppEvent {
     ShareFinished(Result<(), String>),
     /// The open task finished: the room to show, or the error for the start screen.
     RoomOpened(Result<Arc<Room>, String>),
+    /// The launch check found a newer release.
+    UpdateAvailable(Release),
+    /// Bytes of the release archive received so far, throttled by the download task.
+    UpdateProgress { received: u64, total: Option<u64> },
+    /// The download and swap finished: relaunch, or the error to show.
+    UpdateReady(Result<(), String>),
 }
 
 /// What the window shows: the start screen, or a room.
@@ -75,6 +84,8 @@ pub struct Shutdown {
     pub tasks: Vec<JoinHandle<()>>,
     /// Awaited, never aborted: a room it produces after the window closed must still be left.
     pub pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
+    /// The updated binary to start once the room has been left.
+    pub relaunch: Option<Relaunch>,
 }
 
 /// The winit `ApplicationHandler` for the participant windows: owns the phase, the UI state
@@ -95,6 +106,11 @@ pub struct App {
     /// The intent an open in flight was started with; a join remembers the ticket that got us in,
     /// a create remembers the room's own ticket.
     pending_intent: Option<Intent>,
+    /// Where this binary runs from, captured before any swap; `None` when it could not be
+    /// determined, in which case updates are noticed but never applied.
+    install: Option<Install>,
+    update: UpdateState,
+    relaunch: Option<Relaunch>,
     /// The earliest instant any window's egui asked for its next frame; `about_to_wait` sleeps
     /// until then instead of forever.
     next_repaint: Option<Instant>,
@@ -109,6 +125,9 @@ pub struct App {
 impl App {
     /// An `intent` from the command line opens the room at once behind the connecting start
     /// screen; `None` waits for the user.
+    // One parameter per thing the window is built from; a struct would be built and unpacked in
+    // one place.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         runtime: Handle,
         proxy: EventLoopProxy<AppEvent>,
@@ -117,6 +136,7 @@ impl App {
         nickname: String,
         intent: Option<Intent>,
         store: SettingsStore,
+        install: Option<Install>,
     ) -> Self {
         let mut app = Self {
             runtime,
@@ -136,6 +156,9 @@ impl App {
             store,
             settings_dialog: SettingsDialog::default(),
             pending_intent: None,
+            update: UpdateState::new(install.as_ref().is_some_and(Install::is_release_layout)),
+            install,
+            relaunch: None,
         };
         if let Some(message) = &app.store.load_error {
             app.start.error = format!("settings not loaded, defaults in use: {message}");
@@ -159,6 +182,7 @@ impl App {
             room,
             tasks,
             pending_open: self.pending_open,
+            relaunch: self.relaunch,
         }
     }
 
@@ -187,6 +211,38 @@ impl App {
             let _ = done.send_event(AppEvent::RoomOpened(outcome.clone()));
             outcome
         }));
+    }
+
+    /// Downloads and swaps in the release the check found, reporting progress and the outcome
+    /// through events. The relaunch arguments are decided when the outcome arrives, not now, so a
+    /// room opened during the download is the one rejoined.
+    fn start_update(&mut self) {
+        let Some(release) = self.update.start() else {
+            return;
+        };
+        let Some(install) = self.install.clone() else {
+            return;
+        };
+        let progress_events = self.proxy.clone();
+        let done = self.proxy.clone();
+        self.runtime.spawn(async move {
+            let mut last_reported = 0u64;
+            let progress = move |received: u64, total: Option<u64>| {
+                let step = received - last_reported >= PROGRESS_STEP_BYTES;
+                if step || Some(received) == total {
+                    last_reported = received;
+                    let _ =
+                        progress_events.send_event(AppEvent::UpdateProgress { received, total });
+                }
+            };
+            let outcome = async {
+                let staged = brp_update::download(&release, &install, progress).await?;
+                brp_update::apply(staged, &install)
+            }
+            .await
+            .map_err(|error| error.to_string());
+            let _ = done.send_event(AppEvent::UpdateReady(outcome));
+        });
     }
 
     /// Persists what a successful open teaches us: the ticket to list under recent rooms, and the
@@ -283,10 +339,18 @@ impl App {
                         &mut self.start,
                         &self.store.settings.recent_rooms,
                         now,
+                        &self.update,
                     );
                 }
                 Phase::Room(view) => {
-                    output = ui::draw(root, &view.snapshot, &view.ticket, &mut self.state, &popped);
+                    output = ui::draw(
+                        root,
+                        &view.snapshot,
+                        &view.ticket,
+                        &mut self.state,
+                        &popped,
+                        &self.update,
+                    );
                 }
             }
             // egui may run this closure twice in a pass; a `None` from the second run must not
@@ -319,6 +383,9 @@ impl App {
             && let Some(intent) = self.start.submit(action)
         {
             self.open(intent);
+        }
+        if start_action == Some(StartAction::Update) || output.update_clicked {
+            self.start_update();
         }
         if let Phase::Room(view) = &mut self.phase
             && had_commands
@@ -574,7 +641,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.main = Some(main);
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, event: AppEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::RoomOpened(Ok(room)) => {
                 self.pending_open = None;
@@ -599,6 +666,25 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Err(message) = outcome {
                     self.state.status = format!("share failed: {message}");
                 }
+            }
+            AppEvent::UpdateAvailable(release) => {
+                self.update.available = Some(release);
+            }
+            AppEvent::UpdateProgress { received, total } => {
+                self.update.progress(received, total);
+            }
+            AppEvent::UpdateReady(Ok(())) => {
+                if let Some(install) = &self.install {
+                    let ticket = match &self.phase {
+                        Phase::Room(view) => Some(view.ticket.as_str()),
+                        Phase::Start => None,
+                    };
+                    self.relaunch = Some(Relaunch::new(install, ticket, &self.args));
+                }
+                event_loop.exit();
+            }
+            AppEvent::UpdateReady(Err(message)) => {
+                self.update.failed(message);
             }
             AppEvent::RoomChanged | AppEvent::NewFrame | AppEvent::Tick => {}
         }

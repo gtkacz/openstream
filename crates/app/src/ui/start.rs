@@ -4,6 +4,7 @@ use std::str::FromStr;
 
 use brp_proto::RoomTicket;
 
+use super::update::{self, UpdateState};
 use crate::launch::Intent;
 use crate::settings::RecentRoom;
 
@@ -13,6 +14,7 @@ pub enum StartAction {
     Create,
     Join,
     OpenSettings,
+    Update,
 }
 
 /// The form's fields, whether an open is in flight, and the last error to show.
@@ -37,7 +39,7 @@ impl StartState {
     /// Turns a click into an intent, or refuses it: nothing while an open is in flight, and a join
     /// needs a ticket that parses. On success the screen is marked connecting.
     pub fn submit(&mut self, action: StartAction) -> Option<Intent> {
-        if action == StartAction::OpenSettings {
+        if matches!(action, StartAction::OpenSettings | StartAction::Update) {
             return None;
         }
         if self.connecting {
@@ -53,7 +55,7 @@ impl StartState {
                 }
             },
             // Returned above before this match is reached.
-            StartAction::OpenSettings => unreachable!(),
+            StartAction::OpenSettings | StartAction::Update => unreachable!(),
         };
         self.error.clear();
         self.connecting = true;
@@ -106,6 +108,7 @@ pub fn draw(
     state: &mut StartState,
     recent: &[RecentRoom],
     now_unix: u64,
+    update_state: &UpdateState,
 ) -> Option<StartAction> {
     let mut action = None;
     egui::CentralPanel::default().show(ui, |ui| {
@@ -117,6 +120,10 @@ pub fn draw(
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() * 0.2);
             ui.heading("brp");
+            ui.add_space(8.0);
+            if update::draw(ui, update_state) {
+                action = Some(StartAction::Update);
+            }
             ui.add_space(16.0);
             ui.horizontal(|ui| {
                 ui.label("Nickname");
@@ -226,9 +233,10 @@ mod tests {
     }
 
     #[test]
-    fn open_settings_is_never_an_intent_and_leaves_the_form_alone() {
+    fn open_settings_and_update_are_never_intents_and_leave_the_form_alone() {
         let mut state = StartState::new("alice".into());
         assert_eq!(state.submit(StartAction::OpenSettings), None);
+        assert_eq!(state.submit(StartAction::Update), None);
         assert!(!state.connecting);
     }
 

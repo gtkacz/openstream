@@ -2,11 +2,13 @@
 //! `brp join` open a room at once. Owns the room's lifetime around the winit loop and leaves it
 //! in an orderly fashion when the window closes.
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use brp_proto::constants::STATS_LOG_INTERVAL;
+use brp_update::{Install, Version};
 use tokio::runtime::Runtime;
-use winit::event_loop::EventLoop;
+use winit::event_loop::{EventLoop, EventLoopProxy};
 
 use crate::cli::WindowArgs;
 use crate::error::AppError;
@@ -22,6 +24,16 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
     let launch = Launch::from_settings(&store.settings, &args)?;
     let secret = identity::load_or_create()?;
     let nickname = launch::default_nickname(&launch, &secret);
+    let install = match Install::current() {
+        Ok(install) => {
+            brp_update::cleanup_stale(&install);
+            Some(install)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "install path unknown; updates can be noticed but not applied");
+            None
+        }
+    };
 
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
@@ -43,6 +55,10 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
         }
     });
 
+    if store.settings.check_updates {
+        spawn_update_check(runtime, proxy.clone());
+    }
+
     let mut app = App::new(
         runtime.handle().clone(),
         proxy,
@@ -51,6 +67,7 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
         nickname,
         intent,
         store,
+        install,
     );
     let outcome = event_loop
         .run_app(&mut app)
@@ -80,5 +97,29 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
             Err(_) => tracing::warn!("room still referenced at exit; skipping the orderly leave"),
         }
     }
+    if let Some(relaunch) = shutdown.relaunch {
+        relaunch.spawn();
+    }
     outcome
+}
+
+/// Asks GitHub once whether a newer release exists. Offline is normal, so a failure is a log
+/// line and nothing in the window.
+fn spawn_update_check(runtime: &Runtime, proxy: EventLoopProxy<AppEvent>) {
+    let current = match Version::from_str(env!("CARGO_PKG_VERSION")) {
+        Ok(current) => current,
+        Err(error) => {
+            tracing::warn!(%error, "not checking for updates: this build's version is not a release version");
+            return;
+        }
+    };
+    runtime.spawn(async move {
+        match brp_update::check(current).await {
+            Ok(Some(release)) => {
+                let _ = proxy.send_event(AppEvent::UpdateAvailable(release));
+            }
+            Ok(None) => tracing::debug!("this is the latest release"),
+            Err(error) => tracing::warn!(%error, "update check failed"),
+        }
+    });
 }

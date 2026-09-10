@@ -3,11 +3,14 @@
 use brp_room::RoomSnapshot;
 
 use super::state::UiState;
+use super::update::{self, UpdateState};
 use crate::commands::RoomCommand;
 
 /// Draws the bottom status bar. The ticket copy button is applied directly to the clipboard
 /// rather than queued as a `RoomCommand`; the master mute toggle emits `SetMasterMute`; the
-/// Settings button sets `open_settings`.
+/// Settings button sets `open_settings`; the Update button sets `update_clicked`.
+// One parameter per thing the bar shows; a struct would be built and unpacked in one place.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
@@ -15,6 +18,8 @@ pub fn draw(
     state: &UiState,
     commands: &mut Vec<RoomCommand>,
     open_settings: &mut bool,
+    update_state: &UpdateState,
+    update_clicked: &mut bool,
 ) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -46,6 +51,12 @@ pub fn draw(
             ui.separator();
             if ui.button("Settings").clicked() {
                 *open_settings = true;
+            }
+            if update_state.available.is_some() {
+                ui.separator();
+                if update::draw(ui, update_state) {
+                    *update_clicked = true;
+                }
             }
             if let Some(error) = &snapshot.audio_output_error {
                 ui.separator();

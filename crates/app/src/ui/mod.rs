@@ -29,6 +29,8 @@ pub struct UiOutput {
     pub window_commands: Vec<WindowCommand>,
     /// The status bar's Settings button was clicked.
     pub open_settings: bool,
+    /// The status bar's Update button was clicked.
+    pub update_clicked: bool,
     /// Where the video renderer draws each watched live, in egui points.
     pub tile_rects: Vec<(TileKey, egui::Rect)>,
 }
@@ -49,10 +51,12 @@ pub fn draw(
     ticket: &str,
     state: &mut UiState,
     popped: &HashSet<TileKey>,
+    update_state: &update::UpdateState,
 ) -> UiOutput {
     let mut commands = Vec::new();
     let mut window_commands = Vec::new();
     let mut open_settings = false;
+    let mut update_clicked = false;
     status::draw(
         ui,
         snapshot,
@@ -60,6 +64,8 @@ pub fn draw(
         state,
         &mut commands,
         &mut open_settings,
+        update_state,
+        &mut update_clicked,
     );
     own_lives::draw(ui, snapshot, state, &mut commands);
     members::draw(ui, snapshot, state, &mut commands);
@@ -76,6 +82,7 @@ pub fn draw(
         commands,
         window_commands,
         open_settings,
+        update_clicked,
         tile_rects,
     }
 }
