@@ -25,3 +25,6 @@ rustc-ice-*.txt
 #.idea/
 .vscode/
 .repowise/
+
+# Claude Code worktrees live inside the checkout
+.claude/worktrees/
