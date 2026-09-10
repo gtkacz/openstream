@@ -70,6 +70,8 @@ mod linux {
             match c {
                 '"' | '`' | '$' => quoted.push_str("\\\\"),
                 '\\' => quoted.push_str("\\\\\\"),
+                // The field-code rule reserves `%`, so a literal one is written `%%`.
+                '%' => quoted.push('%'),
                 _ => {}
             }
             quoted.push(c);
@@ -142,10 +144,14 @@ mod linux {
 
         #[test]
         fn the_exec_path_is_quoted_and_escaped() {
-            let entry = desktop_entry(Path::new("/opt/my apps/brp$1"));
-            assert!(
-                entry.contains("\nExec=\"/opt/my apps/brp\\\\$1\" join %u\n"),
-                "{entry}"
+            let entry = desktop_entry(Path::new(r#"/opt/my apps/a"b`c$d\e%f/brp"#));
+            let exec = entry
+                .lines()
+                .find(|line| line.starts_with("Exec="))
+                .unwrap_or_else(|| panic!("no Exec line in {entry}"));
+            assert_eq!(
+                exec,
+                r#"Exec="/opt/my apps/a\\"b\\`c\\$d\\\\e%%f/brp" join %u"#
             );
         }
 
@@ -296,6 +302,16 @@ mod windows {
                 .expect("command value");
             assert_eq!(command.data, r#""C:\Program Files\brp\brp.exe" join "%1""#);
             assert!(values.iter().any(|v| v.name == Some("URL Protocol")));
+            let class = values
+                .iter()
+                .find(|v| v.subkey.is_empty() && v.name.is_none())
+                .expect("class default value");
+            assert_eq!(class.data, "URL:brp");
+            let icon = values
+                .iter()
+                .find(|v| v.subkey == "DefaultIcon")
+                .expect("DefaultIcon value");
+            assert_eq!(icon.data, r#""C:\Program Files\brp\brp.exe",0"#);
         }
     }
 }
