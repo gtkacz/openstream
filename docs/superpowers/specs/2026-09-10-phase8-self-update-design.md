@@ -233,3 +233,12 @@ README: the Usage section describes the notice, the button, the rejoin, and the 
 - reqwest 0.13 `redirect::Policy::none()` and `Response::chunk` for streaming without the `stream` adapter.
 - Windows `MoveFileExW` semantics, which Rust's `std::fs::rename` uses: an open executable or DLL can be renamed within its volume; it cannot be deleted or overwritten while mapped.
 - `tar` and `flate2` for the Linux tarball; `zip` for the Windows archive.
+
+## 15. Amendments from the implementation run
+
+- **Repository name and redirect handling (3, 5.1, 12).** The repository is now `gtkacz/openstream`; `RELEASES_URL` names it. `check` is a HEAD request that follows redirects and reads the final URL, because the old name redirects to the new one before the latest-release page redirects to the tag, and a future rename would add another hop. `UpdateError::NoRedirect` does not exist: a bad final status is `Http`, a final URL without a tag is `Version`.
+- **Archive crates on both platforms (5.1).** `tar`, `flate2`, and `zip` are unconditional so the Windows extractor is tested by the Linux suite; `extract` picks the format by `cfg`. Zip entry names are normalised from backslashes before sanitisation.
+- **Constants (12).** `ASSET_SUFFIX` is `PLATFORM` plus `ARCHIVE_EXTENSION`, since the top-level directory `brp-<version>-<PLATFORM>` is needed separately. `UPDATE_CHECK_TIMEOUT` is also the connect and read timeout of the download.
+- **Progress throttling (5.4).** `ui::update::PROGRESS_STEP_BYTES` (1 MB) bounds `UpdateProgress` events; `BYTES_PER_MB` is the display unit.
+- **Relaunch (5.4).** `Relaunch` lives in `app::relaunch` and takes the ticket as `Option<&str>`, so `window::Phase` stays private and the argument builder is a pure function.
+- **Settings checkbox copy (6).** `Check for updates at launch (from the next launch)`.

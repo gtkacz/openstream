@@ -66,6 +66,16 @@ apply when the next room opens. The start screen lists recent rooms with a Join
 button. Command line flags override the saved settings for that launch and are
 not saved.
 
+At launch brp asks GitHub for the latest release and, when it is newer, shows
+"vX.Y.Z is available" on the start screen and in the status bar with an
+"Update and restart" button. The button downloads the release for this
+platform, checks it against the release's `SHA256SUMS`, replaces every file
+of the directory brp runs from, and relaunches: from a room, straight back into
+that room; from the start screen, to the start screen. The check can be turned
+off in Settings and applies from the next launch. A build from source sees the
+notice with a link and no button, since only an extracted release directory is
+replaced.
+
 In the window, the left panel lists members with a direct-or-relayed badge and
 their lives; tick a live to watch it and pick its preset, and hover a tile for
 the preset selector and the stats overlay. The bottom panel lists your own
@@ -126,15 +136,18 @@ The Linux release tarball carries the four FFmpeg libraries the binary loads
 (`libavcodec.so.62`, `libavutil.so.60`, `libswscale.so.9`, `libswresample.so.6`)
 from the same pinned BtbN LGPL shared build the Windows zip uses, with their
 licence. The binary finds them beside itself wherever the extracted directory
-sits, so no FFmpeg needs to be installed. The tarball is built on Fedora 44 and
-links its glibc, so it runs on distributions with glibc 2.43 or newer; PipeWire,
-the desktop portal, libva, and the graphics stack come from the system as
-described above. VAAPI encoding and decoding need libva installed; without it
-brp skips VAAPI and continues with the other encoders and software decoding.
-Elsewhere, build from source, either against the distribution's FFmpeg as shown
-or with `FFMPEG_DIR` pointing at an extracted BtbN build. CI builds and tests the Linux binary against that
-same BtbN build, so the FFmpeg under test is the one shipped. Every push also
-uploads `brp-linux-x86_64`, the same staged directory, in the run's artifacts.
+sits, so no FFmpeg needs to be installed. An in-app update replaces every file
+of that directory in place, keeping the previous ones as `.old` until the next
+launch removes them. The tarball is built on Fedora 44 and links its glibc, so
+it runs on distributions with glibc 2.43 or newer; PipeWire, the desktop
+portal, libva, and the graphics stack come from the system as described above.
+VAAPI encoding and decoding need libva installed; without it brp skips VAAPI
+and continues with the other encoders and software decoding. Elsewhere, build
+from source, either against the distribution's FFmpeg as shown or with
+`FFMPEG_DIR` pointing at an extracted BtbN build. CI builds and tests the Linux
+binary against that same BtbN build, so the FFmpeg under test is the one
+shipped. Every push also uploads `brp-linux-x86_64`, the same staged directory,
+in the run's artifacts.
 
 ## Windows
 
@@ -151,7 +164,10 @@ the same Windows 10 version 2004 minimum already required above. Every push
 builds the Windows binary on GitHub Actions: the `windows` job uploads
 `brp-windows-x86_64`, a zip with `brp.exe`, the four
 FFmpeg DLLs it links, and both licences. Download it from the run's artifacts,
-extract, and run `brp.exe` from that directory. Tagged releases publish a zip
+extract, and run `brp.exe` from that directory. An in-app update replaces the
+files of that directory in place; the running `brp.exe` and its DLLs are
+renamed to `.old` and removed at the launch after the next, since Windows will
+not delete a file a process still maps. Tagged releases publish a zip
 with the same files under a versioned top-level directory and a Linux tarball
 on the GitHub Releases page, with a `SHA256SUMS` file.
 
@@ -187,12 +203,19 @@ accepts connections only from identities in its current membership set. Media
 is intended to flow peer-to-peer; a relayed connection works but may not
 sustain high bitrates, and the members panel shows direct versus relayed per
 member. Settings are saved beside the identity key in `brp/settings.toml`:
-nickname, relay choice, frame rate ceiling, audio output device, and the
-tickets of recent rooms. A stored ticket contains the addresses of the peer
-that issued it, so treat the file as you would the tickets themselves. The log
-beside them records nicknames, short public ids, and connection events, and no
-keys or tickets; a crash dump, unlike the log, contains process memory, so
-treat one as you would a screenshot of the session.
+nickname, relay choice, frame rate ceiling, audio output device, the tickets of
+recent rooms, and whether to check for updates. A stored ticket contains the
+addresses of the peer that issued it, so treat the file as you would the
+tickets themselves. The log beside them records nicknames, short public ids, and
+connection events, and no keys or tickets; a crash dump, unlike the log,
+contains process memory, so treat one as you would a screenshot of the session.
+
+The launch update check is one HTTPS request to github.com carrying only a
+`brp/<version>` user agent; it tells GitHub that a brp of that version started
+from your address, and the Settings checkbox turns it off. When an update
+relaunches brp into a room, the ticket is passed on the new process's command
+line, exactly as `brp join <ticket>` does, and command lines are readable by
+other users of the same machine on most systems.
 
 ## Diagnostics
 
@@ -226,6 +249,7 @@ under `LocalDumps` undoes it.
 | `brp-net` | iroh endpoint, QUIC media client/server, connection policy, and stream framing |
 | `brp-room` | Room membership over signed gossip presence, the live registry with lazy encoders, watches, and snapshots |
 | `brp-pipeline` | Bounded publisher/viewer pipelines, fan-out, reordering, frame pacing, and latest-frame slots |
+| `brp-update` | The release check against GitHub, the verified download, archive extraction, and the in-place swap with rollback |
 | `brp` | CLI, identity, the winit event loop with the start screen and room view, the wgpu tile renderer, and the egui panels |
 
 Platform-specific capture and codec device selection sit behind crate
@@ -239,6 +263,7 @@ Run the hardware-independent test suite:
 cargo test --workspace
 cargo test -p brp-room              # two rooms in one process, fake codecs
 cargo test -p brp-capture           # fallback driver, synthetic source
+cargo test -p brp-update            # versions, checksums, archives, the swap and its rollback
 cargo test -p brp                   # grid, preset, rate, picker, and start-screen state
 cargo test -p brp-pipeline          # slot, fan-out, reorder, pacing
 ```
@@ -305,6 +330,9 @@ the workflow so it cannot start another release.
    manual hardware checks: share every application except brp, which stays the
    default, or only the applications you select, stored by executable name so
    the choice survives restarts.
+7. **Self-update** — done pending the first release pair: the launch check,
+   the in-app update with checksum verification and rollback, and the relaunch
+   into the same room.
 
 Backlog, unordered: macOS, zero-copy GPU paths on both OSes, lossless and
 4:4:4 presets, congestion-driven preset switching, self-hosted relay
