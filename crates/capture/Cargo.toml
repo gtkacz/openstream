@@ -15,6 +15,7 @@ pipewire.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
+windows.workspace = true
 windows-capture.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 

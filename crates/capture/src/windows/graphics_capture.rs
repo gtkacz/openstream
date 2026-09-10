@@ -4,6 +4,8 @@ use std::sync::PoisonError;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
+use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
+use windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus;
 use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
@@ -73,10 +75,26 @@ fn cursor() -> CursorCaptureSettings {
 }
 
 fn border() -> DrawBorderSettings {
-    match GraphicsCaptureApi::is_border_settings_supported() {
-        Ok(true) => DrawBorderSettings::WithoutBorder,
-        _ => DrawBorderSettings::Default,
+    if !matches!(GraphicsCaptureApi::is_border_settings_supported(), Ok(true)) {
+        return DrawBorderSettings::Default;
     }
+    match borderless_access() {
+        Ok(AppCapabilityAccessStatus::Allowed) => DrawBorderSettings::WithoutBorder,
+        Ok(status) => {
+            tracing::warn!(?status, "borderless access refused; keeping the border");
+            DrawBorderSettings::Default
+        }
+        Err(error) => {
+            tracing::warn!(%error, "borderless access request failed; keeping the border");
+            DrawBorderSettings::Default
+        }
+    }
+}
+
+// Windows honours `IsBorderRequired = false` only after the process has asked for borderless
+// access. An unpackaged app is granted it without a prompt, but the request must still be made.
+fn borderless_access() -> windows::core::Result<AppCapabilityAccessStatus> {
+    GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless)?.join()
 }
 
 fn update_interval(target_fps: u32) -> MinimumUpdateIntervalSettings {
