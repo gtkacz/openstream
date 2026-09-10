@@ -485,9 +485,11 @@ impl LiveSource for LiveRegistry {
             match self.encoders.open(source, format, &state.preset) {
                 Ok(parts) => {
                     let slot = fan.attach();
-                    // Presets at the source rate pass every frame; only slower presets are paced.
-                    let pacer =
-                        (state.preset.fps < source.fps).then(|| Pacer::new(state.preset.fps));
+                    // Always paced, even at the source rate: below the target rate the pacer skips
+                    // frames to hold the preset's fps; at or above it every frame still clears the
+                    // due-time check, so admission is unaffected, but sustained overload can still
+                    // back the rate off (see `Pacer::record_duration`).
+                    let pacer = Some(Pacer::new(state.preset.fps));
                     let publisher = Publisher::start(
                         live_id,
                         preset_id,

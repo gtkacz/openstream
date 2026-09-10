@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use brp_proto::{CodecParams, EncodedFrame};
 use ffmpeg_sys_next as ff;
@@ -18,6 +19,36 @@ enum InputLayout {
     I420,
 }
 
+/// How many `libsvtav1` instances are currently open in this process. Guards the count so a
+/// failed or dropped encoder always releases its slot, including on an early `?` return from
+/// `open`.
+static ACTIVE_SOFTWARE_ENCODERS: AtomicUsize = AtomicUsize::new(0);
+
+struct SoftwareEncoderSlot;
+
+impl SoftwareEncoderSlot {
+    fn acquire() -> Self {
+        ACTIVE_SOFTWARE_ENCODERS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for SoftwareEncoderSlot {
+    fn drop(&mut self) {
+        ACTIVE_SOFTWARE_ENCODERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Logical processors to hand SVT-AV1's `lp` parameter: the machine's parallelism split across
+/// every currently active software encoder, so several subscribed presets each get a bounded
+/// share instead of each independently claiming every core.
+fn software_encoder_lp(active_count: usize) -> usize {
+    let cpus = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    (cpus / active_count.max(1)).max(1)
+}
+
 pub struct FfmpegEncoder {
     ctx: CodecContext,
     frame: Frame,
@@ -28,6 +59,9 @@ pub struct FfmpegEncoder {
     next_seq: u64,
     next_pts: i64,
     in_flight: VecDeque<(i64, u64)>,
+    // Held only for `libsvtav1`; `None` for a hardware encoder. Releases this encoder's share of
+    // `ACTIVE_SOFTWARE_ENCODERS` when dropped.
+    _software_slot: Option<SoftwareEncoderSlot>,
 }
 
 impl FfmpegEncoder {
@@ -43,6 +77,10 @@ impl FfmpegEncoder {
         } else {
             InputLayout::Nv12
         };
+        // Acquired before the config is built so the probed active count already includes this
+        // instance; dropping `software_slot` on any later `?` failure releases it again.
+        let software_slot = (name == "libsvtav1").then(SoftwareEncoderSlot::acquire);
+        let software_lp = software_encoder_lp(ACTIVE_SOFTWARE_ENCODERS.load(Ordering::Relaxed));
         let mut ctx = CodecContext::alloc(codec)?;
         unsafe {
             let c = &mut *ctx.0;
@@ -70,7 +108,7 @@ impl FfmpegEncoder {
                 c.rc_max_rate = c.bit_rate;
             }
         }
-        apply_low_latency_options(name, &ctx)?;
+        apply_low_latency_options(name, &ctx, software_lp)?;
         ctx.open(codec)?;
         let frame = Frame::new()?;
         unsafe {
@@ -90,6 +128,7 @@ impl FfmpegEncoder {
             next_seq: 0,
             next_pts: 0,
             in_flight: VecDeque::new(),
+            _software_slot: software_slot,
         })
     }
 
@@ -163,7 +202,11 @@ impl FfmpegEncoder {
     }
 }
 
-fn apply_low_latency_options(name: &str, ctx: &CodecContext) -> Result<(), CodecError> {
+fn apply_low_latency_options(
+    name: &str,
+    ctx: &CodecContext,
+    software_lp: usize,
+) -> Result<(), CodecError> {
     match name {
         "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
             set_opt(ctx, "preset", "p4")?;
@@ -191,7 +234,13 @@ fn apply_low_latency_options(name: &str, ctx: &CodecContext) -> Result<(), Codec
         }
         "libsvtav1" => {
             set_opt(ctx, "preset", "10")?;
-            set_opt(ctx, "svtav1-params", "rc=2:pred-struct=1:rtc=1")?;
+            // `lp` bounds SVT-AV1's own thread pool so several concurrently subscribed presets
+            // each get a share of the machine instead of every instance claiming every core.
+            set_opt(
+                ctx,
+                "svtav1-params",
+                &format!("rc=2:pred-struct=1:rtc=1:lp={software_lp}"),
+            )?;
         }
         _ => {}
     }
@@ -245,5 +294,29 @@ impl VideoEncoder for FfmpegEncoder {
         let mut output = Vec::with_capacity(1);
         self.drain(&mut output)?;
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::software_encoder_lp;
+
+    #[test]
+    fn a_single_active_encoder_gets_every_available_core() {
+        assert_eq!(
+            software_encoder_lp(1),
+            std::thread::available_parallelism().unwrap().get()
+        );
+    }
+
+    #[test]
+    fn several_active_encoders_split_the_cores_and_never_reach_zero() {
+        let cpus = std::thread::available_parallelism().unwrap().get();
+        assert_eq!(software_encoder_lp(2), (cpus / 2).max(1));
+        assert_eq!(
+            software_encoder_lp(cpus * 10),
+            1,
+            "always at least one logical processor"
+        );
     }
 }

@@ -26,6 +26,13 @@ pub const PROBE_ORDER: &[(&str, Codec)] = &[
     ("libsvtav1", Codec::Av1),
 ];
 
+/// True for the software encoder at the tail of [`PROBE_ORDER`], so the UI can explain to the
+/// user in plain language why an encoder is running on the CPU instead of the GPU. Detailed
+/// per-attempt failures for the hardware encoders that were tried first stay in the logs.
+pub fn is_software_encoder(name: &str) -> bool {
+    name == "libsvtav1"
+}
+
 pub fn open_encoder(cfg: &EncoderConfig) -> Result<Box<dyn VideoEncoder>, CodecError> {
     for &(name, _) in PROBE_ORDER.iter().filter(|(_, codec)| *codec == cfg.codec) {
         match open_named(name, cfg) {

@@ -157,6 +157,9 @@ fn encode_loop(
             data: &frame.data,
             capture_ts_us: frame.capture_ts_us,
         };
+        // Timed across conversion and encoding together: overload pacing reacts to the whole
+        // per-frame budget the pacer's admission rate is meant to protect, not just one stage.
+        let started = Instant::now();
         let raw = match converter.convert(&image) {
             Ok(raw) => raw,
             Err(error) => {
@@ -166,6 +169,9 @@ fn encode_loop(
         };
         match encoder.encode(&raw, force) {
             Ok(packets) => {
+                if let Some(pacer) = pacer.as_mut() {
+                    pacer.record_duration(started.elapsed().as_micros() as u64);
+                }
                 for packet in packets {
                     inner.stats.frames_encoded.fetch_add(1, Ordering::Relaxed);
                     inner
