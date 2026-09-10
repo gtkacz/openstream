@@ -25,7 +25,8 @@ use crate::membership::{Member, Membership};
 use crate::registry::ChangeNotify;
 use crate::snapshot::{WatchState, WatchView};
 
-/// What a tile renders from. Stable across reconnects of the same watch.
+/// What a tile renders from. Stable for the life of a watch: reconnects, preset switches, and
+/// audio carrier moves all keep feeding the handle the first `watch` returned.
 #[derive(Clone)]
 pub struct WatchHandle {
     pub slot: Arc<LatestSlot<RawFrame>>,
@@ -114,10 +115,6 @@ impl Watcher {
         if !lock(&self.membership).is_member(&publisher) {
             return Err(RoomError::UnknownMember(publisher));
         }
-        let handle = WatchHandle {
-            slot: LatestSlot::new(),
-            stats: Arc::new(ViewerStats::default()),
-        };
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let advertised = lock(&self.membership).get(&publisher).is_some_and(|m| {
             m.presence
@@ -125,8 +122,18 @@ impl Watcher {
                 .iter()
                 .any(|l| l.id == live_id && l.has_audio)
         });
-        let (task, audio) = {
+        let (task, audio, handle) = {
             let mut inner = lock(&self.inner);
+            // The window holds the handle from its first `watch` and is never told about a
+            // replacement, so a re-watch under the same key must keep feeding that handle.
+            let handle = inner
+                .watches
+                .get(&(publisher, live_id))
+                .map(|entry| entry.handle.clone())
+                .unwrap_or_else(|| WatchHandle {
+                    slot: LatestSlot::new(),
+                    stats: Arc::new(ViewerStats::default()),
+                });
             // Excludes the entry being replaced, so a preset switch on the carrier keeps its audio.
             let audio = wants_audio(
                 inner
@@ -157,6 +164,7 @@ impl Watcher {
                     generation,
                 },
                 audio,
+                handle,
             )
         };
         tokio::spawn(

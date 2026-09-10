@@ -679,3 +679,65 @@ async fn master_mute_and_a_broken_output_are_reported_in_the_snapshot() {
     assert!(a.snapshot().master_mute);
     a.leave().await;
 }
+
+/// The window keeps the handle its `watch` returned and never asks again. A carrier move
+/// re-watches the surviving live under the hood; if that re-watch fed a fresh handle, the tile
+/// would freeze on its last frame with nothing in the snapshot to say so.
+#[tokio::test]
+async fn a_carrier_move_keeps_feeding_the_handle_the_first_watch_returned() {
+    let a = Room::create(config("alice")).await.unwrap();
+    let (bob_cfg, _output) = config_with_output("bob");
+    let b = Room::join(bob_cfg, a.ticket()).await.unwrap();
+    wait_until("mutual presence", Duration::from_secs(5), || {
+        a.snapshot().members.len() == 1 && b.snapshot().members.len() == 1
+    })
+    .await;
+    let desk = a
+        .start_live(SourceKind::Monitor, None, "desk".into())
+        .await
+        .unwrap();
+    let game = a
+        .start_live(SourceKind::Window, None, "game".into())
+        .await
+        .unwrap();
+    wait_until("catalog with audio", Duration::from_secs(5), || {
+        let members = b.snapshot().members;
+        members[0].lives.len() == 2 && members[0].has_audio
+    })
+    .await;
+
+    b.watch(a.id(), desk, SOURCE_PRESET_ID).unwrap();
+    let handle = b.watch(a.id(), game, SOURCE_PRESET_ID).unwrap();
+    wait_until("game frames", Duration::from_secs(5), || {
+        handle.stats.frames_decoded.load(Ordering::Relaxed) >= 3
+    })
+    .await;
+
+    b.unwatch(a.id(), desk).unwrap();
+    wait_until(
+        "audio moved to the game tile",
+        Duration::from_secs(10),
+        || {
+            b.snapshot()
+                .watches
+                .iter()
+                .any(|w| w.live_id == game && w.audio && w.state == WatchState::Live)
+        },
+    )
+    .await;
+
+    let before = handle.stats.frames_decoded.load(Ordering::Relaxed);
+    let _ = handle.slot.try_take();
+    wait_until(
+        "the original handle still receives frames",
+        Duration::from_secs(5),
+        || {
+            handle.stats.frames_decoded.load(Ordering::Relaxed) > before
+                && handle.slot.try_take().is_some()
+        },
+    )
+    .await;
+
+    b.leave().await;
+    a.leave().await;
+}
