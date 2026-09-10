@@ -16,6 +16,7 @@ brp-audio = { path = "crates/audio" }
 brp-net = { path = "crates/net" }
 brp-pipeline = { path = "crates/pipeline" }
 brp-room = { path = "crates/room" }
+brp-update = { path = "crates/update" }
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.1"
 postcard = { version = "1.1", features = ["alloc"] }
@@ -58,3 +59,8 @@ windows-sys = { version = "0.61", features = [
 cpal = "0.18"
 libc = "0.2"
 wasapi = "0.24"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+sha2 = "0.11"
+tar = "0.4"
+flate2 = "1.1"
+zip = { version = "8", default-features = false, features = ["deflate"] }
