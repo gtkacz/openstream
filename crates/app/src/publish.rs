@@ -1,17 +1,17 @@
-use std::str::FromStr;
 use std::sync::Arc;
 
 use brp_audio::{CpalOutput, PlatformAudioCapture};
 use brp_capture::PlatformCapture;
 use brp_net::RelaySetting;
+use brp_proto::SourceKind;
 use brp_proto::constants::{RELAY_ONLINE_TIMEOUT, SOURCE_PRESET_ID, STATS_LOG_INTERVAL};
-use brp_proto::{RoomTicket, SourceKind};
 use brp_room::codecs::FfmpegCodecs;
 use brp_room::{Room, RoomConfig, RoomTimings};
 
 use crate::cli::PublishArgs;
 use crate::error::AppError;
 use crate::identity;
+use crate::link;
 
 pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     let relay = if args.no_relay {
@@ -41,7 +41,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         timings: RoomTimings::default(),
     };
     let room = match &args.ticket {
-        Some(ticket) => Room::join(config, RoomTicket::from_str(ticket)?).await?,
+        Some(ticket) => Room::join(config, link::parse_ticket(ticket)?).await?,
         None => Room::create(config).await?,
     };
 
@@ -86,9 +86,10 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         own.info.source_fps,
         own.presets.len()
     );
+    let ticket = room.ticket().to_string();
     println!(
-        "Ticket:\n{}\n\nShare it: brp watch <ticket>. Press Ctrl-C to stop.",
-        room.ticket()
+        "Ticket:\n{ticket}\n\nLink:\n{}\n\nShare either: brp join <ticket-or-link>. Press Ctrl-C to stop.",
+        link::share_link(&ticket)
     );
 
     let mut ticker = tokio::time::interval(STATS_LOG_INTERVAL);

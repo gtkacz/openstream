@@ -1,14 +1,15 @@
-//! Bottom status bar: ticket, member count, upload rate, identity, last notice.
+//! Bottom status bar: ticket and link, member count, upload rate, identity, last notice.
 
 use brp_room::RoomSnapshot;
 
 use super::state::UiState;
 use super::update::{self, UpdateState};
 use crate::commands::RoomCommand;
+use crate::link;
 
-/// Draws the bottom status bar. The ticket copy button is applied directly to the clipboard
-/// rather than queued as a `RoomCommand`; the master mute toggle emits `SetMasterMute`; the
-/// Settings button sets `open_settings`; the Update button sets `update_clicked`.
+/// Draws the bottom status bar. The two copy buttons write to the clipboard directly rather than
+/// queueing a `RoomCommand`; the master mute toggle emits `SetMasterMute`; the Settings button
+/// sets `open_settings`; the Update button sets `update_clicked`.
 // One parameter per thing the bar shows; a struct would be built and unpacked in one place.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
@@ -23,6 +24,9 @@ pub fn draw(
 ) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
+            if ui.button("Copy link").clicked() {
+                ui.ctx().copy_text(link::share_link(ticket));
+            }
             if ui.button("Copy ticket").clicked() {
                 ui.ctx().copy_text(ticket.to_string());
             }

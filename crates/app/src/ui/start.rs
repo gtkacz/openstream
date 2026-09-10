@@ -1,11 +1,8 @@
 //! The start screen: nickname and ticket entry with Create and Join, shown until a room is open.
 
-use std::str::FromStr;
-
-use brp_proto::RoomTicket;
-
 use super::update::{self, UpdateState};
 use crate::launch::Intent;
+use crate::link;
 use crate::settings::RecentRoom;
 
 /// Which button the user clicked.
@@ -47,7 +44,7 @@ impl StartState {
         }
         let intent = match action {
             StartAction::Create => Intent::Create,
-            StartAction::Join => match RoomTicket::from_str(self.ticket.trim()) {
+            StartAction::Join => match link::parse_ticket(&self.ticket) {
                 Ok(ticket) => Intent::Join(ticket),
                 Err(error) => {
                     self.error = format!("invalid ticket: {error}");
@@ -145,7 +142,7 @@ pub fn draw(
             ui.add_enabled(
                 !state.connecting,
                 egui::TextEdit::singleline(&mut state.ticket)
-                    .hint_text("paste a ticket")
+                    .hint_text("paste a ticket or link")
                     .desired_width(480.0),
             );
             let can_join = !state.connecting && !state.ticket.trim().is_empty();
@@ -188,6 +185,7 @@ pub fn draw(
 mod tests {
     use std::net::SocketAddr;
 
+    use brp_proto::RoomTicket;
     use iroh::{EndpointAddr, SecretKey};
 
     use super::*;
@@ -222,6 +220,23 @@ mod tests {
         state.ticket = format!("  {ticket}\n");
         assert_eq!(state.submit(StartAction::Join), Some(Intent::Join(ticket)));
         assert!(state.connecting);
+    }
+
+    #[test]
+    fn join_with_a_share_link_or_scheme_link_yields_the_join_intent() {
+        let ticket = valid_ticket();
+        for pasted in [
+            format!("https://gtkacz.github.io/openstream/join/#{ticket}"),
+            format!("brp://join/{ticket}"),
+        ] {
+            let mut state = StartState::new("alice".into());
+            state.ticket = pasted.clone();
+            assert_eq!(
+                state.submit(StartAction::Join),
+                Some(Intent::Join(ticket.clone())),
+                "{pasted}"
+            );
+        }
     }
 
     #[test]

@@ -1,12 +1,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 //! brp: peer-to-peer screen sharing.
-use std::str::FromStr;
-
 use brp_app::cli::{Cli, Command, WindowArgs};
 use brp_app::error::AppError;
 use brp_app::launch::Intent;
+use brp_app::link;
 use brp_app::{participant, publish};
-use brp_proto::RoomTicket;
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -30,7 +28,7 @@ fn main() -> ExitCode {
         Some(Command::Create(args)) => {
             participant::run(&runtime, Some(Intent::Create), args.window)
         }
-        Some(Command::Join(args)) => match RoomTicket::from_str(&args.ticket) {
+        Some(Command::Join(args)) => match link::parse_ticket(&args.ticket) {
             Ok(ticket) => participant::run(&runtime, Some(Intent::Join(ticket)), args.window),
             Err(error) => Err(AppError::Ticket(error)),
         },
