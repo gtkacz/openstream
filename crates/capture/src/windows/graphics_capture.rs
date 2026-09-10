@@ -23,11 +23,13 @@ use crate::frame::{CaptureSession, SourceInfo};
 type Control = CaptureControl<Handler, CaptureError>;
 
 /// Starts capturing `target`. `refresh_rate` is what the session reports as its frame rate;
-/// `target_fps` caps how often Graphics Capture wakes us where the OS supports that.
+/// `target_fps` caps how often Graphics Capture wakes us where the OS supports that. `border` is
+/// the answer from [`border`], taken once by the caller so it can also pick the capture order.
 pub(super) fn start(
     target: Target,
     target_fps: u32,
     refresh_rate: u32,
+    border: DrawBorderSettings,
     sink: SharedSink,
 ) -> Result<Box<dyn Started>, CaptureError> {
     let (first_tx, first_rx) = mpsc::channel();
@@ -37,8 +39,8 @@ pub(super) fn start(
         fps: refresh_rate,
     };
     let control = match target {
-        Target::Monitor(monitor) => run(monitor, target_fps, flags)?,
-        Target::Window(window) => run(window, target_fps, flags)?,
+        Target::Monitor(monitor) => run(monitor, target_fps, border, flags)?,
+        Target::Window(window) => run(window, target_fps, border, flags)?,
     };
     Ok(Box::new(GcStarted {
         control: Some(control),
@@ -46,14 +48,19 @@ pub(super) fn start(
     }))
 }
 
-fn run<T>(item: T, target_fps: u32, flags: HandlerFlags) -> Result<Control, CaptureError>
+fn run<T>(
+    item: T,
+    target_fps: u32,
+    border: DrawBorderSettings,
+    flags: HandlerFlags,
+) -> Result<Control, CaptureError>
 where
     T: TryInto<GraphicsCaptureItemType> + Send + 'static,
 {
     let settings = Settings::new(
         item,
         cursor(),
-        border(),
+        border,
         SecondaryWindowSettings::Default,
         update_interval(target_fps),
         DirtyRegionSettings::Default,
@@ -74,7 +81,9 @@ fn cursor() -> CursorCaptureSettings {
     }
 }
 
-fn border() -> DrawBorderSettings {
+/// `WithoutBorder` when this Windows can drop the yellow capture border, `Default` when it will
+/// draw one regardless: Windows 10 lacks the setting, and Windows 11 may refuse the access.
+pub(super) fn border() -> DrawBorderSettings {
     if !matches!(GraphicsCaptureApi::is_border_settings_supported(), Ok(true)) {
         return DrawBorderSettings::Default;
     }

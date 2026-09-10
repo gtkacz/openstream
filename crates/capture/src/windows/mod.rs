@@ -1,5 +1,5 @@
-//! Windows capture: Graphics Capture for monitors and windows, desktop duplication as the monitor
-//! fallback, and a source list for the in-app picker.
+//! Windows capture: Graphics Capture for monitors and windows, desktop duplication as the other
+//! monitor path, and a source list for the in-app picker.
 
 mod duplication;
 mod graphics_capture;
@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use brp_proto::constants::CAPTURE_FALLBACK_TIMEOUT;
 use brp_proto::{PixelFormat, SourceKind, monotonic_us};
+use windows_capture::settings::DrawBorderSettings;
 
 use crate::error::CaptureError;
 use crate::fallback::{Attempt, start_with_fallback};
@@ -63,19 +64,29 @@ fn start_blocking(
     let target = sources::resolve(request.kind, request.source)?;
     let refresh_rate = target.refresh_rate();
     let sink: SharedSink = Arc::new(Mutex::new(sink));
-    let primary = Attempt {
+    let border = graphics_capture::border();
+    let graphics = Attempt {
         name: "graphics capture",
         start: Box::new({
             let sink = sink.clone();
-            move || graphics_capture::start(target, request.target_fps, refresh_rate, sink)
+            move || graphics_capture::start(target, request.target_fps, refresh_rate, border, sink)
         }),
     };
-    let fallback = match target {
-        Target::Monitor(monitor) => Some(Attempt {
-            name: "desktop duplication",
-            start: Box::new(move || duplication::start(monitor, refresh_rate, sink)),
-        }),
-        Target::Window(_) => None,
+    let (primary, fallback) = match target {
+        Target::Monitor(monitor) => {
+            let duplication = Attempt {
+                name: "desktop duplication",
+                start: Box::new(move || duplication::start(monitor, refresh_rate, sink)),
+            };
+            // Where Graphics Capture would paint the yellow border around the shared monitor,
+            // duplication goes first: it draws nothing, at the cost of leaving the cursor out.
+            if border == DrawBorderSettings::WithoutBorder {
+                (graphics, Some(duplication))
+            } else {
+                (duplication, Some(graphics))
+            }
+        }
+        Target::Window(_) => (graphics, None),
     };
     let session = start_with_fallback(CAPTURE_FALLBACK_TIMEOUT, primary, fallback)?;
     tracing::info!(kind = ?request.kind, info = ?session.info(), "windows capture started");

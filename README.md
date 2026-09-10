@@ -140,10 +140,13 @@ uploads `brp-linux-x86_64`, the same staged directory, in the run's artifacts.
 
 Windows 10 version 2004 or later with a GPU that has an HEVC or H.264 encoder
 (NVIDIA, AMD, or Intel). The software AV1 fallback exists for recovery, not as
-a target. Monitor capture uses Windows Graphics Capture; a monitor that delivers
-no frame within two seconds, which happens with some exclusive-fullscreen
-games, is captured through desktop duplication instead. Window capture uses
-Graphics Capture only. Audio capture uses WASAPI process loopback, which needs
+a target. Monitor capture uses Windows Graphics Capture where the OS can turn
+its yellow capture border off, which is Windows 11; on Windows 10 it uses
+desktop duplication, which draws no border but leaves the cursor out. Either
+way a monitor that delivers no frame within two seconds, which happens with
+some exclusive-fullscreen games, falls back to the other path. Window capture
+uses Graphics Capture only, so on Windows 10 a shared window keeps the yellow
+border. Audio capture uses WASAPI process loopback, which needs
 the same Windows 10 version 2004 minimum already required above. Every push
 builds the Windows binary on GitHub Actions: the `windows` job uploads
 `brp-windows-x86_64`, a zip with `brp.exe`, the four

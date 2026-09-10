@@ -40,8 +40,8 @@ pub const SOURCE_PRESET_ID: u32 = 1;
 /// Compositor capture timestamps jitter by well under a millisecond; a frame this close to its
 /// slot is treated as on time rather than skipped.
 pub const PACER_JITTER_TOLERANCE: Duration = Duration::from_millis(1);
-/// Graphics Capture normally delivers its first frame within milliseconds; a monitor still silent
-/// after this is served by desktop duplication instead.
+/// Either Windows monitor path normally delivers its first frame within milliseconds; a monitor
+/// still silent after this is served by the other one instead.
 pub const CAPTURE_FALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub const AUDIO_CHANNELS: u8 = 2;
