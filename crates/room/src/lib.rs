@@ -16,4 +16,4 @@ pub use snapshot::{
     AudioCaptureState, EncoderView, MemberView, OwnAudioView, OwnLiveView, PresetView,
     RoomSnapshot, WatchState, WatchView,
 };
-pub use watcher::WatchHandle;
+pub use watcher::{FrameNotify, WatchHandle};

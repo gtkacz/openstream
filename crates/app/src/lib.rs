@@ -2,6 +2,7 @@
 pub mod cli;
 pub mod commands;
 pub mod console;
+pub mod dirty;
 pub mod error;
 pub mod handler;
 pub mod identity;
@@ -14,7 +15,9 @@ pub mod presets;
 pub mod publish;
 pub mod relaunch;
 pub mod render;
+pub mod repaint;
 pub mod room_view;
 pub mod settings;
 pub mod ui;
+pub mod visibility;
 pub mod window;

@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use brp_codec::RawFrame;
 use brp_net::{MediaClient, NetError, PathKind};
 use brp_pipeline::{
-    AudioViewer, AudioViewerStats, FrameNotify, LatestSlot, Mixer, Viewer, ViewerSink, ViewerStats,
+    AudioViewer, AudioViewerStats, FrameNotify as PipelineFrameNotify, LatestSlot, Mixer, Viewer,
+    ViewerSink, ViewerStats,
 };
 use brp_proto::constants::{
     RESUBSCRIBE_BACKOFF_INITIAL, RESUBSCRIBE_BACKOFF_MAX, SOURCE_PRESET_ID,
@@ -34,6 +35,11 @@ pub struct WatchHandle {
 }
 
 type WatchKey = (PublicKey, u32);
+
+/// Notifies that one watch (identified by publisher and live id, the same pair a window keys its
+/// tiles and pop-outs by) decoded a frame, so a redraw can be scoped to whatever shows that watch
+/// instead of every window.
+pub type FrameNotify = Arc<dyn Fn(PublicKey, u32) + Send + Sync>;
 
 /// Identifies one watch task. The generation tells a task that was replaced by a preset switch
 /// apart from its successor under the same key, so its last state writes are ignored.
@@ -431,7 +437,12 @@ impl Watcher {
             let sink = ViewerSink {
                 slot: handle.slot.clone(),
                 stats: handle.stats.clone(),
-                notify: self.on_frame.clone(),
+                // Wraps the room-level notify, which carries the watch's identity, behind the
+                // no-argument callback the pipeline's viewer calls on every decoded frame.
+                notify: {
+                    let on_frame = self.on_frame.clone();
+                    Arc::new(move || on_frame(publisher, live_id)) as PipelineFrameNotify
+                },
             };
             let viewer = Viewer::start(
                 self.runtime.clone(),
