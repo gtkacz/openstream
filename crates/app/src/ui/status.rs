@@ -3,7 +3,7 @@
 use brp_room::RoomSnapshot;
 
 use super::state::UiState;
-use crate::commands::RoomCommand;
+use crate::commands::{RoomCommand, WindowCommand};
 
 /// Draws the bottom status bar. The ticket copy button is applied directly to the clipboard
 /// rather than queued as a `RoomCommand`; the master mute toggle emits `SetMasterMute`; the
@@ -14,6 +14,7 @@ pub fn draw(
     ticket: &str,
     state: &UiState,
     commands: &mut Vec<RoomCommand>,
+    window_commands: &mut Vec<WindowCommand>,
     open_settings: &mut bool,
 ) {
     egui::Panel::bottom("status").show(ui, |ui| {
@@ -46,6 +47,10 @@ pub fn draw(
             ui.separator();
             if ui.button("Settings").clicked() {
                 *open_settings = true;
+            }
+            ui.separator();
+            if ui.button("Leave room").clicked() {
+                window_commands.push(WindowCommand::LeaveRoom);
             }
             if let Some(error) = &snapshot.audio_output_error {
                 ui.separator();

@@ -22,6 +22,8 @@ use crate::window::AppEvent;
 /// The window's view of an open room: the handle, the snapshot the panels draw from, the ticket
 /// the status bar copies, the watch handles that feed tiles, and the share in flight.
 pub struct RoomView {
+    /// Identifies this room session without extending the room's lifetime in queued events.
+    pub id: u64,
     pub room: Arc<Room>,
     pub snapshot: RoomSnapshot,
     pub ticket: String,
@@ -31,10 +33,11 @@ pub struct RoomView {
 }
 
 impl RoomView {
-    pub fn new(room: Arc<Room>) -> Self {
+    pub fn new(room: Arc<Room>, id: u64) -> Self {
         let snapshot = room.snapshot();
         let ticket = room.ticket().to_string();
         Self {
+            id,
             room,
             snapshot,
             ticket,
@@ -174,6 +177,7 @@ impl RoomView {
         state.share_pending = true;
         state.status.clear();
         let room = self.room.clone();
+        let room_id = self.id;
         let proxy = proxy.clone();
         self.pending_share = Some(runtime.spawn(async move {
             let outcome = room
@@ -181,7 +185,7 @@ impl RoomView {
                 .await
                 .map(|_live_id| ())
                 .map_err(|error| error.to_string());
-            let _ = proxy.send_event(AppEvent::ShareFinished(outcome));
+            let _ = proxy.send_event(AppEvent::ShareFinished { room_id, outcome });
         }));
     }
 }

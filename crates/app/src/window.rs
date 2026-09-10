@@ -48,7 +48,10 @@ pub enum AppEvent {
     /// Periodic wake so counters refresh while nothing is watched.
     Tick,
     /// The share task finished: the live started, or the error to show.
-    ShareFinished(Result<(), String>),
+    ShareFinished {
+        room_id: u64,
+        outcome: Result<(), String>,
+    },
     /// The open task finished: the room to show, or the error for the start screen.
     RoomOpened(Result<Arc<Room>, String>),
 }
@@ -73,6 +76,8 @@ struct PopOutWindow {
 pub struct Shutdown {
     pub room: Option<Arc<Room>>,
     pub tasks: Vec<JoinHandle<()>>,
+    /// UI-initiated leaves already own their rooms and must run to completion.
+    pub leave_tasks: Vec<JoinHandle<()>>,
     /// Awaited, never aborted: a room it produces after the window closed must still be left.
     pub pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
 }
@@ -90,6 +95,8 @@ pub struct App {
     phase: Phase,
     state: UiState,
     pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
+    /// The id allocated to the next room session, used to reject stale background events.
+    next_room_id: u64,
     store: SettingsStore,
     settings_dialog: SettingsDialog,
     /// The intent an open in flight was started with; a join remembers the ticket that got us in,
@@ -104,6 +111,8 @@ pub struct App {
     tiles: Option<TileRenderer>,
     popouts: PopOuts<WindowId>,
     popout_windows: HashMap<WindowId, PopOutWindow>,
+    /// Teardown work for rooms left from the UI. It is awaited if the app closes before it ends.
+    leaving: Vec<JoinHandle<()>>,
 }
 
 impl App {
@@ -127,12 +136,14 @@ impl App {
             phase: Phase::Start,
             state: UiState::new(),
             pending_open: None,
+            next_room_id: 0,
             next_repaint: None,
             gpu: None,
             main: None,
             tiles: None,
             popouts: PopOuts::new(),
             popout_windows: HashMap::new(),
+            leaving: Vec::new(),
             store,
             settings_dialog: SettingsDialog::default(),
             pending_intent: None,
@@ -158,6 +169,7 @@ impl App {
         Shutdown {
             room,
             tasks,
+            leave_tasks: self.leaving,
             pending_open: self.pending_open,
         }
     }
@@ -463,6 +475,7 @@ impl App {
     ) {
         for command in commands {
             match command {
+                WindowCommand::LeaveRoom => self.leave_room(),
                 WindowCommand::PopOut(key) => self.open_popout(event_loop, key, false),
                 WindowCommand::PopOutFullscreen(key) => self.open_popout(event_loop, key, true),
                 WindowCommand::ToggleFullscreen(key) => {
@@ -482,6 +495,42 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Returns to the start screen immediately while the former room is shut down in the
+    /// background. The task is retained so closing the app still waits for an orderly leave.
+    fn leave_room(&mut self) {
+        let Phase::Room(view) = std::mem::replace(&mut self.phase, Phase::Start) else {
+            return;
+        };
+        let RoomView {
+            room,
+            pending_share,
+            ..
+        } = *view;
+        self.popouts = PopOuts::new();
+        self.popout_windows.clear();
+        if let Some(tiles) = &mut self.tiles {
+            tiles.retain(|_| false);
+        }
+        self.state = UiState::new();
+        self.start.connecting = false;
+        self.start.error.clear();
+        self.settings_dialog.open = false;
+        self.pending_intent = None;
+        if let Some(main) = &self.main {
+            main.window.set_title("brp");
+        }
+        self.leaving.push(self.runtime.spawn(async move {
+            if let Some(task) = pending_share {
+                task.abort();
+                let _ = task.await;
+            }
+            match Arc::try_unwrap(room) {
+                Ok(room) => room.leave().await,
+                Err(_) => tracing::warn!("room still referenced after leaving from the UI"),
+            }
+        }));
     }
 
     /// Opens a window for `key`. Failures leave the live in the grid and explain why in the
@@ -584,20 +633,24 @@ impl ApplicationHandler<AppEvent> for App {
                         .set_title(&format!("brp: {}", room.snapshot().nickname));
                 }
                 self.remember_open(&room);
-                self.phase = Phase::Room(Box::new(RoomView::new(room)));
+                let room_id = self.next_room_id;
+                self.next_room_id = self.next_room_id.wrapping_add(1);
+                self.phase = Phase::Room(Box::new(RoomView::new(room, room_id)));
             }
             AppEvent::RoomOpened(Err(message)) => {
                 self.pending_open = None;
                 self.pending_intent = None;
                 self.start.failed(message);
             }
-            AppEvent::ShareFinished(outcome) => {
-                if let Phase::Room(view) = &mut self.phase {
+            AppEvent::ShareFinished { room_id, outcome } => {
+                if let Phase::Room(view) = &mut self.phase
+                    && view.id == room_id
+                {
                     view.pending_share = None;
-                }
-                self.state.share_pending = false;
-                if let Err(message) = outcome {
-                    self.state.status = format!("share failed: {message}");
+                    self.state.share_pending = false;
+                    if let Err(message) = outcome {
+                        self.state.status = format!("share failed: {message}");
+                    }
                 }
             }
             AppEvent::RoomChanged | AppEvent::NewFrame | AppEvent::Tick => {}
