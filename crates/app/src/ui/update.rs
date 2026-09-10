@@ -9,6 +9,7 @@ pub const BYTES_PER_MB: u64 = 1_000_000;
 /// once per network chunk.
 pub const PROGRESS_STEP_BYTES: u64 = BYTES_PER_MB;
 
+/// Where a download stands: not started, in flight with a byte count, or failed with the message to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdatePhase {
     Idle,
@@ -49,17 +50,20 @@ impl UpdateState {
         Some(release)
     }
 
+    /// Records bytes received; ignored unless a download is in flight.
     pub fn progress(&mut self, received: u64, total: Option<u64>) {
         if matches!(self.phase, UpdatePhase::Downloading { .. }) {
             self.phase = UpdatePhase::Downloading { received, total };
         }
     }
 
+    /// The download or swap failed; the button returns so the user can retry.
     pub fn failed(&mut self, message: String) {
         self.phase = UpdatePhase::Failed(message);
     }
 }
 
+/// The notice text: the version, plus the releases page when this install cannot be replaced.
 pub fn notice(release: &Release, can_apply: bool) -> String {
     if can_apply {
         format!("v{} is available", release.version)
@@ -68,6 +72,7 @@ pub fn notice(release: &Release, can_apply: bool) -> String {
     }
 }
 
+/// The progress line in whole decimal megabytes, with the total when the server stated one.
 pub fn progress_text(received: u64, total: Option<u64>) -> String {
     let received = received / BYTES_PER_MB;
     match total {
