@@ -10,6 +10,7 @@ pub mod participant;
 pub mod popouts;
 pub mod presets;
 pub mod publish;
+pub mod relaunch;
 pub mod render;
 pub mod room_view;
 pub mod settings;
