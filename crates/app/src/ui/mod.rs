@@ -58,7 +58,6 @@ pub fn draw(
         ticket,
         state,
         &mut commands,
-        &mut window_commands,
         &mut open_settings,
     );
     own_lives::draw(ui, snapshot, state, &mut commands);

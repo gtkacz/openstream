@@ -9,13 +9,11 @@ use std::time::Duration;
 pub mod apply;
 pub mod archive;
 pub mod error;
-pub mod fetch;
 pub mod install;
 pub mod release;
 
 pub use apply::{Staged, apply};
 pub use error::UpdateError;
-pub use fetch::{check, download};
 pub use install::{Install, cleanup_stale};
 pub use release::{Release, Version};
 

@@ -65,11 +65,6 @@ pub fn run(runtime: &Runtime, intent: Option<Intent>, args: WindowArgs) -> Resul
         task.abort();
         let _ = runtime.block_on(task);
     }
-    // A leave task has already taken ownership of its room. Unlike a share task, it must run to
-    // completion so closing the app midway through a UI leave still closes the endpoint cleanly.
-    for task in shutdown.leave_tasks {
-        let _ = runtime.block_on(task);
-    }
     let mut rooms = shutdown.room.into_iter().collect::<Vec<_>>();
     // An open still in flight is awaited, not aborted: aborting after the room exists would drop
     // it without a leave. Closing the window during a doomed join therefore waits out the join
