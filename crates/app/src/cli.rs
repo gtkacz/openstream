@@ -17,7 +17,7 @@ pub enum Command {
     Publish(PublishArgs),
     /// Open a new room in the participant window.
     Create(CreateArgs),
-    /// Join a room with a ticket in the participant window.
+    /// Join a room with a ticket or link in the participant window.
     Join(JoinArgs),
 }
 #[derive(Args, Debug)]
@@ -32,7 +32,7 @@ pub struct PublishArgs {
     pub source: SourceArg,
     #[arg(long)]
     pub no_relay: bool,
-    /// Join this room instead of creating a new one.
+    /// Join this room, given as a ticket or link, instead of creating a new one.
     #[arg(long)]
     pub ticket: Option<String>,
     /// Shown to other participants. Defaults to the short peer id.
@@ -59,6 +59,7 @@ pub struct CreateArgs {
 }
 #[derive(Args, Debug)]
 pub struct JoinArgs {
+    /// A ticket, a share link, or a brp:// link.
     pub ticket: String,
     #[command(flatten)]
     pub window: WindowArgs,

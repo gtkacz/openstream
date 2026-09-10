@@ -30,14 +30,14 @@ fn main() -> ExitCode {
         }
         Some(Command::Join(args)) => match link::parse_ticket(&args.ticket) {
             Ok(ticket) => participant::run(&runtime, Some(Intent::Join(ticket)), None, args.window),
-            // A browser launches the binary without a console, so the error must reach the
-            // window, not stderr.
-            Err(error) => participant::run(
-                &runtime,
-                None,
-                Some(AppError::Ticket(error).to_string()),
-                args.window,
-            ),
+            // Both destinations are needed: a browser launches the binary without a console, so
+            // the window has to carry the message, and a terminal launch on a machine that cannot
+            // open a window would otherwise lose the diagnosis.
+            Err(error) => {
+                let message = AppError::Ticket(error).to_string();
+                eprintln!("error: {message}");
+                participant::run(&runtime, None, Some(message), args.window)
+            }
         },
     };
     match result {
