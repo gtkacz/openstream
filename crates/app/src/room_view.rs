@@ -58,21 +58,27 @@ impl RoomView {
     }
 
     /// Housekeeping run once per relevant state change (a room-version bump, or the statistics
-    /// timer), never per redraw: re-snapshots, drops handles and tiles of ended watches, refreshes
-    /// the rate meters and age labels, and re-serializes the ticket if the endpoint address moved.
-    /// Called from the event handlers in `window.rs`, not from the render path, so drawing a
-    /// second window never repeats this work and every window in the same batch draws the same
-    /// snapshot.
+    /// timer), never per redraw: re-snapshots when the version moved, drops handles and tiles of
+    /// ended watches, refreshes the rate meters and age labels, and re-serializes the ticket if the
+    /// endpoint address moved. Called from the event handlers in `window.rs`, not from the render
+    /// path, so drawing a second window never repeats this work and every window in the same batch
+    /// draws the same snapshot.
     pub fn refresh(&mut self, state: &mut UiState, tiles: Option<&mut TileRenderer>) {
-        self.snapshot = self.room.snapshot();
-        let live = self.watched_keys();
-        self.handles.retain(|key, _| live.contains(key));
-        if let Some(tiles) = tiles {
-            tiles.retain(|key| live.contains(key));
+        // `Room::snapshot` locks membership and rebuilds from scratch every call, so this is
+        // gated on the version even though `refresh` itself already runs only on a relevant event
+        // (a `Tick` with nothing changed must not pay for a rebuild it does not need).
+        if self.room.version() != self.snapshot.version {
+            self.snapshot = self.room.snapshot();
+            let live = self.watched_keys();
+            self.handles.retain(|key, _| live.contains(key));
+            if let Some(tiles) = tiles {
+                tiles.retain(|key| live.contains(key));
+            }
         }
         state.refresh_rates(&self.snapshot, Instant::now());
-        // The relay address can change without bumping the room version, so this compares the
-        // cheap `RoomTicket` on every refresh rather than only on a version change.
+        // Unlike the snapshot, the ticket has no version to gate on: the relay address can change
+        // without bumping the room version, so this compares the cheap `RoomTicket` on every
+        // refresh rather than only on a version change.
         refresh_ticket_cache(&mut self.last_ticket, &mut self.ticket, self.room.ticket());
     }
 
@@ -282,6 +288,46 @@ mod tests {
         refresh_ticket_cache(&mut last, &mut cached, relayed.clone());
         assert_eq!(cached, relayed.to_string());
         assert_eq!(last, relayed);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_version_skips_the_snapshot_rebuild_but_the_ticket_check_still_runs() {
+        let room = Room::create(config("alice")).await.unwrap();
+        let mut view = RoomView::new(Arc::new(room));
+        let version = view.room.version();
+        assert_eq!(view.snapshot.version, version, "no change happened yet");
+
+        // Corrupted so that a rebuild (which would produce the room's real nickname) and a
+        // skipped rebuild (which leaves this untouched) are distinguishable.
+        view.snapshot.nickname = "stale-marker".into();
+        // Forced out of sync with the room's real ticket, standing in for a relay change the
+        // version does not reflect; the ticket check must still run on this same call.
+        let real_ticket = view.room.ticket();
+        view.last_ticket = RoomTicket::new(real_ticket.topic, Vec::new());
+        view.ticket = "stale-ticket-marker".into();
+
+        let mut state = UiState::new();
+        view.refresh(&mut state, None);
+
+        assert_eq!(
+            view.snapshot.version, version,
+            "version still has not moved"
+        );
+        assert_eq!(
+            view.snapshot.nickname, "stale-marker",
+            "an unchanged version must skip the snapshot rebuild"
+        );
+        assert_eq!(
+            view.ticket,
+            real_ticket.to_string(),
+            "the ticket cache is not gated on the version"
+        );
+        assert_eq!(view.last_ticket, real_ticket);
+
+        match Arc::try_unwrap(view.room) {
+            Ok(room) => room.leave().await,
+            Err(_) => panic!("room still referenced"),
+        };
     }
 
     #[tokio::test]
