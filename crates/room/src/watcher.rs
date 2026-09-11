@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use brp_codec::RawFrame;
+use brp_codec::{RawFrame, RawFramePool};
 use brp_net::{MediaClient, NetError, PathKind};
 use brp_pipeline::{
     AudioViewer, AudioViewerStats, FrameNotify as PipelineFrameNotify, LatestSlot, Mixer, Viewer,
@@ -32,6 +32,33 @@ use crate::snapshot::{WatchState, WatchView};
 pub struct WatchHandle {
     pub slot: Arc<LatestSlot<RawFrame>>,
     pub stats: Arc<ViewerStats>,
+    /// The current decoder's buffer pool, if it has one. Reconnects and preset switches open a new
+    /// decoder under the same handle, so this is updated in place rather than fixed at
+    /// construction; see `Watcher::run_watch`.
+    pool: Arc<Mutex<Option<Arc<RawFramePool>>>>,
+}
+
+impl WatchHandle {
+    fn new() -> Self {
+        Self {
+            slot: LatestSlot::new(),
+            stats: Arc::new(ViewerStats::default()),
+            pool: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Gives a frame the display side is done with (its GPU upload is queued) back to the
+    /// decoder's pool, when the current decoder has one. Otherwise the frame is just dropped,
+    /// exactly as before pooling existed.
+    pub fn recycle(&self, frame: RawFrame) {
+        if let Some(pool) = lock(&self.pool).as_ref() {
+            pool.release(frame);
+        }
+    }
+
+    fn set_pool(&self, pool: Option<Arc<RawFramePool>>) {
+        *lock(&self.pool) = pool;
+    }
 }
 
 type WatchKey = (PublicKey, u32);
@@ -136,10 +163,7 @@ impl Watcher {
                 .watches
                 .get(&(publisher, live_id))
                 .map(|entry| entry.handle.clone())
-                .unwrap_or_else(|| WatchHandle {
-                    slot: LatestSlot::new(),
-                    stats: Arc::new(ViewerStats::default()),
-                });
+                .unwrap_or_else(WatchHandle::new);
             // Excludes the entry being replaced, so a preset switch on the carrier keeps its audio.
             let audio = wants_audio(
                 inner
@@ -434,6 +458,10 @@ impl Watcher {
                     return;
                 }
             };
+            // This decoder's pool (if any) replaces whatever the previous decoder under this
+            // handle left behind, so a displayed frame's buffer always goes back to the decoder
+            // that is actually still producing frames for it.
+            handle.set_pool(decoder.pool());
             let sink = ViewerSink {
                 slot: handle.slot.clone(),
                 stats: handle.stats.clone(),
@@ -651,16 +679,43 @@ mod tests {
             preset_id,
             state: WatchState::Connecting,
             audio: false,
-            handle: WatchHandle {
-                slot: LatestSlot::new(),
-                stats: Arc::new(ViewerStats::default()),
-            },
+            handle: WatchHandle::new(),
             _cancel: oneshot::channel().0,
         }
     }
 
     fn key(seed: u8) -> PublicKey {
         SecretKey::from_bytes(&[seed; 32]).public()
+    }
+
+    #[test]
+    fn a_displayed_frames_buffer_is_recycled_through_the_handles_pool() {
+        let handle = WatchHandle::new();
+        let pool = Arc::new(RawFramePool::new(2));
+        handle.set_pool(Some(pool.clone()));
+
+        // Stands in for `FfmpegDecoder` acquiring a buffer for a decoded frame.
+        let frame = pool.acquire(8, 4, 1);
+        let y_ptr = frame.y.as_ptr();
+
+        // Stands in for `RoomView::upload_frames` recycling a frame it actually displayed (not
+        // merely one `LatestSlot::put` superseded before display, which is covered separately).
+        handle.recycle(frame);
+
+        let next = pool.acquire(8, 4, 2);
+        assert_eq!(
+            next.y.as_ptr(),
+            y_ptr,
+            "a displayed frame's buffer must be reused by the next decode of the same shape"
+        );
+    }
+
+    #[test]
+    fn recycling_without_a_current_decoder_pool_just_drops_the_frame() {
+        let handle = WatchHandle::new();
+        // No decoder has opened yet (or the watch has none), so there is nowhere to send the
+        // buffer; this must not panic and must behave exactly as it did before pooling existed.
+        handle.recycle(RawFrame::black(8, 4, 0));
     }
 
     #[test]

@@ -8,7 +8,7 @@ pub mod select;
 pub mod traits;
 pub use audio::{AudioDecoder, AudioEncoder, AudioFrame};
 pub use error::CodecError;
-pub use raw::RawFrame;
+pub use raw::{RawFrame, RawFramePool};
 pub use select::{
     is_software_encoder, open_audio_decoder, open_audio_encoder, open_decoder, open_encoder,
     open_encoder_auto,

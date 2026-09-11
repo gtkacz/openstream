@@ -87,6 +87,10 @@ impl RoomView {
         for (key, handle) in &self.handles {
             if let Some(frame) = handle.slot.try_take() {
                 tiles.upload(&gpu.device, &gpu.queue, *key, &frame);
+                // `write_texture` copies from `frame` synchronously before returning (wgpu does
+                // not retain the source slice for later GPU work), so the buffer is free to reuse
+                // the moment the call above returns.
+                handle.recycle(frame);
             }
         }
     }
