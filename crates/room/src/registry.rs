@@ -1,15 +1,17 @@
 //! Lives this participant publishes. Encoders exist only while someone is subscribed.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use brp_audio::{AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSource};
-use brp_capture::{CaptureFrame, CaptureSession};
+use brp_capture::{CaptureFrame, CaptureSession, SourceInfo};
+use brp_codec::{CodecError, FrameConverter, InputImage, RawFrame};
 use brp_net::{AudioSubscription, LiveSource, SubscribeRejected, Subscription};
-use brp_pipeline::{AudioPublisher, LatestSlot, Pacer, Publisher};
-use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, MAX_PRESETS_PER_LIVE};
+use brp_pipeline::{AudioPublisher, LatestSlot, Pacer, Publisher, SlotWait};
+use brp_proto::constants::{IDLE_KEYFRAME_RETRY, MAX_LIVES_PER_PARTICIPANT, MAX_PRESETS_PER_LIVE};
 use brp_proto::{LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
 
 use crate::codecs::EncoderFactory;
@@ -19,6 +21,7 @@ use crate::snapshot::{AudioCaptureState, EncoderView, OwnAudioView, OwnLiveView,
 pub type ChangeNotify = Arc<dyn Fn() + Send + Sync>;
 
 type CaptureSlot = Arc<LatestSlot<Arc<CaptureFrame>>>;
+type RawSlot = Arc<LatestSlot<Arc<RawFrame>>>;
 
 /// Delivers each captured frame to every running encoder of one live without copying pixels.
 #[derive(Default)]
@@ -53,9 +56,98 @@ impl CaptureFan {
     }
 }
 
+/// Converts one captured frame per tick and shares the immutable result with every subscribed
+/// preset whose output dimensions match this group's — one `SwsConverter`/`FrameConverter` per
+/// distinct (width, height) per live, instead of one per preset. `FrameConverter::convert` lends a
+/// mutable scratch buffer the converter reuses on its next call, so a shared borrow can't survive
+/// past that call: this loop clones the converted frame into a fresh `Arc<RawFrame>` immediately,
+/// once per source frame, and hands that immutable clone to every member before converting again.
+/// Each member then paces and encodes independently on its own thread (see `publisher.rs`), so one
+/// slow preset backs up only its own slot, never this group's or another preset's.
+struct ConversionGroup {
+    stop: AtomicBool,
+    capture_slot: CaptureSlot,
+    members: Mutex<Vec<RawSlot>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl ConversionGroup {
+    fn start(fan: &Arc<CaptureFan>, converter: Box<dyn FrameConverter>) -> Arc<Self> {
+        let capture_slot = fan.attach();
+        let group = Arc::new(Self {
+            stop: AtomicBool::new(false),
+            capture_slot,
+            members: Mutex::new(Vec::new()),
+            thread: Mutex::new(None),
+        });
+        let worker = group.clone();
+        let handle = thread::Builder::new()
+            .name("brp-convert-group".into())
+            .spawn(move || conversion_loop(worker, converter))
+            .expect("spawning a thread only fails when the system is out of resources");
+        *lock(&group.thread) = Some(handle);
+        group
+    }
+
+    fn attach_member(&self) -> RawSlot {
+        let slot = LatestSlot::new();
+        lock(&self.members).push(slot.clone());
+        slot
+    }
+
+    fn detach_member(&self, slot: &RawSlot) {
+        lock(&self.members).retain(|s| !Arc::ptr_eq(s, slot));
+    }
+
+    fn member_count(&self) -> usize {
+        lock(&self.members).len()
+    }
+
+    /// Stops the conversion thread and detaches from the fan. Only called once no preset is left
+    /// using this group's converted output.
+    fn stop(&self, fan: &CaptureFan) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.capture_slot.close();
+        fan.detach(&self.capture_slot);
+        if let Some(handle) = lock(&self.thread).take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn conversion_loop(group: Arc<ConversionGroup>, mut converter: Box<dyn FrameConverter>) {
+    while !group.stop.load(Ordering::Relaxed) {
+        let frame = match group.capture_slot.take_timeout(IDLE_KEYFRAME_RETRY) {
+            SlotWait::Value(frame) => frame,
+            SlotWait::Timeout => continue,
+            SlotWait::Closed => break,
+        };
+        let image = InputImage {
+            width: frame.width,
+            height: frame.height,
+            stride: frame.stride,
+            format: frame.format,
+            data: &frame.data,
+            capture_ts_us: frame.capture_ts_us,
+        };
+        match converter.convert(&image) {
+            Ok(raw) => {
+                // Cloned once, right here, before the next `convert()` call reuses and overwrites
+                // the converter's scratch buffer: every member gets its own immutable `Arc`.
+                let shared = Arc::new(raw.clone());
+                for member in lock(&group.members).iter() {
+                    member.put(shared.clone());
+                }
+            }
+            Err(error) => tracing::error!(%error, "shared frame conversion failed"),
+        }
+    }
+}
+
 struct RunningEncoder {
     publisher: Publisher,
-    slot: CaptureSlot,
+    group_key: (u32, u32),
+    raw_slot: RawSlot,
     idle_since: Option<Instant>,
 }
 
@@ -70,6 +162,9 @@ struct OwnLive {
     session: Option<Box<dyn CaptureSession>>,
     fan: Arc<CaptureFan>,
     presets: BTreeMap<u32, PresetState>,
+    /// One converter per distinct subscribed (width, height); created on first subscribe, stopped
+    /// once its last member preset stops.
+    groups: BTreeMap<(u32, u32), Arc<ConversionGroup>>,
 }
 
 struct RunningAudio {
@@ -184,6 +279,7 @@ impl LiveRegistry {
                 session: Some(session),
                 fan,
                 presets,
+                groups: BTreeMap::new(),
             },
         );
         drop(inner);
@@ -199,7 +295,7 @@ impl LiveRegistry {
             .ok_or(RoomError::UnknownLive(live_id))?;
         drop(inner);
         for state in live.presets.values_mut() {
-            stop_encoder(&live.fan, state);
+            stop_encoder(&live.fan, &mut live.groups, state);
         }
         if let Some(session) = live.session.take() {
             session.stop();
@@ -230,7 +326,7 @@ impl LiveRegistry {
                     state
                 }
                 Some(mut state) => {
-                    stop_encoder(&live.fan, &mut state);
+                    stop_encoder(&live.fan, &mut live.groups, &mut state);
                     PresetState {
                         preset: preset.clone(),
                         running: None,
@@ -246,7 +342,7 @@ impl LiveRegistry {
             live.presets.insert(preset.id, state);
         }
         for mut removed in old.into_values() {
-            stop_encoder(&live.fan, &mut removed);
+            stop_encoder(&live.fan, &mut live.groups, &mut removed);
         }
         live.info.presets = presets;
         drop(inner);
@@ -436,7 +532,7 @@ impl LiveRegistry {
                     None => continue,
                 };
                 if idle_for >= self.grace {
-                    stop_encoder(&live.fan, state);
+                    stop_encoder(&live.fan, &mut live.groups, state);
                     stopped_any = true;
                 }
             }
@@ -469,44 +565,30 @@ impl LiveSource for LiveRegistry {
             .lives
             .get_mut(&live_id)
             .ok_or(SubscribeRejected::UnknownLive(live_id))?;
-        let source = brp_capture::SourceInfo {
+        let source = SourceInfo {
             width: live.info.source_width,
             height: live.info.source_height,
             fps: live.info.source_fps,
         };
         let format = live.fan.format();
-        let fan = live.fan.clone();
-        let state = live
+        let preset = live
             .presets
-            .get_mut(&preset_id)
-            .ok_or(SubscribeRejected::UnknownPreset(preset_id))?;
+            .get(&preset_id)
+            .ok_or(SubscribeRejected::UnknownPreset(preset_id))?
+            .preset
+            .clone();
         let mut started = false;
-        if state.running.is_none() {
-            match self.encoders.open(source, format, &state.preset) {
-                Ok(parts) => {
-                    let slot = fan.attach();
-                    // Always paced, even at the source rate: below the target rate the pacer skips
-                    // frames to hold the preset's fps; at or above it every frame still clears the
-                    // due-time check, so admission is unaffected, but sustained overload can still
-                    // back the rate off (see `Pacer::record_duration`).
-                    let pacer = Some(Pacer::new(state.preset.fps));
-                    let publisher = Publisher::start(
-                        live_id,
-                        preset_id,
-                        slot.clone(),
-                        parts.converter,
-                        parts.encoder,
-                        pacer,
-                    );
-                    state.running = Some(RunningEncoder {
-                        publisher,
-                        slot,
-                        idle_since: None,
-                    });
+        if live.presets[&preset_id].running.is_none() {
+            match start_preset_encoder(&self.encoders, live, live_id, preset_id, source, format, &preset)
+            {
+                Ok(running) => {
+                    let state = live.presets.get_mut(&preset_id).expect("checked above");
+                    state.running = Some(running);
                     state.last_error = None;
                     started = true;
                 }
                 Err(error) => {
+                    let state = live.presets.get_mut(&preset_id).expect("checked above");
                     state.last_error = Some(error.to_string());
                     drop(inner);
                     (self.on_change)();
@@ -514,7 +596,13 @@ impl LiveSource for LiveRegistry {
                 }
             }
         }
-        let running = state.running.as_mut().expect("set above");
+        let running = live
+            .presets
+            .get_mut(&preset_id)
+            .expect("checked above")
+            .running
+            .as_mut()
+            .expect("set above");
         running.idle_since = None;
         let subscription = running.publisher.subscribe(live_id, preset_id);
         drop(inner);
@@ -615,10 +703,68 @@ impl LiveRegistry {
     }
 }
 
-fn stop_encoder(fan: &CaptureFan, state: &mut PresetState) {
+/// Opens (or reuses) the conversion group for `preset`'s output dimensions and starts its encoder
+/// and publisher. On encoder failure, a group newly created for this call is torn down immediately:
+/// a preset that fails to subscribe must not leave conversion work running for nobody.
+fn start_preset_encoder(
+    encoders: &Arc<dyn EncoderFactory>,
+    live: &mut OwnLive,
+    live_id: u32,
+    preset_id: u32,
+    source: SourceInfo,
+    format: PixelFormat,
+    preset: &Preset,
+) -> Result<RunningEncoder, CodecError> {
+    let group_key = (preset.width, preset.height);
+    let group = match live.groups.get(&group_key) {
+        Some(group) => group.clone(),
+        None => {
+            let converter = encoders.open_converter(source, format, group_key.0, group_key.1)?;
+            let group = ConversionGroup::start(&live.fan, converter);
+            live.groups.insert(group_key, group.clone());
+            group
+        }
+    };
+    match encoders.open_encoder(preset) {
+        Ok(encoder) => {
+            let raw_slot = group.attach_member();
+            // Always paced, even at the source rate: below the target rate the pacer skips
+            // frames to hold the preset's fps; at or above it every frame still clears the
+            // due-time check, so admission is unaffected, but sustained overload can still
+            // back the rate off (see `Pacer::record_duration`).
+            let pacer = Some(Pacer::new(preset.fps));
+            let publisher = Publisher::start(live_id, preset_id, raw_slot.clone(), encoder, pacer);
+            Ok(RunningEncoder {
+                publisher,
+                group_key,
+                raw_slot,
+                idle_since: None,
+            })
+        }
+        Err(error) => {
+            if group.member_count() == 0 {
+                group.stop(&live.fan);
+                live.groups.remove(&group_key);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn stop_encoder(
+    fan: &CaptureFan,
+    groups: &mut BTreeMap<(u32, u32), Arc<ConversionGroup>>,
+    state: &mut PresetState,
+) {
     if let Some(running) = state.running.take() {
         running.publisher.stop();
-        fan.detach(&running.slot);
+        if let Some(group) = groups.get(&running.group_key) {
+            group.detach_member(&running.raw_slot);
+            if group.member_count() == 0 {
+                group.stop(fan);
+                groups.remove(&running.group_key);
+            }
+        }
     }
 }
 

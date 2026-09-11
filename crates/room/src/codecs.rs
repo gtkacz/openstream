@@ -10,18 +10,20 @@ use brp_codec::{
 };
 use brp_proto::{AudioParams, Codec, CodecParams, PixelFormat, Preset};
 
-pub struct EncoderParts {
-    pub converter: Box<dyn FrameConverter>,
-    pub encoder: Box<dyn VideoEncoder>,
-}
-
 pub trait EncoderFactory: Send + Sync + 'static {
-    fn open(
+    /// Builds the converter a group of subscribed presets shares: every preset whose output
+    /// `width`/`height` matches converts through this one instance instead of each opening its own.
+    fn open_converter(
         &self,
         source: SourceInfo,
         source_format: PixelFormat,
-        preset: &Preset,
-    ) -> Result<EncoderParts, CodecError>;
+        width: u32,
+        height: u32,
+    ) -> Result<Box<dyn FrameConverter>, CodecError>;
+
+    /// Opens the encoder for one preset. Always per-preset: fps, bitrate, and codec can differ even
+    /// between presets that share a converter.
+    fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError>;
 
     /// The codec new lives default to. The real factory probes the GPU once; the spec prefers HEVC,
     /// then H.264, then the software AV1 fallback.
@@ -60,24 +62,24 @@ pub struct FfmpegCodecs {
 }
 
 impl EncoderFactory for FfmpegCodecs {
-    fn open(
+    fn open_converter(
         &self,
         source: SourceInfo,
         source_format: PixelFormat,
-        preset: &Preset,
-    ) -> Result<EncoderParts, CodecError> {
-        let converter = SwsConverter::new(
+        width: u32,
+        height: u32,
+    ) -> Result<Box<dyn FrameConverter>, CodecError> {
+        Ok(Box::new(SwsConverter::new(
             source.width,
             source.height,
             source_format,
-            preset.width,
-            preset.height,
-        )?;
-        let encoder = open_encoder(&config_for(preset))?;
-        Ok(EncoderParts {
-            converter: Box::new(converter),
-            encoder,
-        })
+            width,
+            height,
+        )?))
+    }
+
+    fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError> {
+        open_encoder(&config_for(preset))
     }
 
     fn preferred_codec(&self) -> Codec {
@@ -124,16 +126,18 @@ pub mod fake {
     pub struct FakeCodecs;
 
     impl EncoderFactory for FakeCodecs {
-        fn open(
+        fn open_converter(
             &self,
             _source: SourceInfo,
             _format: PixelFormat,
-            preset: &Preset,
-        ) -> Result<EncoderParts, CodecError> {
-            Ok(EncoderParts {
-                converter: Box::new(SolidConverter::new(preset.width, preset.height)),
-                encoder: Box::new(FakeEncoder::new(config_for(preset), FAKE_KEYFRAME_INTERVAL)),
-            })
+            width: u32,
+            height: u32,
+        ) -> Result<Box<dyn FrameConverter>, CodecError> {
+            Ok(Box::new(SolidConverter::new(width, height)))
+        }
+
+        fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError> {
+            Ok(Box::new(FakeEncoder::new(config_for(preset), FAKE_KEYFRAME_INTERVAL)))
         }
 
         fn preferred_codec(&self) -> Codec {
@@ -158,9 +162,8 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
-    use brp_capture::SourceInfo;
     use brp_codec::RawFrame;
-    use brp_proto::{Codec, PixelFormat, Preset};
+    use brp_proto::{Codec, Preset};
 
     use super::*;
 
@@ -175,18 +178,7 @@ mod tests {
             bitrate_kbps: 5_000,
             codec: Codec::Av1,
         };
-        let parts = EncoderFactory::open(
-            &fake::FakeCodecs,
-            SourceInfo {
-                width: 1920,
-                height: 1080,
-                fps: 60,
-            },
-            PixelFormat::Bgra,
-            &preset,
-        )
-        .unwrap();
-        let mut encoder = parts.encoder;
+        let mut encoder = EncoderFactory::open_encoder(&fake::FakeCodecs, &preset).unwrap();
         let params = encoder.params();
         assert_eq!(
             (params.width, params.height, params.fps, params.codec),
