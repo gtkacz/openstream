@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use brp_capture::{CaptureBackend, CaptureFrame, SourceRequest, SyntheticSource};
-use brp_codec::{EncoderConfig, FrameConverter, InputImage};
 use brp_codec::fake::{FakeEncoder, SolidConverter};
+use brp_codec::{EncoderConfig, FrameConverter, InputImage};
 use brp_net::{LiveSource, SubscribeRejected};
 use brp_pipeline::{LatestSlot, Publisher};
 use brp_proto::{Codec, PixelFormat, SourceKind};

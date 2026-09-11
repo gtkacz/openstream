@@ -579,8 +579,15 @@ impl LiveSource for LiveRegistry {
             .clone();
         let mut started = false;
         if live.presets[&preset_id].running.is_none() {
-            match start_preset_encoder(&self.encoders, live, live_id, preset_id, source, format, &preset)
-            {
+            match start_preset_encoder(
+                &self.encoders,
+                live,
+                live_id,
+                preset_id,
+                source,
+                format,
+                &preset,
+            ) {
                 Ok(running) => {
                     let state = live.presets.get_mut(&preset_id).expect("checked above");
                     state.running = Some(running);

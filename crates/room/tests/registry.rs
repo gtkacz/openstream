@@ -8,10 +8,15 @@ use brp_audio::{
     SyntheticTone,
 };
 use brp_capture::{CaptureBackend, CaptureSession, SourceInfo, SourceRequest, SyntheticSource};
+use brp_codec::fake::FakeDecoder;
+use brp_codec::{AudioEncoder, CodecError, FrameConverter, RawFrame, VideoDecoder, VideoEncoder};
 use brp_net::{LiveSource, SubscribeRejected};
 use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID};
-use brp_proto::{Codec, SourceKind, template_presets};
+use brp_proto::{
+    Codec, CodecParams, EncodedFrame, PixelFormat, Preset, SourceKind, template_presets,
+};
 use brp_room::AudioCaptureState;
+use brp_room::codecs::EncoderFactory;
 use brp_room::codecs::fake::FakeCodecs;
 use brp_room::registry::{CaptureFan, LiveRegistry};
 
@@ -457,6 +462,284 @@ async fn stop_all_stops_running_audio() {
             .unwrap()
             .is_none(),
         "packets receiver should end when stop_all stops capture"
+    );
+}
+
+async fn synthetic_live_with_presets(
+    registry: &LiveRegistry,
+    title: &str,
+    presets: Vec<Preset>,
+) -> u32 {
+    let fan = Arc::new(CaptureFan::default());
+    let sink = fan.clone();
+    let session = SyntheticSource {
+        width: 64,
+        height: 32,
+        fps: 60,
+    }
+    .start(
+        SourceRequest {
+            kind: SourceKind::Monitor,
+            source: None,
+            target_fps: 60,
+        },
+        Box::new(move |f| sink.push(f)),
+    )
+    .await
+    .unwrap();
+    registry
+        .add_live(title.into(), SourceKind::Monitor, session, fan, presets)
+        .unwrap()
+}
+
+fn preset(id: u32, width: u32, height: u32, fps: u32) -> Preset {
+    Preset {
+        id,
+        name: format!("p{id}"),
+        width,
+        height,
+        fps,
+        bitrate_kbps: 1_000,
+        codec: Codec::H264,
+    }
+}
+
+/// Wraps `FakeCodecs`, counting `open_converter` calls and optionally slowing one preset's
+/// encoder, to make conversion-sharing and pacing-independence observable from a test.
+struct CountingCodecs {
+    inner: FakeCodecs,
+    converter_opens: AtomicUsize,
+    slow_preset: Option<u32>,
+    slow_delay: Duration,
+}
+
+impl CountingCodecs {
+    fn new() -> Self {
+        Self {
+            inner: FakeCodecs,
+            converter_opens: AtomicUsize::new(0),
+            slow_preset: None,
+            slow_delay: Duration::ZERO,
+        }
+    }
+
+    fn with_slow_preset(preset_id: u32, delay: Duration) -> Self {
+        Self {
+            inner: FakeCodecs,
+            converter_opens: AtomicUsize::new(0),
+            slow_preset: Some(preset_id),
+            slow_delay: delay,
+        }
+    }
+}
+
+impl EncoderFactory for CountingCodecs {
+    fn open_converter(
+        &self,
+        source: SourceInfo,
+        format: PixelFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<Box<dyn FrameConverter>, CodecError> {
+        self.converter_opens.fetch_add(1, Ordering::SeqCst);
+        self.inner.open_converter(source, format, width, height)
+    }
+
+    fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError> {
+        let encoder = self.inner.open_encoder(preset)?;
+        if self.slow_preset == Some(preset.id) {
+            Ok(Box::new(SlowEncoder {
+                inner: encoder,
+                delay: self.slow_delay,
+            }))
+        } else {
+            Ok(encoder)
+        }
+    }
+
+    fn preferred_codec(&self) -> Codec {
+        self.inner.preferred_codec()
+    }
+
+    fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
+        self.inner.open_audio()
+    }
+}
+
+/// Sleeps before delegating, standing in for an encoder slow enough to matter — the same style
+/// `SlowCapture` above uses to model a busy backend.
+struct SlowEncoder {
+    inner: Box<dyn VideoEncoder>,
+    delay: Duration,
+}
+
+impl VideoEncoder for SlowEncoder {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+    fn params(&self) -> CodecParams {
+        self.inner.params()
+    }
+    fn encode(&mut self, frame: &RawFrame, force: bool) -> Result<Vec<EncodedFrame>, CodecError> {
+        std::thread::sleep(self.delay);
+        self.inner.encode(frame, force)
+    }
+}
+
+#[tokio::test]
+async fn compatible_presets_share_one_conversion() {
+    let codecs = Arc::new(CountingCodecs::new());
+    let registry = LiveRegistry::new(
+        codecs.clone(),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let live = synthetic_live_with_presets(
+        &registry,
+        "desk",
+        vec![preset(1, 32, 16, 30), preset(2, 32, 16, 15)],
+    )
+    .await;
+
+    let mut a = registry.subscribe(live, 1).unwrap();
+    let mut b = registry.subscribe(live, 2).unwrap();
+    let fa = tokio::time::timeout(Duration::from_secs(2), a.frames.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let fb = tokio::time::timeout(Duration::from_secs(2), b.frames.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(fa.keyframe && fb.keyframe);
+    assert_eq!(
+        codecs.converter_opens.load(Ordering::SeqCst),
+        1,
+        "both presets share the same 32x16 converter"
+    );
+}
+
+#[tokio::test]
+async fn incompatible_presets_convert_independently_and_correctly() {
+    let codecs = Arc::new(CountingCodecs::new());
+    let registry = LiveRegistry::new(
+        codecs.clone(),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let live = synthetic_live_with_presets(
+        &registry,
+        "desk",
+        vec![preset(1, 32, 16, 30), preset(2, 16, 8, 30)],
+    )
+    .await;
+
+    let mut a = registry.subscribe(live, 1).unwrap();
+    let mut b = registry.subscribe(live, 2).unwrap();
+    let fa = tokio::time::timeout(Duration::from_secs(2), a.frames.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let fb = tokio::time::timeout(Duration::from_secs(2), b.frames.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        codecs.converter_opens.load(Ordering::SeqCst),
+        2,
+        "different output dimensions each need their own converter"
+    );
+
+    let raw_a = FakeDecoder.decode(&fa).unwrap();
+    assert_eq!((raw_a[0].width, raw_a[0].height), (32, 16));
+    let raw_b = FakeDecoder.decode(&fb).unwrap();
+    assert_eq!((raw_b[0].width, raw_b[0].height), (16, 8));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_preset_does_not_block_delivery_to_a_fast_one_sharing_its_conversion() {
+    let codecs = Arc::new(CountingCodecs::with_slow_preset(
+        2,
+        Duration::from_millis(250),
+    ));
+    let registry = LiveRegistry::new(
+        codecs.clone(),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let live = synthetic_live_with_presets(
+        &registry,
+        "desk",
+        vec![preset(1, 32, 16, 30), preset(2, 32, 16, 30)],
+    )
+    .await;
+
+    let mut fast = registry.subscribe(live, 1).unwrap();
+    let mut slow = registry.subscribe(live, 2).unwrap();
+    // Drains the slow preset continuously in the background: its own tiny fan-out backlog (see
+    // `SENDER_BACKLOG_FRAMES`) would otherwise fill up and re-gate on a keyframe if nothing ever
+    // read it, which is a fan-out artifact unrelated to what this test checks.
+    tokio::spawn(async move { while slow.frames.recv().await.is_some() {} });
+
+    let started = Instant::now();
+    for _ in 0..3 {
+        tokio::time::timeout(Duration::from_secs(2), fast.frames.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert!(
+        started.elapsed() < Duration::from_millis(700),
+        "the fast preset waited {:?} — it must not queue behind the slow preset's encoder",
+        started.elapsed()
+    );
+    assert_eq!(
+        codecs.converter_opens.load(Ordering::SeqCst),
+        1,
+        "the presets still share one converter despite the pacing difference"
+    );
+}
+
+#[tokio::test]
+async fn an_unsubscribed_preset_creates_no_conversion_work() {
+    let codecs = Arc::new(CountingCodecs::new());
+    let registry = LiveRegistry::new(
+        codecs.clone(),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let _live = synthetic_live_with_presets(
+        &registry,
+        "desk",
+        vec![preset(1, 32, 16, 30), preset(2, 16, 8, 30)],
+    )
+    .await;
+    // Gives the synthetic capture a moment to push frames nobody has subscribed to yet.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        codecs.converter_opens.load(Ordering::SeqCst),
+        0,
+        "advertising presets without subscribing must not open a converter"
     );
 }
 

@@ -137,7 +137,10 @@ pub mod fake {
         }
 
         fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError> {
-            Ok(Box::new(FakeEncoder::new(config_for(preset), FAKE_KEYFRAME_INTERVAL)))
+            Ok(Box::new(FakeEncoder::new(
+                config_for(preset),
+                FAKE_KEYFRAME_INTERVAL,
+            )))
         }
 
         fn preferred_codec(&self) -> Codec {
