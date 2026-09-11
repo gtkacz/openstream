@@ -90,6 +90,10 @@ impl RawFramePool {
             frame.capture_ts_us = capture_ts_us;
             frame
         } else {
+            // Evict stale-shape buffers so a resolution/preset change doesn't permanently pin
+            // the free list full of buffers `acquire` can never match and `release` can never
+            // replace (it only accepts new buffers while `free.len() < capacity`).
+            free.retain(|f| f.width == width && f.height == height);
             drop(free);
             RawFrame::black(width, height, capture_ts_us)
         }
@@ -183,8 +187,27 @@ mod tests {
         out.validate().unwrap();
         assert_eq!(
             pool.len(),
-            1,
-            "the mismatched buffer stays pooled for a future matching request"
+            0,
+            "a mismatched buffer is evicted, not retained, on a shape-mismatch miss"
+        );
+    }
+
+    #[test]
+    fn pool_resumes_reuse_at_the_new_shape_after_a_resolution_change() {
+        let pool = RawFramePool::new(2);
+        pool.release(RawFrame::black(6, 4, 0));
+        // The mismatch eviction above must not disable pooling permanently: once a
+        // new-shape buffer is released, later same-shape acquisitions reuse it.
+        let miss = pool.acquire(10, 6, 1);
+        pool.release(miss);
+        let a = pool.acquire(10, 6, 2);
+        let y_ptr = a.y.as_ptr();
+        pool.release(a);
+        let b = pool.acquire(10, 6, 3);
+        assert_eq!(
+            b.y.as_ptr(),
+            y_ptr,
+            "pooling resumes reusing allocations at the new shape"
         );
     }
 
