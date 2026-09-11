@@ -331,9 +331,14 @@ impl VideoEncoder for FfmpegEncoder {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::atomic::Ordering;
 
     use super::{SoftwareEncoderSlot, TOTAL_COMMITTED_LP, claim_software_encoder_lp};
+
+    // Guards tests that assert absolute values of the process-global `TOTAL_COMMITTED_LP`
+    // against interleaving with any other test in this binary that acquires slots concurrently.
+    static TEST_SLOT_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn a_lone_encoder_claims_only_half_the_machine_reserving_room_for_more() {
@@ -393,6 +398,7 @@ mod tests {
         // than through `FfmpegEncoder::open`, which needs a real libsvtav1 build), across an
         // open-open-close-open sequence: closing an encoder must free exactly its own claim, and
         // the next open must see that freed room rather than the stale, still-running total.
+        let _guard = TEST_SLOT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let before = TOTAL_COMMITTED_LP.load(Ordering::Relaxed);
         let a = SoftwareEncoderSlot::acquire();
         let b = SoftwareEncoderSlot::acquire();
