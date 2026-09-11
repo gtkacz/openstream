@@ -2,7 +2,8 @@
 //! draws the tile grid under the egui panels in the main window and one live per pop-out window.
 //! Panel commands go to the room view; window commands are applied here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ use winit::{
 
 use crate::cli::WindowArgs;
 use crate::commands::{RoomCommand, WindowCommand};
+use crate::dirty::DirtyStreams;
 use crate::launch::{self, Intent, Launch};
 use crate::popouts::PopOuts;
 use crate::relaunch::Relaunch;
@@ -29,6 +31,7 @@ use crate::render::grid::{self, PixelRect};
 use crate::render::surface::WindowSurface;
 use crate::render::tiles::{TileKey, TileRenderer};
 use crate::render::ui::UiFrame;
+use crate::repaint::RepaintSchedule;
 use crate::room_view::RoomView;
 use crate::settings::{SettingsStore, normalised_nickname, now_unix};
 use crate::ui::applications::{self as applications_ui, PickerOutcome};
@@ -37,6 +40,7 @@ use crate::ui::start::{self, StartAction, StartState};
 use crate::ui::state::{UiState, live_title};
 use crate::ui::update::{PROGRESS_STEP_BYTES, UpdateState};
 use crate::ui::{self, UiOutput, popout};
+use crate::visibility::Visibility;
 
 /// Initial inner size of the main window and of every pop-out, in physical pixels.
 pub const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1280, 720);
@@ -111,9 +115,15 @@ pub struct App {
     install: Option<Install>,
     update: UpdateState,
     relaunch: Option<Relaunch>,
-    /// The earliest instant any window's egui asked for its next frame; `about_to_wait` sleeps
-    /// until then instead of forever.
-    next_repaint: Option<Instant>,
+    /// Each window's own next requested repaint; `about_to_wait` wakes only the windows whose
+    /// deadline has passed, so one window's animation does not redraw the others.
+    repaint: RepaintSchedule<WindowId>,
+    /// Streams with a decoded frame no window has drawn yet, shared with the room's per-watch
+    /// frame-notify callback. Drained on `NewFrame` to redraw only the windows that show them.
+    dirty: Arc<DirtyStreams>,
+    /// Minimized, occluded, or zero-sized state per window, so presentation is skipped while
+    /// hidden and a fresh frame is requested the moment a window is shown again.
+    visibility: HashMap<WindowId, Visibility>,
     gpu: Option<GpuContext>,
     main: Option<WindowSurface>,
     /// Shared by every window: a frame is uploaded once whichever window shows it.
@@ -149,7 +159,9 @@ impl App {
             phase: Phase::Start,
             state: UiState::new(),
             pending_open: None,
-            next_repaint: None,
+            repaint: RepaintSchedule::new(),
+            dirty: Arc::new(DirtyStreams::new()),
+            visibility: HashMap::new(),
             gpu: None,
             main: None,
             tiles: None,
@@ -208,8 +220,9 @@ impl App {
         let nickname = self.start.nickname.clone();
         let room_events = self.proxy.clone();
         let done = self.proxy.clone();
+        let dirty = self.dirty.clone();
         self.pending_open = Some(self.runtime.spawn(async move {
-            let outcome = launch::open_room(&launch, secret, intent, &nickname, room_events)
+            let outcome = launch::open_room(&launch, secret, intent, &nickname, room_events, dirty)
                 .await
                 .map_err(|error| error.to_string());
             // The window learns of the outcome through the event; the task output is for the
@@ -282,17 +295,50 @@ impl App {
         self.main.as_ref().is_some_and(|m| m.window.id() == id)
     }
 
-    /// Keeps the earliest requested repaint across windows.
-    fn note_repaint(&mut self, delay: Duration) {
-        let deadline = repaint_deadline(Instant::now(), delay);
-        self.next_repaint = match (self.next_repaint, deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+    /// Records `id`'s next requested repaint, independent of every other window's.
+    fn note_repaint(&mut self, id: WindowId, delay: Duration) {
+        if let Some(deadline) = repaint_deadline(Instant::now(), delay) {
+            self.repaint.note(id, deadline);
+        }
     }
 
-    /// Re-snapshots the room and closes pop-outs whose watch has ended. Runs at the start of every
-    /// redraw, whichever window asked, so all windows draw from the same snapshot.
+    /// The window for `id`, main or pop-out.
+    fn window_ref(&self, id: WindowId) -> Option<&Window> {
+        if self.is_main(id) {
+            self.main.as_ref().map(|m| m.window.as_ref())
+        } else {
+            self.popout_windows
+                .get(&id)
+                .map(|p| p.surface.window.as_ref())
+        }
+    }
+
+    fn request_redraw(&self, id: WindowId) {
+        if let Some(window) = self.window_ref(id) {
+            window.request_redraw();
+        }
+    }
+
+    /// Redraws exactly the windows that show a stream with an undrawn frame: the grid when one of
+    /// its own tiles is dirty, and whichever pop-out shows a dirty tile, never anything else.
+    fn dispatch_dirty(&mut self) {
+        let dirty = self.dirty.drain();
+        if dirty.is_empty() {
+            return;
+        }
+        let (redraw_main, popout_ids) = affected_windows(&dirty, &self.popouts);
+        if redraw_main && let Some(main) = &self.main {
+            main.window.request_redraw();
+        }
+        for id in popout_ids {
+            self.request_redraw(id);
+        }
+    }
+
+    /// Re-snapshots the room and closes pop-outs whose watch has ended. Runs from `user_event` on
+    /// a room-version change or the statistics tick, not from the render path, so every window
+    /// redrawn in the same batch draws the same snapshot and steady video redraws never repeat
+    /// this housekeeping.
     fn refresh_room(&mut self) {
         let Phase::Room(view) = &mut self.phase else {
             return;
@@ -312,7 +358,21 @@ impl App {
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
-        self.refresh_room();
+        // Winit has no minimize event, so this is the one place to ask; occlusion and zero size
+        // arrive as events and are folded in by `window_event` instead.
+        let minimized = self.window_ref(id).and_then(Window::is_minimized);
+        self.visibility
+            .entry(id)
+            .or_default()
+            .set_minimized(minimized);
+        if self
+            .visibility
+            .get(&id)
+            .is_some_and(Visibility::is_suspended)
+        {
+            // Nothing would be shown; skip the GPU work until the window is visible again.
+            return;
+        }
         if self.is_main(id) {
             self.redraw_main(event_loop);
         } else if self.popouts.key_of(id).is_some() {
@@ -380,7 +440,8 @@ impl App {
                 main.window.request_redraw();
             }
         } else {
-            self.note_repaint(repaint_delay);
+            let id = main.window.id();
+            self.note_repaint(id, repaint_delay);
         }
 
         let had_commands = !output.commands.is_empty();
@@ -505,7 +566,8 @@ impl App {
                 surface.window.request_redraw();
             }
         } else {
-            self.note_repaint(repaint_delay);
+            let id = surface.window.id();
+            self.note_repaint(id, repaint_delay);
         }
 
         let had_commands = !output.commands.is_empty();
@@ -551,6 +613,11 @@ impl App {
                 WindowCommand::ReturnToGrid(key) => {
                     if let Some(id) = self.popouts.remove_key(key) {
                         self.popout_windows.remove(&id);
+                        self.repaint.remove(id);
+                        self.visibility.remove(&id);
+                        if let Some(main) = &self.main {
+                            main.window.request_redraw();
+                        }
                     }
                 }
             }
@@ -611,6 +678,8 @@ impl App {
     fn close_popout(&mut self, id: WindowId) {
         self.popouts.remove_window(id);
         self.popout_windows.remove(&id);
+        self.repaint.remove(id);
+        self.visibility.remove(&id);
         if let Some(main) = &self.main {
             main.window.request_redraw();
         }
@@ -648,6 +717,12 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        // A frame notification is scoped to whichever windows show the dirty streams; every other
+        // event still redraws every window below.
+        if let AppEvent::NewFrame = event {
+            self.dispatch_dirty();
+            return;
+        }
         match event {
             AppEvent::RoomOpened(Ok(room)) => {
                 self.pending_open = None;
@@ -697,7 +772,11 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::UpdateReady(Err(message)) => {
                 self.update.failed(message);
             }
-            AppEvent::RoomChanged | AppEvent::NewFrame | AppEvent::Tick => {}
+            // A room-version bump and the statistics tick are the two relevant state changes:
+            // the former reconciles watch membership promptly, the latter also catches a relay
+            // address change and advances age labels even when nothing is watched.
+            AppEvent::RoomChanged | AppEvent::Tick => self.refresh_room(),
+            AppEvent::NewFrame => {}
         }
         self.request_redraw_all();
     }
@@ -719,6 +798,24 @@ impl ApplicationHandler<AppEvent> for App {
                 WindowEvent::Resized(size) => {
                     if let Some(gpu) = self.gpu.as_ref() {
                         main.resize(gpu, size.width, size.height);
+                    }
+                    if self
+                        .visibility
+                        .entry(id)
+                        .or_default()
+                        .set_size(size.width, size.height)
+                    {
+                        self.request_redraw(id);
+                    }
+                }
+                WindowEvent::Occluded(occluded) => {
+                    if self
+                        .visibility
+                        .entry(id)
+                        .or_default()
+                        .set_occluded(occluded)
+                    {
+                        self.request_redraw(id);
                     }
                 }
                 WindowEvent::RedrawRequested => self.redraw(event_loop, id),
@@ -746,6 +843,24 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(gpu) = self.gpu.as_ref() {
                     popout.surface.resize(gpu, size.width, size.height);
                 }
+                if self
+                    .visibility
+                    .entry(id)
+                    .or_default()
+                    .set_size(size.width, size.height)
+                {
+                    self.request_redraw(id);
+                }
+            }
+            WindowEvent::Occluded(occluded) => {
+                if self
+                    .visibility
+                    .entry(id)
+                    .or_default()
+                    .set_occluded(occluded)
+                {
+                    self.request_redraw(id);
+                }
             }
             WindowEvent::RedrawRequested => self.redraw(event_loop, id),
             _ => {}
@@ -753,12 +868,13 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match self.next_repaint {
-            Some(deadline) if deadline <= Instant::now() => {
-                self.next_repaint = None;
-                self.request_redraw_all();
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
+        let now = Instant::now();
+        // Each window wakes only for its own deadline, so one window's animation never redraws
+        // the others.
+        for id in self.repaint.due(now) {
+            self.request_redraw(id);
+        }
+        match self.repaint.next_wake() {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
@@ -842,9 +958,25 @@ fn repaint_deadline(now: Instant, delay: Duration) -> Option<Instant> {
     now.checked_add(delay)
 }
 
+/// Which windows a set of dirty streams must redraw: whether the grid shows any of them, and the
+/// pop-out windows that do. A stream popped out never touches the grid; the grid is untouched
+/// unless one of its own tiles is dirty.
+fn affected_windows<Id: Copy + Eq + Hash>(
+    dirty: &HashSet<TileKey>,
+    popouts: &PopOuts<Id>,
+) -> (bool, Vec<Id>) {
+    let redraw_main = dirty.iter().any(|key| popouts.window_of(*key).is_none());
+    let popout_ids = dirty
+        .iter()
+        .filter_map(|key| popouts.window_of(*key))
+        .collect();
+    (redraw_main, popout_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iroh::SecretKey;
 
     #[test]
     fn a_finite_delay_becomes_a_deadline_and_no_request_becomes_none() {
@@ -855,5 +987,44 @@ mod tests {
         );
         assert_eq!(repaint_deadline(now, Duration::ZERO), Some(now));
         assert_eq!(repaint_deadline(now, Duration::MAX), None);
+    }
+
+    fn key(n: u8) -> TileKey {
+        (SecretKey::from_bytes(&[n; 32]).public(), u32::from(n))
+    }
+
+    #[test]
+    fn a_dirty_tile_still_in_the_grid_redraws_only_the_grid() {
+        let popouts: PopOuts<u32> = PopOuts::new();
+        let dirty = HashSet::from([key(1)]);
+        let (redraw_main, popout_ids) = affected_windows(&dirty, &popouts);
+        assert!(redraw_main);
+        assert!(popout_ids.is_empty());
+    }
+
+    #[test]
+    fn a_dirty_tile_popped_out_redraws_only_its_window() {
+        let mut popouts: PopOuts<u32> = PopOuts::new();
+        popouts.insert(7, key(1));
+        let dirty = HashSet::from([key(1)]);
+        let (redraw_main, popout_ids) = affected_windows(&dirty, &popouts);
+        assert!(!redraw_main, "the grid does not show a popped-out tile");
+        assert_eq!(popout_ids, [7]);
+    }
+
+    #[test]
+    fn a_burst_across_grid_and_pop_out_tiles_redraws_exactly_those_windows() {
+        let mut popouts: PopOuts<u32> = PopOuts::new();
+        popouts.insert(7, key(1));
+        popouts.insert(9, key(2));
+        let dirty = HashSet::from([key(1), key(3)]);
+        let (redraw_main, mut popout_ids) = affected_windows(&dirty, &popouts);
+        popout_ids.sort_unstable();
+        assert!(redraw_main, "key(3) is in the grid");
+        assert_eq!(
+            popout_ids,
+            [7],
+            "only key(1)'s window, not key(2)'s untouched one"
+        );
     }
 }

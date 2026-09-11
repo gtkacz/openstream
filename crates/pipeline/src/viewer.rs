@@ -143,7 +143,11 @@ impl DecodeLoop {
                 Ok(raws) => {
                     for raw in raws {
                         self.stats.frames_decoded.fetch_add(1, Ordering::Relaxed);
-                        self.slot.put(raw);
+                        // A frame the slot replaces here was superseded before display ever read
+                        // it, so it is safe to hand back to the decoder's pool.
+                        if let Some(superseded) = self.slot.put(raw) {
+                            self.decoder.recycle(superseded);
+                        }
                         (self.notify)();
                     }
                 }
@@ -164,5 +168,79 @@ impl DecodeLoop {
         {
             tracing::debug!("control channel full or closed; keyframe request dropped");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use brp_codec::CodecError;
+    use brp_proto::{FrameHeader, FrameKind};
+
+    use super::*;
+
+    /// Decodes one black frame per call and records every frame handed back through `recycle`, so
+    /// a test can assert on pooling without a real decoder or thread.
+    struct RecordingDecoder {
+        recycled: Arc<Mutex<Vec<RawFrame>>>,
+    }
+    impl VideoDecoder for RecordingDecoder {
+        fn decode(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+            Ok(vec![RawFrame::black(8, 4, frame.capture_ts_us)])
+        }
+        fn recycle(&mut self, frame: RawFrame) {
+            self.recycled.lock().unwrap().push(frame);
+        }
+    }
+
+    fn incoming(seq: u64, capture_ts_us: u64, keyframe: bool) -> IncomingFrame {
+        IncomingFrame {
+            header: FrameHeader {
+                live_id: 1,
+                preset_id: 1,
+                kind: FrameKind::Video,
+                seq,
+                capture_ts_us,
+                keyframe,
+                len: 0,
+            },
+            data: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_frame_overwritten_before_display_is_handed_back_to_the_decoder() {
+        let recycled = Arc::new(Mutex::new(Vec::new()));
+        let (_frames_tx, frames_rx) = tokio::sync::mpsc::channel(1);
+        let (control_tx, _control_rx) = tokio::sync::mpsc::channel(1);
+        let mut worker = DecodeLoop {
+            runtime: Handle::current(),
+            frames: frames_rx,
+            control: control_tx,
+            decoder: Box::new(RecordingDecoder {
+                recycled: recycled.clone(),
+            }),
+            notify: Arc::new(|| {}),
+            slot: LatestSlot::new(),
+            stats: Arc::new(ViewerStats::default()),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Two frames drained in one batch: nothing has consumed the first before the second
+        // overwrites it, so it must come back through `recycle` instead of being dropped.
+        worker.handle(Drained {
+            ready: vec![incoming(0, 10, true), incoming(1, 20, false)],
+            request_keyframe: false,
+        });
+
+        let recycled = recycled.lock().unwrap();
+        assert_eq!(recycled.len(), 1, "only the superseded frame is recycled");
+        assert_eq!(recycled[0].capture_ts_us, 10);
+        assert_eq!(
+            worker.slot.try_take().unwrap().capture_ts_us,
+            20,
+            "the newest frame is still the one waiting for display"
+        );
     }
 }

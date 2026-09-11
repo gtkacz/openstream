@@ -34,7 +34,7 @@ pub fn config(nickname: &str) -> RoomConfig {
         encoders: Arc::new(FakeCodecs),
         decoders: Arc::new(FakeCodecs),
         on_change: Arc::new(|| {}),
-        on_frame: Arc::new(|| {}),
+        on_frame: Arc::new(|_publisher, _live_id| {}),
         timings: RoomTimings {
             heartbeat: Duration::from_millis(200),
             expiry: Duration::from_secs(1),

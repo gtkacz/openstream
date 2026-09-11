@@ -1,4 +1,6 @@
-use crate::{CodecError, RawFrame};
+use std::sync::Arc;
+
+use crate::{CodecError, RawFrame, RawFramePool};
 use brp_proto::{Codec, CodecParams, EncodedFrame, PixelFormat};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderConfig {
@@ -28,7 +30,17 @@ pub trait VideoEncoder: Send {
 }
 pub trait VideoDecoder: Send {
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError>;
+    /// Gives back a decoded frame no consumer will read (it was superseded before it was ever
+    /// displayed), so implementations that pool decoded-frame allocations can reuse it. The
+    /// default drops it; only decoders that hold a pool need to override this.
+    fn recycle(&mut self, _frame: RawFrame) {}
+    /// The pool a displayed frame's buffer can be returned to once its consumer is done with it,
+    /// for a decoder that owns one. The default is `None`: a caller that gets `None` back has
+    /// nowhere to send the buffer and must just drop it, exactly as before pooling existed.
+    fn pool(&self) -> Option<Arc<RawFramePool>> {
+        None
+    }
 }
 pub trait FrameConverter: Send {
-    fn convert(&mut self, src: &InputImage<'_>) -> Result<RawFrame, CodecError>;
+    fn convert(&mut self, src: &InputImage<'_>) -> Result<&RawFrame, CodecError>;
 }

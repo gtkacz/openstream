@@ -15,6 +15,10 @@ pub struct SwsConverter {
     src: (u32, u32, PixelFormat),
     dst_width: u32,
     dst_height: u32,
+    /// Reused across calls: the destination size never changes for this converter's lifetime, and
+    /// each call fully overwrites it before returning, so there is no allocation (or redundant
+    /// black-level initialization) on the steady-state path.
+    scratch: RawFrame,
 }
 
 fn av_pix_fmt(format: PixelFormat) -> ff::AVPixelFormat {
@@ -81,12 +85,13 @@ impl SwsConverter {
             src: (src_width, src_height, src_format),
             dst_width,
             dst_height,
+            scratch: RawFrame::black(dst_width, dst_height, 0),
         })
     }
 }
 
 impl FrameConverter for SwsConverter {
-    fn convert(&mut self, src: &InputImage<'_>) -> Result<RawFrame, CodecError> {
+    fn convert(&mut self, src: &InputImage<'_>) -> Result<&RawFrame, CodecError> {
         if src.width == 0
             || src.height == 0
             || src.stride < src.width as usize * src.format.bytes_per_pixel()
@@ -114,16 +119,21 @@ impl FrameConverter for SwsConverter {
                 self.dst_height,
             )?;
         }
-        let mut out = RawFrame::black(self.dst_width, self.dst_height, src.capture_ts_us);
+        self.scratch.capture_ts_us = src.capture_ts_us;
         let source = [src.data.as_ptr(), ptr::null(), ptr::null(), ptr::null()];
         let source_stride = [src.stride as c_int, 0, 0, 0];
         let destination = [
-            out.y.as_mut_ptr(),
-            out.uv.as_mut_ptr(),
+            self.scratch.y.as_mut_ptr(),
+            self.scratch.uv.as_mut_ptr(),
             ptr::null_mut(),
             ptr::null_mut(),
         ];
-        let destination_stride = [out.y_stride as c_int, out.uv_stride as c_int, 0, 0];
+        let destination_stride = [
+            self.scratch.y_stride as c_int,
+            self.scratch.uv_stride as c_int,
+            0,
+            0,
+        ];
         let rows = unsafe {
             ff::sws_scale(
                 self.ctx,
@@ -136,7 +146,7 @@ impl FrameConverter for SwsConverter {
             )
         };
         check("sws_scale", rows)?;
-        Ok(out)
+        Ok(&self.scratch)
     }
 }
 
@@ -170,7 +180,7 @@ mod tests {
             data: pixels,
             capture_ts_us: 42,
         };
-        converter.convert(&image).unwrap()
+        converter.convert(&image).unwrap().clone()
     }
     #[test]
     fn white_maps_to_limited_range_white() {
@@ -206,5 +216,68 @@ mod tests {
             converter.convert(&image),
             Err(CodecError::InvalidFrame(_))
         ));
+    }
+    #[test]
+    fn stable_output_size_reuses_the_same_scratch_allocation() {
+        let mut converter = SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4).unwrap();
+        let pixels = solid(8, 4, [10; 4]);
+        let image = InputImage {
+            width: 8,
+            height: 4,
+            stride: 32,
+            format: PixelFormat::Bgra,
+            data: &pixels,
+            capture_ts_us: 1,
+        };
+        let (first_y, first_uv) = {
+            let out = converter.convert(&image).unwrap();
+            (out.y.as_ptr(), out.uv.as_ptr())
+        };
+        let second = InputImage {
+            capture_ts_us: 2,
+            ..image
+        };
+        let output = converter.convert(&second).unwrap();
+        assert_eq!(
+            output.y.as_ptr(),
+            first_y,
+            "a stable size must reuse the y buffer"
+        );
+        assert_eq!(
+            output.uv.as_ptr(),
+            first_uv,
+            "a stable size must reuse the uv buffer"
+        );
+        assert_eq!(output.capture_ts_us, 2);
+    }
+    #[test]
+    fn a_source_resolution_change_still_produces_a_correctly_shaped_frame() {
+        let mut converter = SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4).unwrap();
+        let first_pixels = solid(8, 4, [255; 4]);
+        let first = InputImage {
+            width: 8,
+            height: 4,
+            stride: 32,
+            format: PixelFormat::Bgra,
+            data: &first_pixels,
+            capture_ts_us: 1,
+        };
+        converter.convert(&first).unwrap();
+
+        // A larger source at the same destination size rebuilds the sws context; the scratch
+        // buffer it recycles into must still be exactly the destination shape.
+        let second_pixels = solid(16, 8, [0, 0, 0, 255]);
+        let second = InputImage {
+            width: 16,
+            height: 8,
+            stride: 64,
+            format: PixelFormat::Bgra,
+            data: &second_pixels,
+            capture_ts_us: 2,
+        };
+        let output = converter.convert(&second).unwrap();
+        assert_eq!((output.width, output.height), (8, 4));
+        output.validate().unwrap();
+        assert!(output.y.iter().all(|&v| (14..=18).contains(&v)));
     }
 }

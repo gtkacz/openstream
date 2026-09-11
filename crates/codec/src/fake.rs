@@ -47,17 +47,19 @@ impl VideoDecoder for FakeDecoder {
     }
 }
 pub struct SolidConverter {
-    w: u32,
-    h: u32,
+    scratch: RawFrame,
 }
 impl SolidConverter {
     pub fn new(w: u32, h: u32) -> Self {
-        Self { w, h }
+        Self {
+            scratch: RawFrame::black(w, h, 0),
+        }
     }
 }
 impl FrameConverter for SolidConverter {
-    fn convert(&mut self, s: &InputImage<'_>) -> Result<RawFrame, CodecError> {
-        Ok(RawFrame::black(self.w, self.h, s.capture_ts_us))
+    fn convert(&mut self, s: &InputImage<'_>) -> Result<&RawFrame, CodecError> {
+        self.scratch.capture_ts_us = s.capture_ts_us;
+        Ok(&self.scratch)
     }
 }
 

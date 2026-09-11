@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use brp_audio::{AudioCapture, AudioOutput, AudioOutputSession, AudioSelection, AudioSource};
 use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
-use brp_pipeline::{FrameNotify, Mixer};
+use brp_pipeline::Mixer;
 use brp_proto::constants::{
     ENCODER_IDLE_STOP_GRACE, JOIN_TIMEOUT, MAX_LIVES_PER_PARTICIPANT, MEDIA_ALPN, MEMBER_EXPIRY,
     NICKNAME_MAX_LEN, PRESENCE_HEARTBEAT, REGISTRY_HOUSEKEEPING,
@@ -26,7 +26,7 @@ use crate::gossip::{self, PresenceLoop, lock};
 use crate::membership::Membership;
 use crate::registry::{CaptureFan, ChangeNotify, LiveRegistry};
 use crate::snapshot::{MemberView, RoomSnapshot};
-use crate::watcher::{WatchHandle, Watcher};
+use crate::watcher::{FrameNotify, WatchHandle, Watcher};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RoomTimings {

@@ -14,6 +14,7 @@ use iroh::SecretKey;
 use winit::event_loop::EventLoopProxy;
 
 use crate::cli::WindowArgs;
+use crate::dirty::DirtyStreams;
 use crate::error::AppError;
 use crate::settings::Settings;
 use crate::window::AppEvent;
@@ -75,6 +76,7 @@ pub async fn open_room(
     intent: Intent,
     nickname: &str,
     proxy: EventLoopProxy<AppEvent>,
+    dirty: Arc<DirtyStreams>,
 ) -> Result<Arc<Room>, AppError> {
     let nickname = match nickname.trim() {
         "" => secret.public().fmt_short().to_string(),
@@ -95,8 +97,12 @@ pub async fn open_room(
         on_change: Arc::new(move || {
             let _ = change_proxy.send_event(AppEvent::RoomChanged);
         }),
-        on_frame: Arc::new(move || {
-            let _ = proxy.send_event(AppEvent::NewFrame);
+        on_frame: Arc::new(move |publisher, live_id| {
+            // Coalesced: only the mark that flips the dirty set from empty wakes the loop, so a
+            // burst of frames on one stream sends one event instead of one per frame.
+            if dirty.mark((publisher, live_id)) {
+                let _ = proxy.send_event(AppEvent::NewFrame);
+            }
         }),
         timings: RoomTimings::default(),
     };

@@ -28,15 +28,20 @@ impl<T> LatestSlot<T> {
     fn lock(&self) -> std::sync::MutexGuard<'_, State<T>> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
-    pub fn put(&self, v: T) {
+    /// Stores the newest value. Returns whatever value it replaced (a frame overwritten before it
+    /// was ever read, or `v` itself once the slot is closed), so a caller pooling allocations can
+    /// reuse it instead of letting it drop.
+    pub fn put(&self, v: T) -> Option<T> {
         let mut s = self.lock();
         if s.closed {
-            return;
+            return Some(v);
         }
-        if s.value.replace(v).is_some() {
+        let old = s.value.replace(v);
+        if old.is_some() {
             s.dropped += 1
         }
-        self.ready.notify_one()
+        self.ready.notify_one();
+        old
     }
     pub fn try_take(&self) -> Option<T> {
         self.lock().value.take()

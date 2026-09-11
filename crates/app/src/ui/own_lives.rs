@@ -210,10 +210,19 @@ fn live_rows(
                 (Some(encoder), _) => {
                     let plural = if encoder.subscribers == 1 { "" } else { "s" };
                     let measured = state.preset_kbps(info.id, preset.id).unwrap_or(0);
-                    ui.label(format!(
+                    let label = ui.label(format!(
                         "{} · {measured} kbps · {} viewer{plural} · {} frames",
                         encoder.name, encoder.subscribers, encoder.frames_encoded
-                    ))
+                    ));
+                    if brp_codec::is_software_encoder(encoder.name) {
+                        // Plain-language note for the user; the per-attempt hardware failures
+                        // that led here stay in the logs rather than cluttering this panel.
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            "software encoding (no GPU encoder available, uses more CPU)",
+                        );
+                    }
+                    label
                 }
                 (None, Some(error)) => {
                     ui.colored_label(egui::Color32::LIGHT_RED, format!("failed: {error}"))

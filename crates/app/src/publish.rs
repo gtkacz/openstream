@@ -37,7 +37,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
         encoders: Arc::new(FfmpegCodecs::default()),
         decoders: Arc::new(FfmpegCodecs::default()),
         on_change: Arc::new(|| {}),
-        on_frame: Arc::new(|| {}),
+        on_frame: Arc::new(|_publisher, _live_id| {}),
         timings: RoomTimings::default(),
     };
     let room = match &args.ticket {

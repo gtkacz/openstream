@@ -1,12 +1,13 @@
-//! Capture slot -> convert -> encode -> fan-out, on one dedicated thread per preset.
+//! Converted-frame slot -> encode -> fan-out, on one dedicated thread per preset. Conversion
+//! happens upstream of this slot (shared across compatible presets); this stage only paces and
+//! encodes what it is handed.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use brp_capture::CaptureFrame;
-use brp_codec::{FrameConverter, InputImage, VideoEncoder};
+use brp_codec::{RawFrame, VideoEncoder};
 use brp_net::{LiveSource, SubscribeRejected, Subscription};
 use brp_proto::CodecParams;
 use brp_proto::constants::IDLE_KEYFRAME_RETRY;
@@ -35,7 +36,7 @@ struct Inner {
     keyframe: KeyframeRequest,
     stop: AtomicBool,
     stats: PublisherStats,
-    slot: Arc<LatestSlot<Arc<CaptureFrame>>>,
+    slot: Arc<LatestSlot<Arc<RawFrame>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -43,8 +44,7 @@ impl Publisher {
     pub fn start(
         live_id: u32,
         preset_id: u32,
-        slot: Arc<LatestSlot<Arc<CaptureFrame>>>,
-        converter: Box<dyn FrameConverter>,
+        slot: Arc<LatestSlot<Arc<RawFrame>>>,
         encoder: Box<dyn VideoEncoder>,
         pacer: Option<Pacer>,
     ) -> Self {
@@ -64,7 +64,7 @@ impl Publisher {
         let worker = inner.clone();
         let handle = thread::Builder::new()
             .name(format!("brp-encode-{live_id}-{preset_id}"))
-            .spawn(move || encode_loop(worker, converter, encoder, pacer))
+            .spawn(move || encode_loop(worker, encoder, pacer))
             .expect("spawning a thread only fails when the system is out of resources");
         *lock(&inner.thread) = Some(handle);
         Self { inner }
@@ -123,13 +123,8 @@ impl LiveSource for Publisher {
     }
 }
 
-fn encode_loop(
-    inner: Arc<Inner>,
-    mut converter: Box<dyn FrameConverter>,
-    mut encoder: Box<dyn VideoEncoder>,
-    mut pacer: Option<Pacer>,
-) {
-    let mut last: Option<Arc<CaptureFrame>> = None;
+fn encode_loop(inner: Arc<Inner>, mut encoder: Box<dyn VideoEncoder>, mut pacer: Option<Pacer>) {
+    let mut last: Option<Arc<RawFrame>> = None;
     while !inner.stop.load(Ordering::Relaxed) {
         let frame = match inner.slot.take_timeout(IDLE_KEYFRAME_RETRY) {
             SlotWait::Value(frame) => {
@@ -149,23 +144,14 @@ fn encode_loop(
         };
         let Some(frame) = frame else { continue };
         let force = inner.keyframe.take_if_allowed(Instant::now());
-        let image = InputImage {
-            width: frame.width,
-            height: frame.height,
-            stride: frame.stride,
-            format: frame.format,
-            data: &frame.data,
-            capture_ts_us: frame.capture_ts_us,
-        };
-        let raw = match converter.convert(&image) {
-            Ok(raw) => raw,
-            Err(error) => {
-                tracing::error!(%error, "frame conversion failed");
-                continue;
-            }
-        };
-        match encoder.encode(&raw, force) {
+        // Timed across encoding alone now that conversion happens upstream of this slot (shared
+        // across compatible presets); overload pacing still reacts to the per-frame budget it protects.
+        let started = Instant::now();
+        match encoder.encode(frame, force) {
             Ok(packets) => {
+                if let Some(pacer) = pacer.as_mut() {
+                    pacer.record_duration(started.elapsed().as_micros() as u64);
+                }
                 for packet in packets {
                     inner.stats.frames_encoded.fetch_add(1, Ordering::Relaxed);
                     inner

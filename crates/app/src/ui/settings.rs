@@ -123,7 +123,23 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     ui.end_row();
 
                     ui.label("Frame rate ceiling");
-                    ui.add(egui::DragValue::new(&mut dialog.draft.fps).range(1..=u32::MAX));
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut dialog.draft.fps).range(1..=u32::MAX));
+                        // Quick picks for the two rates the sharing panel actually offers;
+                        // the drag value still takes any explicit choice.
+                        if ui
+                            .selectable_label(dialog.draft.fps == 30, "30 fps")
+                            .clicked()
+                        {
+                            dialog.draft.fps = 30;
+                        }
+                        if ui
+                            .selectable_label(dialog.draft.fps == 60, "60 fps")
+                            .clicked()
+                        {
+                            dialog.draft.fps = 60;
+                        }
+                    });
                     ui.end_row();
 
                     ui.label("Audio output");
