@@ -167,7 +167,7 @@ fn encode_loop(
                 continue;
             }
         };
-        match encoder.encode(&raw, force) {
+        match encoder.encode(raw, force) {
             Ok(packets) => {
                 if let Some(pacer) = pacer.as_mut() {
                     pacer.record_duration(started.elapsed().as_micros() as u64);

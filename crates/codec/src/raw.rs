@@ -50,6 +50,58 @@ impl RawFrame {
     }
 }
 
+/// A bounded free list of previously used frame buffers. Reusing a buffer skips both the
+/// allocation and the black-level initialization `RawFrame::black` performs on a buffer that is
+/// about to be fully overwritten. Buffers are matched by exact `(width, height)`; a stride, chroma
+/// layout, or resolution change never reuses a mismatched buffer, so it falls back to a fresh
+/// `RawFrame::black`. Bounded by `capacity` so a stalled consumer cannot grow retained memory
+/// without limit; dropping the pool (e.g. when a watch ends) releases everything it holds.
+#[derive(Default)]
+pub struct RawFramePool {
+    capacity: usize,
+    free: Vec<RawFrame>,
+}
+
+impl RawFramePool {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            free: Vec::new(),
+        }
+    }
+
+    /// Reuses a pooled buffer matching `width`/`height` when one is free; otherwise allocates a
+    /// fresh black frame.
+    pub fn acquire(&mut self, width: u32, height: u32, capture_ts_us: u64) -> RawFrame {
+        if let Some(pos) = self
+            .free
+            .iter()
+            .position(|f| f.width == width && f.height == height)
+        {
+            let mut frame = self.free.swap_remove(pos);
+            frame.capture_ts_us = capture_ts_us;
+            frame
+        } else {
+            RawFrame::black(width, height, capture_ts_us)
+        }
+    }
+
+    /// Gives a frame no consumer will read back to the pool, subject to `capacity`.
+    pub fn release(&mut self, frame: RawFrame) {
+        if self.free.len() < self.capacity {
+            self.free.push(frame);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.free.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.free.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,5 +127,62 @@ mod tests {
             ..RawFrame::black(6, 4, 0)
         };
         assert!(matches!(odd.validate(), Err(CodecError::InvalidFrame(_))));
+    }
+
+    #[test]
+    fn pool_reuses_a_released_buffer_of_the_same_shape() {
+        let mut pool = RawFramePool::new(2);
+        let a = pool.acquire(6, 4, 1);
+        let y_ptr = a.y.as_ptr();
+        let uv_ptr = a.uv.as_ptr();
+        pool.release(a);
+        let b = pool.acquire(6, 4, 2);
+        assert_eq!(
+            b.y.as_ptr(),
+            y_ptr,
+            "a matching shape must reuse the y allocation"
+        );
+        assert_eq!(
+            b.uv.as_ptr(),
+            uv_ptr,
+            "a matching shape must reuse the uv allocation"
+        );
+        assert_eq!(b.capture_ts_us, 2);
+        assert!(pool.is_empty(), "the reused buffer leaves the pool empty");
+    }
+
+    #[test]
+    fn pool_drops_buffers_beyond_its_bound() {
+        let mut pool = RawFramePool::new(1);
+        pool.release(RawFrame::black(6, 4, 0));
+        pool.release(RawFrame::black(6, 4, 0));
+        assert_eq!(
+            pool.len(),
+            1,
+            "a pool must never retain more than its bound"
+        );
+    }
+
+    #[test]
+    fn pool_never_reuses_a_mismatched_shape() {
+        let mut pool = RawFramePool::new(2);
+        pool.release(RawFrame::black(6, 4, 0));
+        // Different width and height: a resolution/chroma-layout change, not a stable stream.
+        let out = pool.acquire(10, 6, 5);
+        assert_eq!((out.width, out.height, out.capture_ts_us), (10, 6, 5));
+        out.validate().unwrap();
+        assert_eq!(
+            pool.len(),
+            1,
+            "the mismatched buffer stays pooled for a future matching request"
+        );
+    }
+
+    #[test]
+    fn pool_falls_back_to_black_when_empty() {
+        let mut pool = RawFramePool::new(2);
+        let out = pool.acquire(6, 4, 9);
+        assert!(out.y.iter().all(|&v| v == 16) && out.uv.iter().all(|&v| v == 128));
+        assert!(out.validate().is_ok());
     }
 }

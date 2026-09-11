@@ -2,7 +2,7 @@ use crate::error::CodecError;
 use crate::ffmpeg::ffi::{
     BufferRef, CodecContext, Frame, Packet, again, check, cstring, init_logging,
 };
-use crate::raw::RawFrame;
+use crate::raw::{RawFrame, RawFramePool};
 use crate::traits::VideoDecoder;
 use brp_proto::{Codec, CodecParams, EncodedFrame};
 use ffmpeg_sys_next as ff;
@@ -22,7 +22,16 @@ pub struct FfmpegDecoder {
     frame: Frame,
     sw_frame: Frame,
     name: &'static str,
+    /// Recycled decoded-frame buffers. One watch has at most one frame decoding and, typically,
+    /// one waiting to be displayed, so a small bound keeps this from growing without limit even
+    /// under a stalled consumer.
+    pool: RawFramePool,
 }
+
+/// Bounds `FfmpegDecoder::pool`. `avcodec_receive_frame` can drain more than one frame per
+/// `decode` call after a gap, so this allows a little slack beyond the steady-state one-in-flight
+/// case.
+const DECODE_POOL_CAPACITY: usize = 4;
 /// Hardware decoders tried before software: the platform's own API first, then NVDEC.
 #[cfg(windows)]
 const HW_DEVICE_ORDER: [(ff::AVHWDeviceType, &str); 2] = [
@@ -85,6 +94,7 @@ impl FfmpegDecoder {
             frame: Frame::new()?,
             sw_frame: Frame::new()?,
             name,
+            pool: RawFramePool::new(DECODE_POOL_CAPACITY),
         })
     }
     pub fn name(&self) -> &'static str {
@@ -218,14 +228,19 @@ impl VideoDecoder for FfmpegDecoder {
             } else {
                 self.frame.0
             };
-            output.push(raw_from_avframe(unsafe { &*source })?);
+            output.push(raw_from_avframe(unsafe { &*source }, &mut self.pool)?);
             self.frame.unref();
         }
     }
+    /// A frame decoded but superseded before it was ever displayed: safe to reuse since nothing
+    /// read it.
+    fn recycle(&mut self, frame: RawFrame) {
+        self.pool.release(frame);
+    }
 }
-fn raw_from_avframe(frame: &ff::AVFrame) -> Result<RawFrame, CodecError> {
+fn raw_from_avframe(frame: &ff::AVFrame, pool: &mut RawFramePool) -> Result<RawFrame, CodecError> {
     let (width, height) = (frame.width as u32, frame.height as u32);
-    let mut output = RawFrame::black(width, height, frame.pts.max(0) as u64);
+    let mut output = pool.acquire(width, height, frame.pts.max(0) as u64);
     let rows = output.chroma_rows();
     let width = width as usize;
     unsafe {

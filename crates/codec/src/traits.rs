@@ -28,7 +28,11 @@ pub trait VideoEncoder: Send {
 }
 pub trait VideoDecoder: Send {
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError>;
+    /// Gives back a decoded frame no consumer will read (it was superseded before it was ever
+    /// displayed), so implementations that pool decoded-frame allocations can reuse it. The
+    /// default drops it; only decoders that hold a pool need to override this.
+    fn recycle(&mut self, _frame: RawFrame) {}
 }
 pub trait FrameConverter: Send {
-    fn convert(&mut self, src: &InputImage<'_>) -> Result<RawFrame, CodecError>;
+    fn convert(&mut self, src: &InputImage<'_>) -> Result<&RawFrame, CodecError>;
 }
