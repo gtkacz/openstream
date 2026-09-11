@@ -615,6 +615,9 @@ impl App {
                         self.popout_windows.remove(&id);
                         self.repaint.remove(id);
                         self.visibility.remove(&id);
+                        if let Some(main) = &self.main {
+                            main.window.request_redraw();
+                        }
                     }
                 }
             }
