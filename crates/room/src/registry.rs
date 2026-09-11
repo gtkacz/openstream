@@ -56,6 +56,13 @@ impl CaptureFan {
     }
 }
 
+/// One preset subscribed to a `ConversionGroup`: its slot for converted frames and the fps its
+/// own pacer targets, which feeds the group's coarser upstream gate (see `recompute_gate`).
+struct Member {
+    fps: u32,
+    slot: RawSlot,
+}
+
 /// Converts one captured frame per tick and shares the immutable result with every subscribed
 /// preset whose output dimensions match this group's — one `SwsConverter`/`FrameConverter` per
 /// distinct (width, height) per live, instead of one per preset. `FrameConverter::convert` lends a
@@ -67,7 +74,12 @@ impl CaptureFan {
 struct ConversionGroup {
     stop: AtomicBool,
     capture_slot: CaptureSlot,
-    members: Mutex<Vec<RawSlot>>,
+    members: Mutex<Vec<Member>>,
+    /// Admits captured frames into conversion at `max(member.fps)` across currently attached
+    /// members, upstream of (and coarser than) each member's own per-preset `Pacer` in
+    /// `publisher.rs`. Recomputed on every attach/detach so conversion never runs faster than the
+    /// fastest preset actually needs, regardless of the room's capture rate.
+    gate: Mutex<Pacer>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -78,6 +90,7 @@ impl ConversionGroup {
             stop: AtomicBool::new(false),
             capture_slot,
             members: Mutex::new(Vec::new()),
+            gate: Mutex::new(Pacer::new(1)),
             thread: Mutex::new(None),
         });
         let worker = group.clone();
@@ -89,14 +102,27 @@ impl ConversionGroup {
         group
     }
 
-    fn attach_member(&self) -> RawSlot {
+    fn attach_member(&self, fps: u32) -> RawSlot {
         let slot = LatestSlot::new();
-        lock(&self.members).push(slot.clone());
+        lock(&self.members).push(Member {
+            fps,
+            slot: slot.clone(),
+        });
+        self.recompute_gate();
         slot
     }
 
     fn detach_member(&self, slot: &RawSlot) {
-        lock(&self.members).retain(|s| !Arc::ptr_eq(s, slot));
+        lock(&self.members).retain(|m| !Arc::ptr_eq(&m.slot, slot));
+        self.recompute_gate();
+    }
+
+    /// Resets the gate to a fresh `Pacer` at the new ceiling. A member attaching or detaching
+    /// changes what rate conversion needs to run at, so any backed-off state from the old ceiling
+    /// no longer applies.
+    fn recompute_gate(&self) {
+        let max_fps = lock(&self.members).iter().map(|m| m.fps).max().unwrap_or(1);
+        *lock(&self.gate) = Pacer::new(max_fps);
     }
 
     fn member_count(&self) -> usize {
@@ -122,6 +148,9 @@ fn conversion_loop(group: Arc<ConversionGroup>, mut converter: Box<dyn FrameConv
             SlotWait::Timeout => continue,
             SlotWait::Closed => break,
         };
+        if !lock(&group.gate).admit(frame.capture_ts_us) {
+            continue;
+        }
         let image = InputImage {
             width: frame.width,
             height: frame.height,
@@ -136,7 +165,7 @@ fn conversion_loop(group: Arc<ConversionGroup>, mut converter: Box<dyn FrameConv
                 // the converter's scratch buffer: every member gets its own immutable `Arc`.
                 let shared = Arc::new(raw.clone());
                 for member in lock(&group.members).iter() {
-                    member.put(shared.clone());
+                    member.slot.put(shared.clone());
                 }
             }
             Err(error) => tracing::error!(%error, "shared frame conversion failed"),
@@ -734,7 +763,7 @@ fn start_preset_encoder(
     };
     match encoders.open_encoder(preset) {
         Ok(encoder) => {
-            let raw_slot = group.attach_member();
+            let raw_slot = group.attach_member(preset.fps);
             // Always paced, even at the source rate: below the target rate the pacer skips
             // frames to hold the preset's fps; at or above it every frame still clears the
             // due-time check, so admission is unaffected, but sustained overload can still
@@ -832,4 +861,59 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod conversion_group_gate_tests {
+    use super::*;
+
+    /// Builds a `ConversionGroup` without spawning its conversion thread: these tests exercise
+    /// only `attach_member`/`detach_member`'s gate recomputation, not frame delivery.
+    fn group_without_thread() -> ConversionGroup {
+        ConversionGroup {
+            stop: AtomicBool::new(false),
+            capture_slot: LatestSlot::new(),
+            members: Mutex::new(Vec::new()),
+            gate: Mutex::new(Pacer::new(1)),
+            thread: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn gate_tracks_the_max_member_fps_not_the_capture_rate() {
+        let group = group_without_thread();
+        let _slot_a = group.attach_member(10);
+        assert_eq!(
+            lock(&group.gate).current_fps(),
+            10,
+            "a lone member below the capture rate sets the gate to its own fps"
+        );
+        let slot_b = group.attach_member(30);
+        assert_eq!(
+            lock(&group.gate).current_fps(),
+            30,
+            "a faster member joining raises the gate to the new max, not the capture rate"
+        );
+        group.detach_member(&slot_b);
+        assert_eq!(
+            lock(&group.gate).current_fps(),
+            10,
+            "the gate drops back once the faster member detaches"
+        );
+    }
+
+    #[test]
+    fn raising_a_members_fps_raises_the_gate() {
+        let group = group_without_thread();
+        let slot = group.attach_member(15);
+        assert_eq!(lock(&group.gate).current_fps(), 15);
+        // A preset fps change stops and re-attaches the member (see `set_presets`); model that here.
+        group.detach_member(&slot);
+        let _raised = group.attach_member(45);
+        assert_eq!(
+            lock(&group.gate).current_fps(),
+            45,
+            "the gate follows a member's new, higher fps"
+        );
+    }
 }
