@@ -125,7 +125,9 @@ every publisher at once. On Linux, capture links to the selected applications'
 PipeWire output, always excluding OpenStream's own. On Windows, the default remains
 one WASAPI process-loopback client in exclude mode; a selection enumerates
 audio sessions and opens one include-tree client per selected application root,
-mixed into the same publisher stream. Requires Windows 10 version 2004. The
+mixed into the same publisher stream. Windows can only include a process together
+with everything it started, so an application whose tree holds another application's
+audio is held back, and the dock says so. Requires Windows 10 version 2004. The
 Windows audio path is compiled and linted on CI but has not run on hardware;
 `crates/audio/tests/windows_hardware.rs` checks it on a real machine.
 

@@ -18,7 +18,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::error::AudioError;
-use crate::process_tree::{ProcessInfo, ProcessMap, application_root};
+use crate::process_tree::{CapturePlan, ProcessInfo, ProcessMap, capture_plan};
 use crate::selection::{AppKey, AudioSource};
 
 #[derive(Debug)]
@@ -36,8 +36,16 @@ pub(super) fn list_sources(process_id: u32) -> Result<Vec<AudioSource>, AudioErr
             let result = initialize_mta()
                 .ok()
                 .map_err(|error| AudioError::Windows(format!("CoInitializeEx: {error}")))
-                .and_then(|_| enumerate_sessions(process_id))
-                .map(collapse_sources);
+                .and_then(|_| {
+                    let own_key = current_executable_key()?;
+                    let sessions = enumerate_sessions()?;
+                    Ok(collapse_sources(
+                        sessions
+                            .into_iter()
+                            .filter(|session| session.pid != process_id && session.key != own_key)
+                            .collect(),
+                    ))
+                });
             let _ = tx.send(result);
         })
         .map_err(|error| {
@@ -63,25 +71,28 @@ pub(super) fn list_sources(process_id: u32) -> Result<Vec<AudioSource>, AudioErr
     }
 }
 
-/// The root process of each selected application with a session, and which application it is.
+/// What to capture for `selected`. Every session counts, OpenStream's own included: another window
+/// living under a selected application must hold that application back, even though it is never
+/// offered or captured itself.
 pub(super) fn selected_roots(
     process_id: u32,
     selected: &BTreeSet<AppKey>,
-) -> Result<BTreeMap<u32, AppKey>, AudioError> {
-    let sessions = enumerate_sessions(process_id)?;
-    let processes = process_snapshot()?;
-    Ok(sessions
+) -> Result<CapturePlan, AudioError> {
+    let own_key = current_executable_key()?;
+    let selected: BTreeSet<AppKey> = selected
         .iter()
-        .filter(|session| selected.contains(&session.key))
-        .filter_map(|session| {
-            application_root(session.pid, &session.key, &processes)
-                .map(|root| (root, session.key.clone()))
-        })
-        .collect())
+        .filter(|key| **key != own_key)
+        .cloned()
+        .collect();
+    let sessions: Vec<(u32, AppKey)> = enumerate_sessions()?
+        .into_iter()
+        .map(|session| (session.pid, session.key))
+        .collect();
+    let processes = process_snapshot()?;
+    Ok(capture_plan(&sessions, process_id, &selected, &processes))
 }
 
-fn enumerate_sessions(process_id: u32) -> Result<Vec<SessionProcess>, AudioError> {
-    let own_key = current_executable_key()?;
+fn enumerate_sessions() -> Result<Vec<SessionProcess>, AudioError> {
     let enumerator = DeviceEnumerator::new()
         .map_err(|error| windows_error("create device enumerator", error))?;
     let device = enumerator
@@ -117,7 +128,7 @@ fn enumerate_sessions(process_id: u32) -> Result<Vec<SessionProcess>, AudioError
             continue;
         }
         let pid = match control.get_process_id() {
-            Ok(pid) if pid != 0 && pid != process_id => pid,
+            Ok(pid) if pid != 0 => pid,
             Ok(_) => continue,
             Err(error) => {
                 tracing::debug!(index, %error, "could not resolve audio session process");
@@ -132,9 +143,6 @@ fn enumerate_sessions(process_id: u32) -> Result<Vec<SessionProcess>, AudioError
             }
         };
         let key = AppKey::new(&path);
-        if key == own_key {
-            continue;
-        }
         let reported_label = control.get_display_name().unwrap_or_default();
         let label = if reported_label.trim().is_empty() {
             key.as_str().to_string()

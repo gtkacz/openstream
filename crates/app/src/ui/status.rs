@@ -165,11 +165,16 @@ fn notices(
         AudioCaptureState::Failed(error) => Some(error),
         _ => None,
     };
+    let audio_limit = match &snapshot.own_audio.state {
+        AudioCaptureState::Limited(notice) => Some(notice),
+        _ => None,
+    };
     let has_notice = !state.status.is_empty()
         || state.share_pending
         || update_state.available.is_some()
         || snapshot.audio_output_error.is_some()
-        || audio_error.is_some();
+        || audio_error.is_some()
+        || audio_limit.is_some();
     motion::unfold(ui, "dock-notices", has_notice, |ui| {
         ui.horizontal_wrapped(|ui| {
             if state.share_pending {
@@ -187,6 +192,9 @@ fn notices(
             }
             if let Some(error) = audio_error {
                 ui.colored_label(theme::ERROR, format!("Audio failed: {error}"));
+            }
+            if let Some(notice) = audio_limit {
+                ui.colored_label(theme::WARNING, notice);
             }
         });
         ui.add_space(4.0);

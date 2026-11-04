@@ -995,6 +995,82 @@ async fn a_swap_that_fails_to_start_drops_has_audio_and_rejects_new_subscribers(
     .await;
 }
 
+/// Wraps the synthetic tone with a notice the test can change while it runs.
+struct LimitedCapture(Arc<std::sync::Mutex<Option<String>>>);
+
+struct LimitedSession {
+    inner: Box<dyn AudioCaptureSession>,
+    notice: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl AudioCaptureSession for LimitedSession {
+    fn error(&self) -> Option<String> {
+        self.inner.error()
+    }
+    fn notice(&self) -> Option<String> {
+        self.notice.lock().unwrap().clone()
+    }
+    fn stop(self: Box<Self>) {
+        self.inner.stop();
+    }
+}
+
+impl AudioCapture for LimitedCapture {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        Ok(Vec::new())
+    }
+    fn start(
+        &self,
+        selection: AudioSelection,
+        sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+        let inner = SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }
+        .start(selection, sink)?;
+        Ok(Box::new(LimitedSession {
+            inner,
+            notice: self.0.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn what_a_running_capture_holds_back_reaches_the_view_and_clears() {
+    let notice = Arc::new(std::sync::Mutex::new(None));
+    let changes = Arc::new(AtomicUsize::new(0));
+    let counter = changes.clone();
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(LimitedCapture(notice.clone())),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    let live = synthetic_live(&registry, "desk").await;
+    let _audio = registry.subscribe_audio(live).unwrap();
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Capturing);
+
+    *notice.lock().unwrap() = Some("Not sharing launcher.exe".to_string());
+    let before = changes.load(Ordering::SeqCst);
+    registry.housekeeping(Instant::now());
+    assert_eq!(
+        registry.audio_view().state,
+        AudioCaptureState::Limited("Not sharing launcher.exe".to_string())
+    );
+    assert!(
+        changes.load(Ordering::SeqCst) > before,
+        "the window only re-reads the room when told it changed"
+    );
+
+    *notice.lock().unwrap() = None;
+    registry.housekeeping(Instant::now());
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Capturing);
+}
+
 #[tokio::test]
 async fn an_edit_clears_a_stale_capture_failure() {
     let registry = LiveRegistry::new(

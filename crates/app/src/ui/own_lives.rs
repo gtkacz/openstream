@@ -226,16 +226,18 @@ fn audio_status(snapshot: &RoomSnapshot) -> Option<String> {
     match &snapshot.own_audio.state {
         AudioCaptureState::Off | AudioCaptureState::Failed(_) => None,
         AudioCaptureState::Idle => Some("Waiting for a listener".to_string()),
-        AudioCaptureState::Capturing => match &snapshot.own_audio.selection {
-            AudioSelection::Only(keys) if keys.is_empty() => {
-                Some("No applications selected".to_string())
+        AudioCaptureState::Capturing | AudioCaptureState::Limited(_) => {
+            match &snapshot.own_audio.selection {
+                AudioSelection::Only(keys) if keys.is_empty() => {
+                    Some("No applications selected".to_string())
+                }
+                _ => {
+                    let n = snapshot.own_audio.subscribers;
+                    let plural = if n == 1 { "" } else { "s" };
+                    Some(format!("{n} listener{plural}"))
+                }
             }
-            _ => {
-                let n = snapshot.own_audio.subscribers;
-                let plural = if n == 1 { "" } else { "s" };
-                Some(format!("{n} listener{plural}"))
-            }
-        },
+        }
     }
 }
 

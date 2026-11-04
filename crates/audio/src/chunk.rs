@@ -42,6 +42,10 @@ pub trait AudioCapture: Send + Sync {
 pub trait AudioCaptureSession: Send {
     /// Set once the backend's thread has died; the registry polls it and treats it as a failure.
     fn error(&self) -> Option<String>;
+    /// Set while capture runs but leaves out something the user chose, saying what and why.
+    fn notice(&self) -> Option<String> {
+        None
+    }
     fn stop(self: Box<Self>);
 }
 

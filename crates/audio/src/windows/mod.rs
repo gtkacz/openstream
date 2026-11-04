@@ -22,6 +22,7 @@ use wasapi::{
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
 use crate::error::AudioError;
 use crate::mix::{CaptureMixer, CaptureSource};
+use crate::process_tree::held_back_notice;
 use crate::selection::{AppKey, AudioSelection, AudioSource, SendVolumeSupport, SendVolumes};
 
 const EVENT_TIMEOUT_MS: u32 = 1000;
@@ -62,7 +63,7 @@ impl ProcessLoopbackCapture {
             .map_err(|error| {
                 AudioError::Windows(format!("failed to spawn the WASAPI thread: {error}"))
             })?;
-        finish_start(stop, error, vec![thread], ready_rx)
+        finish_start(stop, error, Arc::default(), vec![thread], ready_rx)
     }
 
     fn start_selected(
@@ -72,11 +73,13 @@ impl ProcessLoopbackCapture {
     ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
         let stop = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
+        let notice = Arc::new(Mutex::new(None));
         let mixer = CaptureMixer::default();
         let (ready_tx, ready_rx) = mpsc::channel();
 
         let watch_stop = stop.clone();
         let watch_error = error.clone();
+        let watch_notice = notice.clone();
         let watch_mixer = mixer.clone();
         let volumes = self.volumes.clone();
         let process_id = self.process_id;
@@ -87,6 +90,7 @@ impl ProcessLoopbackCapture {
                     process_id,
                     selected,
                     volumes,
+                    watch_notice,
                     watch_mixer,
                     watch_stop,
                     ready_tx.clone(),
@@ -115,13 +119,14 @@ impl ProcessLoopbackCapture {
             }
         };
 
-        finish_start(stop, error, vec![watcher, output], ready_rx)
+        finish_start(stop, error, notice, vec![watcher, output], ready_rx)
     }
 }
 
 struct Session {
     stop: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
+    notice: Arc<Mutex<Option<String>>>,
     threads: Vec<JoinHandle<()>>,
 }
 
@@ -153,6 +158,7 @@ impl AudioCapture for ProcessLoopbackCapture {
 fn finish_start(
     stop: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
+    notice: Arc<Mutex<Option<String>>>,
     threads: Vec<JoinHandle<()>>,
     ready: mpsc::Receiver<Result<(), AudioError>>,
 ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
@@ -161,6 +167,7 @@ fn finish_start(
             return Ok(Box::new(Session {
                 stop,
                 error,
+                notice,
                 threads,
             }));
         }
@@ -183,6 +190,7 @@ fn watch_selected(
     process_id: u32,
     selected: BTreeSet<AppKey>,
     volumes: SendVolumes,
+    notice: Arc<Mutex<Option<String>>>,
     mixer: CaptureMixer,
     stop: Arc<AtomicBool>,
     ready: mpsc::Sender<Result<(), AudioError>>,
@@ -198,7 +206,7 @@ fn watch_selected(
         .ok()
         .map_err(|error| AudioError::Windows(format!("CoInitializeEx: {error}")))?;
     let mut clients = SelectedClients::default();
-    clients.reconcile(process_id, &selected, &volumes, &mixer, &stop)?;
+    clients.reconcile(process_id, &selected, &volumes, &notice, &mixer, &stop)?;
     let _ = ready.send(Ok(()));
 
     while !stop.load(Ordering::Relaxed) {
@@ -206,7 +214,9 @@ fn watch_selected(
         if stop.load(Ordering::Relaxed) {
             continue;
         }
-        if let Err(error) = clients.reconcile(process_id, &selected, &volumes, &mixer, &stop) {
+        if let Err(error) =
+            clients.reconcile(process_id, &selected, &volumes, &notice, &mixer, &stop)
+        {
             tracing::warn!(%error, "could not reconcile selected Windows audio sessions");
         }
     }
@@ -226,10 +236,13 @@ impl SelectedClients {
         process_id: u32,
         selected: &BTreeSet<AppKey>,
         volumes: &SendVolumes,
+        notice: &Mutex<Option<String>>,
         mixer: &CaptureMixer,
         stop: &AtomicBool,
     ) -> Result<(), AudioError> {
-        let desired = sessions::selected_roots(process_id, selected)?;
+        let plan = sessions::selected_roots(process_id, selected)?;
+        *lock(notice) = held_back_notice(&plan.held_back);
+        let desired = plan.roots;
         let stopped: Vec<u32> = self
             .running
             .iter()
@@ -465,6 +478,10 @@ fn read_chunk(
 impl AudioCaptureSession for Session {
     fn error(&self) -> Option<String> {
         lock(&self.error).clone()
+    }
+
+    fn notice(&self) -> Option<String> {
+        lock(&self.notice).clone()
     }
 
     fn stop(mut self: Box<Self>) {

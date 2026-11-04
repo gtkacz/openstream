@@ -35,6 +35,8 @@ pub enum AudioCaptureState {
     /// Enabled, nobody listening: capture has not been started or was stopped after the grace.
     Idle,
     Capturing,
+    /// Capturing, but holding back something the user chose. Says what and why.
+    Limited(String),
     Failed(String),
 }
 

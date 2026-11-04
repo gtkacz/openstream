@@ -218,6 +218,8 @@ struct AudioState {
     labels: BTreeMap<AppKey, String>,
     running: Option<RunningAudio>,
     last_error: Option<String>,
+    /// What the running capture last said it is leaving out, polled by housekeeping.
+    notice: Option<String>,
 }
 
 impl AudioState {
@@ -264,6 +266,7 @@ impl LiveRegistry {
                     labels: BTreeMap::new(),
                     running: None,
                     last_error: None,
+                    notice: None,
                 },
             }),
             encoders,
@@ -538,7 +541,10 @@ impl LiveRegistry {
         let state = match (&audio.last_error, &audio.running, audio.enabled) {
             (_, _, false) => AudioCaptureState::Off,
             (Some(error), _, true) => AudioCaptureState::Failed(error.clone()),
-            (None, Some(_), true) => AudioCaptureState::Capturing,
+            (None, Some(_), true) => match &audio.notice {
+                Some(notice) => AudioCaptureState::Limited(notice.clone()),
+                None => AudioCaptureState::Capturing,
+            },
             (None, None, true) => AudioCaptureState::Idle,
         };
         OwnAudioView {
@@ -601,7 +607,14 @@ impl LiveRegistry {
     pub fn housekeeping(&self, now: Instant) {
         let mut inner = lock(&self.inner);
         let stopped_audio = housekeep_audio(&mut inner.audio, now, self.grace);
-        let audio_changed = stopped_audio.is_some();
+        let notice = inner
+            .audio
+            .running
+            .as_ref()
+            .and_then(|running| running.session.notice());
+        let notice_changed = notice != inner.audio.notice;
+        inner.audio.notice = notice;
+        let audio_changed = stopped_audio.is_some() || notice_changed;
         let mut stopped_any = false;
         for live in inner.lives.values_mut() {
             for state in live.presets.values_mut() {
