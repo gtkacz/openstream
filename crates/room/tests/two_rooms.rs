@@ -656,24 +656,22 @@ async fn turning_share_audio_off_ends_the_packets_and_the_flag_in_presence() {
         !b.snapshot().members[0].has_audio && a.snapshot().own_audio.subscribers == 0
     })
     .await;
-    // The jitter buffer can still hold real packets right when the flag clears, so wait for
-    // them to drain rather than assuming a fixed render count empties it.
-    wait_until("silence", Duration::from_secs(5), || {
-        !is_audible(&output.render(1024))
-    })
+    // The jitter buffer can still hold real packets right when the flag clears, and a track can
+    // run dry between them, so one silent render does not mean they have drained.
+    let mut silent = 0;
+    wait_until(
+        "ten silent renders in a row",
+        Duration::from_secs(5),
+        || {
+            silent = if is_audible(&output.render(1024)) {
+                0
+            } else {
+                silent + 1
+            };
+            silent >= 10
+        },
+    )
     .await;
-    let renders: Vec<bool> = {
-        let mut results = Vec::with_capacity(10);
-        for _ in 0..10 {
-            results.push(is_audible(&output.render(1024)));
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        results
-    };
-    assert!(
-        renders.iter().all(|audible| !audible),
-        "expected 10 consecutive silent renders, got {renders:?}"
-    );
 
     b.leave().await;
     a.leave().await;

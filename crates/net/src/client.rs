@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use brp_proto::constants::{
-    AUDIO_PACKET_DURATION, AUDIO_PRESET_ID, MAX_AUDIO_PACKET_BYTES, MAX_CONTROL_BYTES,
+    AUDIO_PRESET_ID, AUDIO_SENDER_BACKLOG_PACKETS, MAX_AUDIO_PACKET_BYTES, MAX_CONTROL_BYTES,
     MAX_FRAME_BYTES, MEDIA_ALPN, RECEIVE_QUEUE_DURATION, RECEIVE_QUEUE_MAX_FRAMES,
     RECEIVE_QUEUE_MIN_FRAMES,
 };
@@ -100,8 +100,7 @@ impl MediaClient {
 
         let (frame_tx, frame_rx) = mpsc::channel(receive_queue_frames(params.fps));
         let audio = audio_params.map(|params| {
-            let packets = RECEIVE_QUEUE_DURATION.as_millis() / AUDIO_PACKET_DURATION.as_millis();
-            let (tx, rx) = mpsc::channel(packets as usize);
+            let (tx, rx) = mpsc::channel(AUDIO_SENDER_BACKLOG_PACKETS);
             (params, tx, rx)
         });
         let audio_tx = audio.as_ref().map(|(_, tx, _)| tx.clone());

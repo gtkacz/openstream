@@ -4,7 +4,7 @@ pub const MEDIA_ALPN: &[u8] = b"brp/media/1";
 pub const TICKET_KIND: &str = "brp";
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CONTROL_BYTES: usize = 64 * 1024;
-/// How much video or audio may wait between the QUIC reader and the decoder. A time rather than a
+/// How much video may wait between the QUIC reader and the decoder. A time rather than a
 /// number of frames, so what a network hiccup delivers all at once fits at any frame rate. What
 /// arrives while it is full is dropped, so a decoder that falls behind costs picture, not memory.
 pub const RECEIVE_QUEUE_DURATION: Duration = Duration::from_millis(500);
