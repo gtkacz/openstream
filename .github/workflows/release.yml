@@ -2,6 +2,12 @@ name: release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing workspace version to release (for example, 1.0.0)
+        required: true
+        type: string
 permissions:
   contents: write
 concurrency:
@@ -21,10 +27,41 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - id: bump
-        name: Bump the minor version unless this is a fix
+        name: Prepare an automatic or explicitly requested release
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -eu
           message="$(git log -1 --pretty=%s)"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "manual releases must run from main" >&2
+              exit 1
+            fi
+            version="$RELEASE_VERSION"
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "requested version is not plain semver: $version" >&2
+              exit 1
+            fi
+            current="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "brp") | .version')"
+            if [[ "$version" != "$current" ]]; then
+              echo "requested version $version does not match workspace version $current" >&2
+              exit 1
+            fi
+            if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+              echo "tag v$version already exists" >&2
+              exit 1
+            fi
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "v$version" -m "Release v$version" -m "Explicitly requested release of v$version from main."
+            git push origin "v$version"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [[ "$message" == fix:* || "$message" == 'chore(release):'* ]]; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             exit 0
