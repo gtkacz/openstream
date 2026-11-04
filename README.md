@@ -245,10 +245,21 @@ RUSTFLAGS="-C link-arg=-Wl,-rpath,$FFMPEG_DIR/lib" cargo build --release
 beside the binary, rewrites their install names, signs ad hoc, and builds the
 bundle.
 
-No Mac has run the result yet: the macOS code is type-checked and linted for
-`aarch64-apple-darwin`, and its platform-neutral logic is unit-tested on every
-runner; capture, audio, the codecs, and link handling are verified on hardware
-once the `macos` job and a Mac have run them.
+CI cannot grant the recording permission, so the checks that need it run on a
+Mac with `ci/macos/hardware-check.sh`: everything the `macos` job runs, then
+ScreenCaptureKit display and window capture, system and per-application audio,
+VideoToolbox encoding and decoding, the bundle's signature before and after the
+refresh an update performs, and `brp://` links into an open start screen, an
+open room, and a closed app, between a headless publisher and the bundle. It
+writes `summary.txt` and `report.log` to `~/OpenStream-hardware-check`:
+
+```sh
+bash <(curl -fsSL https://raw.githubusercontent.com/gtkacz/openstream/main/ci/macos/hardware-check.sh)
+```
+
+The hardware tests it runs are gated like the codec smoke test:
+`BRP_HARDWARE_TESTS=1 cargo test -p brp-capture --test macos_hardware` and the
+same for `brp-audio`.
 
 ## Identity and privacy
 
