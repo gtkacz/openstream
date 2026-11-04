@@ -126,7 +126,8 @@ PipeWire output, always excluding OpenStream's own. On Windows, the default rema
 one WASAPI process-loopback client in exclude mode; a selection enumerates
 audio sessions and opens one include-tree client per selected application root,
 mixed into the same publisher stream. Requires Windows 10 version 2004. The
-Windows audio path is compiled and linted on CI but has not run on hardware.
+Windows audio path is compiled and linted on CI but has not run on hardware;
+`crates/audio/tests/windows_hardware.rs` checks it on a real machine.
 
 On Windows the binary opens no console window. Started from a terminal with
 arguments it prints to that terminal, but the shell does not wait for it, so
