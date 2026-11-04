@@ -1,7 +1,7 @@
 //! Draws every watched live as a letterboxed NV12 quad in its own viewport. One pipeline and
 //! sampler are shared; each tile owns its planes, its fit uniform, and its bind group.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use brp_codec::RawFrame;
 use brp_proto::ChromaLayout;
@@ -45,6 +45,8 @@ pub struct TileRenderer {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     tiles: HashMap<TileKey, Tile>,
+    /// Lives already reported as too large to show, so a stream of them logs once.
+    refused: HashSet<TileKey>,
 }
 
 /// Clip-space scale that letterboxes or pillarboxes `video` inside `viewport`.
@@ -138,6 +140,7 @@ impl TileRenderer {
             layout,
             sampler,
             tiles: HashMap::new(),
+            refused: HashSet::new(),
         }
     }
 
@@ -149,6 +152,20 @@ impl TileRenderer {
         key: TileKey,
         frame: &RawFrame,
     ) {
+        // The size comes from the sender's stream, and wgpu treats an impossible texture as fatal.
+        // Below two pixels wide, the chroma plane would have no width at all.
+        let limit = device.limits().max_texture_dimension_2d;
+        if frame.width < 2 || frame.height == 0 || frame.width.max(frame.height) > limit {
+            if self.refused.insert(key) {
+                tracing::warn!(
+                    width = frame.width,
+                    height = frame.height,
+                    limit,
+                    "not showing a live this GPU cannot hold"
+                );
+            }
+            return;
+        }
         let needs_alloc = self.tiles.get(&key).is_none_or(|t| {
             (t.width, t.height, t.chroma) != (frame.width, frame.height, frame.chroma)
         });
@@ -198,6 +215,7 @@ impl TileRenderer {
     /// Drops planes for watches that no longer exist and tiles that have finished leaving.
     pub fn retain(&mut self, keep: impl Fn(&TileKey) -> bool) {
         self.tiles.retain(|key, _| keep(key));
+        self.refused.retain(|key| keep(key));
     }
 
     /// Writes each placed tile's letterbox scale and how shown it is. Call before the render pass is

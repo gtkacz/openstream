@@ -46,6 +46,9 @@ const DECODE_POOL_CAPACITY: usize = 4;
 /// FFmpeg reports many refusals as success with no output, so this is what catches them. Far beyond
 /// any decoder's delay, and about a second of black tile at 30 fps.
 const HW_SILENT_PACKET_LIMIT: u32 = 30;
+/// wgpu's default texture limit squared: no viewer could show a larger picture, and the size comes
+/// from a remote peer's stream, so it is refused before FFmpeg and the pool allocate for it.
+const MAX_DECODED_PIXELS: i64 = 8192 * 8192;
 /// Hardware decoders tried before software for `os` (a `std::env::consts::OS` value): the
 /// platform's own API first, then NVDEC where NVIDIA hardware can exist.
 fn hw_device_order(os: &str) -> &'static [(ff::AVHWDeviceType, &'static str)] {
@@ -94,6 +97,7 @@ impl FfmpegDecoder {
             let c = &mut *ctx.0;
             c.flags |= ff::AV_CODEC_FLAG_LOW_DELAY as c_int;
             c.thread_type = ff::FF_THREAD_SLICE as c_int;
+            c.max_pixels = MAX_DECODED_PIXELS;
             if !params.extradata.is_empty() {
                 let size = params.extradata.len();
                 let buffer =

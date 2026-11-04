@@ -264,3 +264,24 @@ fn a_tile_darkens_to_the_canvas_as_it_leaves() {
     );
     assert_eq!(none, 0, "a tile that has left must match the black canvas");
 }
+
+#[test]
+fn a_frame_the_gpu_cannot_hold_is_skipped_rather_than_fatal() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut tiles = TileRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let key = (iroh::SecretKey::from_bytes(&[1; 32]).public(), 1);
+    let too_large = device.limits().max_texture_dimension_2d + 2;
+    // A one-pixel-wide frame would ask for a chroma plane with no width at all.
+    for (width, height) in [(too_large, 2), (2, too_large), (1, 2)] {
+        tiles.upload(
+            &device,
+            &queue,
+            key,
+            &brp_codec::RawFrame::black(width, height, 0),
+        );
+    }
+    tiles.upload(&device, &queue, key, &brp_codec::RawFrame::black(16, 16, 0));
+}
