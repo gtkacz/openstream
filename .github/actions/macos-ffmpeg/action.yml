@@ -4,6 +4,10 @@ description: >-
   with VideoToolbox, libopus, libdav1d and libsvtav1, installed with @rpath install names. No LGPL shared macOS build is
   published, so this builds one and caches it. Exports FFMPEG_DIR, PKG_CONFIG_PATH and
   MACOSX_DEPLOYMENT_TARGET.
+inputs:
+  cache:
+    description: Whether to restore and save the build. Releases build it fresh.
+    default: "true"
 runs:
   using: composite
   steps:
@@ -19,6 +23,7 @@ runs:
         # Keyed on the codec libraries too: the FFmpeg dylibs link the versions brew installed.
         echo "MACOS_FFMPEG_KEY=$(brew list --versions opus dav1d svt-av1 | shasum | cut -c1-12)" >> "$GITHUB_ENV"
     - name: Restore the FFmpeg build
+      if: inputs.cache == 'true'
       id: cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
