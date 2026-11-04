@@ -16,6 +16,13 @@ impl AppKey {
         Self(normalised(name))
     }
 
+    /// From a macOS bundle identifier, under the macOS rule whatever platform compiles it, so
+    /// the macOS backend's logic is tested on every runner. On macOS it equals [`AppKey::new`].
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    pub(crate) fn bundle(id: &str) -> Self {
+        Self(macos_normalised(id))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -45,7 +52,6 @@ fn normalised(name: &str) -> String {
 /// macOS keys are bundle identifiers, which the system compares without case; a path, as a
 /// hand-edited settings file may hold, keeps its last component. Compiled everywhere so the rule
 /// is tested on every runner.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn macos_normalised(name: &str) -> String {
     name.rsplit('/').next().unwrap_or(name).to_lowercase()
 }

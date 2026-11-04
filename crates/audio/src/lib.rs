@@ -4,6 +4,8 @@ pub mod chunk;
 pub mod cpal_output;
 pub mod error;
 pub mod fake_output;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod macos_model;
 #[cfg(any(windows, test))]
 pub(crate) mod mix;
 #[cfg(any(windows, test))]
@@ -22,6 +24,11 @@ pub use synthetic::SyntheticTone;
 pub mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::PipeWireCapture as PlatformAudioCapture;
+
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::ScreenCaptureAudio as PlatformAudioCapture;
 
 #[cfg(windows)]
 pub mod windows;

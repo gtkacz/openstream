@@ -18,3 +18,16 @@ pipewire.workspace = true
 cpal.workspace = true
 wasapi.workspace = true
 windows-sys.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal.workspace = true
+objc2.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2-foundation.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-media.workspace = true
+objc2-core-audio.workspace = true
+objc2-core-audio-types.workspace = true
+objc2-screen-capture-kit.workspace = true
+objc2-app-kit.workspace = true
