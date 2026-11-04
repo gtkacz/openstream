@@ -73,6 +73,8 @@ pub enum AppEvent {
     NewFrame,
     /// Periodic wake so counters refresh while nothing is watched.
     Tick,
+    /// What is playing audio now, for an open application picker.
+    ApplicationsListed(Vec<brp_audio::AudioSource>),
     /// The share task finished: the live started, or the error to show.
     ShareFinished(Result<(), String>),
     /// The open task finished: the room to show, or the error for the start screen.
@@ -216,7 +218,13 @@ impl App {
     /// Pop-out windows drop with the app; nothing in them outlives the loop.
     pub fn finish(self) -> Shutdown {
         let (room, tasks) = match self.phase {
-            Phase::Room(view) => (Some(view.room), view.pending_share.into_iter().collect()),
+            Phase::Room(view) => (
+                Some(view.room),
+                view.pending_share
+                    .into_iter()
+                    .chain(view.pending_listing)
+                    .collect(),
+            ),
             Phase::Start => (None, Vec::new()),
         };
         Shutdown {
@@ -859,7 +867,21 @@ impl ApplicationHandler<AppEvent> for App {
             // A room-version bump and the statistics tick are the two relevant state changes:
             // the former reconciles watch membership promptly, the latter also catches a relay
             // address change and advances age labels even when nothing is watched.
-            AppEvent::RoomChanged | AppEvent::Tick => self.refresh_room(),
+            AppEvent::RoomChanged => self.refresh_room(),
+            AppEvent::Tick => {
+                self.refresh_room();
+                // On the tick rather than on every room change: each listing opens a connection to
+                // the audio daemon, and a busy room changes far more often than applications do.
+                if let Phase::Room(view) = &mut self.phase {
+                    view.keep_applications_current(&self.runtime, &self.proxy, &self.state);
+                }
+            }
+            // A listing that lands after Cancel or Done has nothing left to update.
+            AppEvent::ApplicationsListed(sources) => {
+                if let Some(picker) = &mut self.state.applications {
+                    picker.refresh(sources);
+                }
+            }
             AppEvent::NewFrame => {}
             AppEvent::MotionPreference { less } => {
                 if let Some(main) = &self.main {

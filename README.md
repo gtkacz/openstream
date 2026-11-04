@@ -112,7 +112,8 @@ live back in the grid. A live is decoded once wherever it is shown.
 The dock also has a "Share audio" switch, on by default, beside an
 "Applications…" button. The button opens a dialog listing what is
 playing, with two radio buttons — all applications except OpenStream, or only the
-ones you tick — applied on Done and remembered in `settings.toml`. Where the platform
+ones you tick — applied on Done and remembered in `settings.toml`. The list
+follows applications as they start and stop while it is open. Where the platform
 keeps applications apart, each row also has a send volume, which changes what the
 room hears without touching your own speakers: always on Linux, only for ticked
 applications on Windows, and not on macOS, where ScreenCaptureKit hands over one

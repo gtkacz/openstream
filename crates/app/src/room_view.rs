@@ -31,6 +31,8 @@ pub struct RoomView {
     handles: HashMap<TileKey, WatchHandle>,
     /// Holds an `Arc<Room>` clone; the shutdown path aborts and awaits it before the leave.
     pub pending_share: Option<JoinHandle<()>>,
+    /// The picker's background re-listing, while one runs.
+    pub pending_listing: Option<JoinHandle<()>>,
 }
 
 impl RoomView {
@@ -45,6 +47,7 @@ impl RoomView {
             last_ticket,
             handles: HashMap::new(),
             pending_share: None,
+            pending_listing: None,
         }
     }
 
@@ -179,6 +182,35 @@ impl RoomView {
                 state.status = error.to_string();
             }
         }
+    }
+
+    /// Re-lists what is playing while the application picker is open, so it follows applications
+    /// as they start and stop. Off the window thread, since a sick daemon can take a whole
+    /// `AUDIO_SOURCE_LIST_TIMEOUT` to answer, and never two at once. A failed listing keeps the
+    /// rows already shown: one bad poll is no reason to blank a list being edited, and the user
+    /// gets an error from Refresh if they ask.
+    pub fn keep_applications_current(
+        &mut self,
+        runtime: &Handle,
+        proxy: &EventLoopProxy<AppEvent>,
+        state: &UiState,
+    ) {
+        if state.applications.is_none()
+            || self
+                .pending_listing
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
+        {
+            return;
+        }
+        let room = self.room.clone();
+        let proxy = proxy.clone();
+        self.pending_listing = Some(runtime.spawn_blocking(move || match room.audio_sources() {
+            Ok(sources) => {
+                let _ = proxy.send_event(AppEvent::ApplicationsListed(sources));
+            }
+            Err(error) => tracing::debug!(%error, "could not re-list applications"),
+        }));
     }
 
     fn share(
