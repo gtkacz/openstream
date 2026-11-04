@@ -121,6 +121,7 @@ mod tests {
             nickname: nickname.into(),
             lives: vec![],
             audio_mix: None,
+            quality_presets: Vec::new(),
         }
     }
 

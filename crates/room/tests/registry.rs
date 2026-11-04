@@ -708,6 +708,7 @@ fn an_overlong_application_name_is_cut_to_what_presence_accepts() {
         nickname: "gt".into(),
         lives: vec![],
         audio_mix: Some(registry.audio_mix()),
+        quality_presets: Vec::new(),
     };
     assert!(presence.validate().is_ok());
 }

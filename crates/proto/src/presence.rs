@@ -6,7 +6,7 @@ use crate::constants::{
     NICKNAME_MAX_LEN, PROTOCOL_VERSION,
 };
 use crate::error::ProtoError;
-use crate::messages::{Preset, SourceKind};
+use crate::messages::{Preset, SourceKind, VideoQuality};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveInfo {
@@ -36,19 +36,46 @@ pub struct Presence {
     pub ts_unix_ms: u64,
     pub nickname: String,
     pub lives: Vec<LiveInfo>,
-    /// Must stay the last field. `None` is a peer too old to say: postcard ignores trailing bytes,
-    /// so such a peer reads our presence, and this read of its shorter one runs out of input here.
+    /// New fields go after this line, never before. Postcard ignores trailing bytes, so a peer too
+    /// old to know them still reads our presence, and this read of its shorter one runs out of
+    /// input here. `None` is such a peer, which does not say.
     #[serde(deserialize_with = "absent_when_truncated")]
     pub audio_mix: Option<AudioMix>,
+    /// Full-chroma presets by live id, kept out of `lives` on the wire. A peer too old to decode
+    /// them would otherwise offer them and fail on every frame, and this way it never sees them.
+    #[serde(deserialize_with = "absent_when_truncated")]
+    pub quality_presets: Vec<(u32, Preset)>,
 }
 
-fn absent_when_truncated<'de, D: Deserializer<'de>>(
+fn absent_when_truncated<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(
     deserializer: D,
-) -> Result<Option<AudioMix>, D::Error> {
-    Ok(Option::deserialize(deserializer).unwrap_or(None))
+) -> Result<T, D::Error> {
+    Ok(T::deserialize(deserializer).unwrap_or_default())
 }
 
 impl Presence {
+    /// Moves full-chroma presets from `lives` to `quality_presets`, for sending.
+    pub fn hide_quality_presets(&mut self) {
+        for live in &mut self.lives {
+            let (standard, quality): (Vec<_>, Vec<_>) = std::mem::take(&mut live.presets)
+                .into_iter()
+                .partition(|preset| preset.quality() == VideoQuality::Standard);
+            live.presets = standard;
+            self.quality_presets
+                .extend(quality.into_iter().map(|preset| (live.id, preset)));
+        }
+    }
+
+    /// Puts them back, for reading. Run before `validate`, whose preset limit covers them too. A
+    /// preset naming a live this presence does not list is dropped.
+    pub fn restore_quality_presets(&mut self) {
+        for (live_id, preset) in std::mem::take(&mut self.quality_presets) {
+            if let Some(live) = self.lives.iter_mut().find(|live| live.id == live_id) {
+                live.presets.push(preset);
+            }
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ProtoError> {
         if self.version != PROTOCOL_VERSION {
             return Err(ProtoError::Invalid(format!(
@@ -133,7 +160,63 @@ mod tests {
                 })
                 .collect(),
             audio_mix: Some(AudioMix::All),
+            quality_presets: Vec::new(),
         }
+    }
+
+    fn with_quality_presets() -> Presence {
+        let mut ours = presence("new", 1);
+        ours.lives[0].presets = crate::template_presets(2560, 1440, 60, crate::Codec::Hevc);
+        ours.lives[0]
+            .presets
+            .extend(crate::quality_presets(2560, 1440, 60, crate::Codec::Hevc));
+        ours
+    }
+
+    #[test]
+    fn an_older_peer_is_never_offered_a_preset_it_could_not_decode() {
+        let mut ours = with_quality_presets();
+        ours.hide_quality_presets();
+        let read: OlderPresence =
+            crate::messages::decode(&crate::messages::encode(&ours).unwrap()).unwrap();
+        assert_eq!(
+            read.lives[0]
+                .presets
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn a_current_peer_gets_every_preset_back_in_order() {
+        let sent = with_quality_presets();
+        let mut hidden = sent.clone();
+        hidden.hide_quality_presets();
+        let mut read: Presence =
+            crate::messages::decode(&crate::messages::encode(&hidden).unwrap()).unwrap();
+        read.restore_quality_presets();
+        assert_eq!(read, sent);
+    }
+
+    #[test]
+    fn restored_presets_count_towards_the_preset_limit() {
+        let mut crowded = with_quality_presets();
+        crowded.lives[0].presets.truncate(MAX_PRESETS_PER_LIVE);
+        crowded.quality_presets = vec![(1, crowded.lives[0].presets[0].clone())];
+        crowded.restore_quality_presets();
+        assert!(crowded.validate().is_err());
+    }
+
+    #[test]
+    fn a_preset_for_a_live_not_listed_is_dropped() {
+        let mut stray = with_quality_presets();
+        let before = stray.lives.clone();
+        stray.quality_presets = vec![(99, before[0].presets[0].clone())];
+        stray.restore_quality_presets();
+        assert_eq!(stray.lives, before);
+        assert!(stray.quality_presets.is_empty());
     }
 
     /// The presence every release before `audio_mix` sends and reads.
@@ -157,6 +240,7 @@ mod tests {
         .unwrap();
         let read: Presence = crate::messages::decode(&bytes).unwrap();
         assert_eq!(read.audio_mix, None);
+        assert!(read.quality_presets.is_empty());
         assert_eq!(read.lives, older.lives);
     }
 
@@ -242,6 +326,7 @@ mod tests {
                 names: vec!["a".repeat(MAX_AUDIO_MIX_NAME_LEN); MAX_AUDIO_MIX_NAMES],
                 others: u32::MAX,
             }),
+            quality_presets: Vec::new(),
         };
         let signed = Signed::sign(&SecretKey::from_bytes(&[3u8; 32]), &full).unwrap();
         let bytes = crate::messages::encode(&signed).unwrap();
