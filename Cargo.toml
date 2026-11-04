@@ -68,4 +68,4 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 sha2 = "0.11"
 tar = "0.4"
 flate2 = "1.1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
