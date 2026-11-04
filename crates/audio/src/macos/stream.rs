@@ -39,6 +39,8 @@ const VIDEO_SIZE: usize = 2;
 const VIDEO_FPS: i32 = 1;
 /// How long a stop may take before the session gives up waiting for its confirmation.
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a filter update may take to be confirmed before it counts as failed and is retried.
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// ScreenCaptureKit's objects are documented as safe to use from any thread; objc2 cannot know
 /// that, so they cross thread boundaries in this wrapper.
@@ -196,13 +198,23 @@ unsafe impl Send for Running {}
 
 impl Running {
     /// Points the stream at a new set of applications without restarting it.
-    pub(super) fn retarget(&self, audience: &Audience) {
+    /// Points the stream at a new set of applications without restarting it, and waits for
+    /// ScreenCaptureKit to accept or refuse the change so the caller knows which filter is live.
+    pub(super) fn retarget(&self, audience: &Audience) -> Result<(), AudioError> {
         let filter = filter_for(&self.display, audience);
-        // SAFETY: an ordinary update on a live stream with a live filter.
+        let (tx, rx) = mpsc::sync_channel::<Result<(), AudioError>>(1);
+        let done = completion(tx);
+        // SAFETY: an ordinary update on a live stream with a live filter; the block is copied by
+        // the framework and outlives the call.
         unsafe {
             self.stream
-                .updateContentFilter_completionHandler(&filter, None)
+                .updateContentFilter_completionHandler(&filter, Some(&done))
         };
+        rx.recv_timeout(UPDATE_TIMEOUT).unwrap_or_else(|_| {
+            Err(AudioError::MacOs(format!(
+                "the audio filter update was not confirmed within {UPDATE_TIMEOUT:?}"
+            )))
+        })
     }
 
     pub(super) fn stop(&mut self) {

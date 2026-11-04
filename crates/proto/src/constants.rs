@@ -84,3 +84,9 @@ pub const CAPTURE_MIX_MAX_LAG: Duration = Duration::from_millis(40);
 /// packet underruns: this covers a 1024-frame quantum (21 ms, PipeWire's stock default) plus the
 /// scheduling jitter of the decode thread.
 pub const MIXER_TRACK_CUSHION: Duration = Duration::from_millis(80);
+
+/// The macOS bundle identifier. The app registers it with LaunchServices and audio capture
+/// excludes every process that carries it, so no OpenStream window hears another.
+pub const MACOS_BUNDLE_ID: &str = "io.github.gtkacz.openstream";
+/// The executable's name on every platform; an unbundled macOS build is known only by it.
+pub const EXECUTABLE_NAME: &str = "brp";

@@ -4,10 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The bundle identifier LaunchServices knows the app by.
-pub const BUNDLE_ID: &str = "io.github.gtkacz.openstream";
+/// The bundle identifier LaunchServices knows the app by; audio capture excludes it too.
+pub const BUNDLE_ID: &str = brp_proto::constants::MACOS_BUNDLE_ID;
 /// The binary inside `Contents/MacOS`.
-pub const EXECUTABLE: &str = "brp";
+pub const EXECUTABLE: &str = brp_proto::constants::EXECUTABLE_NAME;
 /// The scheme the bundle claims for join links.
 pub const URL_SCHEME: &str = "brp";
 /// The oldest macOS the bundle runs on: ScreenCaptureKit's content sizing needs 14.
