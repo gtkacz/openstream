@@ -212,9 +212,9 @@ mod tests {
 
     use super::*;
 
-    const STILLS: usize = 42;
-    /// Six stills per strand at 130.5 points each.
-    const REPEAT: f64 = 783.0;
+    const STILLS: usize = 120;
+    /// Fifteen stills per strand at 130.5 points each.
+    const REPEAT: f64 = 1957.5;
 
     fn rest() -> Pose {
         Pose {
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn columns_start_staggered_by_a_fraction_of_their_repeat() {
-        for (column, offset) in [(0, 0.0), (1, 289.71), (-1, 493.29)] {
+        for (column, offset) in [(0, 0.0), (1, 724.275), (-1, 1233.225)] {
             let actual = start_offset(column, STILLS);
             assert!((actual - offset).abs() <= 0.01, "column {column}: {actual}");
         }
@@ -295,16 +295,16 @@ mod tests {
     #[test]
     fn each_column_walks_its_own_strand() {
         for (column, row, stills, index) in [
-            (0, 0, 42, 0),
-            (0, 1, 42, 7),
-            (0, 5, 42, 35),
-            (0, 6, 42, 0),
-            (0, -1, 42, 35),
-            (3, 2, 42, 17),
-            (-1, 0, 42, 6),
-            (7, 0, 42, 0),
-            (0, 6, 44, 42),
-            (2, 6, 44, 2),
+            (0, 0, 120, 0),
+            (0, 1, 120, 8),
+            (0, 14, 120, 112),
+            (0, 15, 120, 0),
+            (0, -1, 120, 112),
+            (3, 2, 120, 19),
+            (-1, 0, 120, 7),
+            (8, 0, 120, 0),
+            (0, 15, 122, 120),
+            (2, 15, 122, 2),
         ] {
             assert_eq!(
                 still_index(column, row, stills),

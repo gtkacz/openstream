@@ -48,7 +48,7 @@ These came from the user:
 These are the designer's calls, shown to the user without objection:
 
 - **The diagram goes completely.** The typed name on a screen and the Direct and Relayed explanation leave this screen. The connection line stays in the rail and on tiles.
-- **About 42 stills.** At the mockup's 32 KB average, that adds roughly 1.3 MB to a 58 MB binary.
+- **About 120 stills, after the user saw 42 repeat too much in the real app.** At a 32 KB average, that adds roughly 4 MB to a 58 MB binary, and about 62 MB of GPU memory while the start screen shows.
 - **A notice for the stills.** It states they belong to their owners and are not covered by MIT, and lists each one with its source so any can be dropped from future builds.
 - **Reduced motion stills the wall** and leaves opacity changes in place, matching the roadmap's "gentler rather than none".
 - **Stills load only for the start screen** and are released when a room opens.
@@ -161,10 +161,10 @@ This keeps the wall inside egui's layering, so Settings and dialogs need no spec
 Stills live in `crates/app/assets/stills/` and are embedded with `include_bytes!`, alongside a `README.md`.
 
 - **Format:** JPEG, 480 by 270, quality about 82.
-- **Mix:** about 42 across games, anime, films and websites, spread so no column clusters one kind.
-- **Exclusions:** no nudity, implied nudity or gore. The mockup's Ghost in the Shell and Blade Runner 2049 stills are out for this reason.
+- **Mix:** about 120 across games, anime, films, TV and websites, spread so no column clusters one kind. Each column draws from one of 8 strands of 15, so a still returns to its column only every 32 to 85 seconds.
+- **Exclusions:** no nudity, implied nudity, sexualised poses or gore. The mockup's Ghost in the Shell and Blade Runner 2049 stills are out for this reason, as are candidates from Death Note, Sailor Moon and Gurren Lagann.
 - **Text-heavy stills:** kept few, since they are the most likely to shimmer and the hardest to read at this size.
-- **Starting point:** the mockup's 22 other stills, from Steam store screenshots, TMDB backdrops without language text, and headless Chrome captures. They are in `/tmp/brainstorm-2399704-1793805829/content/`, which may not survive a reboot, so the first build step should copy what it keeps. The fetch script is `/tmp/brainstorm-scripts/fetch-tiles.sh`.
+- **Sources:** Steam store screenshots, TMDB backdrops, TVmaze's public API for anime and TV backgrounds, and headless Chrome captures of websites. TMDB refused later automated requests, so no more should be fetched from it this way.
 
 The `README.md` states that the stills belong to their respective owners, are not covered by the repository's MIT licence, and are used as illustrative examples. It lists each file's work, source URL and retrieval date, so a still can be dropped from future builds by deleting its file and its list entry, then rebuilding. The main `README.md` gets a sentence pointing to this exception.
 
