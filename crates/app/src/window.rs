@@ -25,6 +25,7 @@ use crate::commands::{RoomCommand, WindowCommand};
 use crate::dirty::DirtyStreams;
 use crate::icon::with_app_icon;
 use crate::launch::{self, Intent, Launch};
+use crate::link::{LinkRoute, new_window_args, route_link};
 use crate::popouts::PopOuts;
 use crate::reduced_motion;
 use crate::relaunch::Relaunch;
@@ -48,6 +49,21 @@ use crate::visibility::Visibility;
 /// Initial inner size of the main window and of every pop-out, in physical pixels.
 pub const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1280, 720);
 
+/// The initial inner size on `os` (a `std::env::consts::OS` value). macOS sizes windows in
+/// points and every Mac display is Retina, where [`DEFAULT_WINDOW_SIZE`] in pixels would be a
+/// quarter of the intended area; elsewhere the pixel size is kept as it always was.
+pub fn default_window_size(os: &str) -> winit::dpi::Size {
+    if os == "macos" {
+        winit::dpi::LogicalSize::new(
+            f64::from(DEFAULT_WINDOW_SIZE.width),
+            f64::from(DEFAULT_WINDOW_SIZE.height),
+        )
+        .into()
+    } else {
+        DEFAULT_WINDOW_SIZE.into()
+    }
+}
+
 /// Wakes the winit event loop for a reason that does not arrive as a `WindowEvent`. Sent through
 /// the `EventLoopProxy` from other threads (the room's background tasks, the open and share tasks).
 pub enum AppEvent {
@@ -69,6 +85,8 @@ pub enum AppEvent {
     UpdateReady(Result<(), String>),
     /// The system's answer on whether it wants less motion.
     MotionPreference { less: bool },
+    /// The system handed the running app a join link (macOS delivers clicks this way).
+    OpenLink(String),
 }
 
 /// What the window shows: the start screen, or a room.
@@ -237,6 +255,34 @@ impl App {
         }));
     }
 
+    /// Opens a join link the system handed this window: here when the start screen is idle,
+    /// otherwise in a new process so the room open here is left alone.
+    fn open_link(&mut self, link: &str) {
+        let on_start_screen = matches!(self.phase, Phase::Start);
+        match route_link(on_start_screen, self.pending_open.is_some()) {
+            LinkRoute::Here => match crate::link::parse_ticket(link) {
+                Ok(ticket) => {
+                    self.start.connecting = true;
+                    self.open(Intent::Join(ticket));
+                }
+                Err(error) => self
+                    .start
+                    .show_error(&crate::error::AppError::Ticket(error).to_string()),
+            },
+            LinkRoute::NewWindow => {
+                let spawned = std::env::current_exe().and_then(|exe| {
+                    std::process::Command::new(exe)
+                        .args(new_window_args(link))
+                        .spawn()
+                });
+                if let Err(error) = spawned {
+                    tracing::warn!(%error, "could not open the link in a new window");
+                    self.state.status = format!("could not open the link: {error}");
+                }
+            }
+        }
+    }
+
     /// Downloads and swaps in the release the check found, reporting progress and the outcome
     /// through events. The relaunch arguments are decided when the outcome arrives, not now, so a
     /// room opened during the download is the one rejoined.
@@ -265,6 +311,15 @@ impl App {
             }
             .await
             .map_err(|error| error.to_string());
+            // The files are in place either way; a bundle that could not be re-sealed still
+            // launches, so the relaunch goes ahead and the reason is logged.
+            #[cfg(target_os = "macos")]
+            if outcome.is_ok()
+                && let Err(error) =
+                    crate::bundle::refresh_after_update(&install, &release.version.to_string())
+            {
+                tracing::warn!(%error, "the app bundle could not be refreshed after the update");
+            }
             let _ = done.send_event(AppEvent::UpdateReady(outcome));
         });
     }
@@ -647,7 +702,7 @@ impl App {
             Window::default_attributes()
                 .with_title(format!("OpenStream · {title}"))
                 .with_theme(Some(winit::window::Theme::Dark))
-                .with_inner_size(DEFAULT_WINDOW_SIZE)
+                .with_inner_size(default_window_size(std::env::consts::OS))
                 .with_visible(false),
         );
         let window = match event_loop.create_window(attributes) {
@@ -699,11 +754,15 @@ impl ApplicationHandler<AppEvent> for App {
         if self.main.is_some() {
             return;
         }
+        // Installed before the loop ran to catch the link that launched the app; installed again
+        // now that launching has finished, in case AppKit claimed the event while it did.
+        #[cfg(target_os = "macos")]
+        crate::macos_links::install(self.proxy.clone());
         let window = match event_loop.create_window(with_app_icon(
             Window::default_attributes()
                 .with_title("OpenStream")
                 .with_theme(Some(winit::window::Theme::Dark))
-                .with_inner_size(DEFAULT_WINDOW_SIZE),
+                .with_inner_size(default_window_size(std::env::consts::OS)),
         )) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -787,6 +846,7 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::UpdateReady(Err(message)) => {
                 self.update.failed(message);
             }
+            AppEvent::OpenLink(link) => self.open_link(&link),
             // A room-version bump and the statistics tick are the two relevant state changes:
             // the former reconciles watch membership promptly, the latter also catches a relay
             // address change and advances age labels even when nothing is watched.
@@ -1005,6 +1065,24 @@ fn affected_windows<Id: Copy + Eq + Hash>(
 mod tests {
     use super::*;
     use iroh::SecretKey;
+
+    #[test]
+    fn a_mac_opens_the_window_at_its_size_in_points_and_others_in_pixels() {
+        use winit::dpi::{LogicalSize, Size};
+        // Every Mac display is Retina: 1280 × 720 pixels there is a 640 × 360 point window,
+        // too small for the room rail, which then folds the members' streams out of sight.
+        assert_eq!(
+            default_window_size("macos"),
+            Size::Logical(LogicalSize::new(1280.0, 720.0))
+        );
+        for os in ["linux", "windows"] {
+            assert_eq!(
+                default_window_size(os),
+                Size::Physical(PhysicalSize::new(1280, 720)),
+                "{os}"
+            );
+        }
+    }
 
     #[test]
     fn a_finite_delay_becomes_a_deadline_and_no_request_becomes_none() {

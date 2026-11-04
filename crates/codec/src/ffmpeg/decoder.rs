@@ -19,6 +19,7 @@ pub struct FfmpegDecoder {
     ctx: CodecContext,
     _device: Option<BufferRef>,
     hw_pix_fmt: Option<ff::AVPixelFormat>,
+    hw_device: Option<&'static str>,
     packet: Packet,
     frame: Frame,
     sw_frame: Frame,
@@ -35,18 +36,27 @@ pub struct FfmpegDecoder {
 /// `decode` call after a gap, so this allows a little slack beyond the steady-state one-in-flight
 /// case.
 const DECODE_POOL_CAPACITY: usize = 4;
-/// Hardware decoders tried before software: the platform's own API first, then NVDEC.
-#[cfg(windows)]
-const HW_DEVICE_ORDER: [(ff::AVHWDeviceType, &str); 2] = [
-    (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA, "d3d11va"),
-    (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, "cuda"),
-];
-/// Hardware decoders tried before software: the platform's own API first, then NVDEC.
-#[cfg(not(windows))]
-const HW_DEVICE_ORDER: [(ff::AVHWDeviceType, &str); 2] = [
-    (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI, "vaapi"),
-    (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, "cuda"),
-];
+/// Hardware decoders tried before software for `os` (a `std::env::consts::OS` value): the
+/// platform's own API first, then NVDEC where NVIDIA hardware can exist.
+fn hw_device_order(os: &str) -> &'static [(ff::AVHWDeviceType, &'static str)] {
+    match os {
+        "windows" => &[
+            (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA, "d3d11va"),
+            (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, "cuda"),
+        ],
+        "macos" => &[(
+            ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+            "videotoolbox",
+        )],
+        _ => &[
+            (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI, "vaapi"),
+            (ff::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, "cuda"),
+        ],
+    }
+}
+/// This build's order.
+static HW_DEVICE_ORDER: std::sync::LazyLock<&'static [(ff::AVHWDeviceType, &'static str)]> =
+    std::sync::LazyLock::new(|| hw_device_order(std::env::consts::OS));
 impl FfmpegDecoder {
     pub fn open(params: &CodecParams, hw: HwDecode) -> Result<Self, CodecError> {
         init_logging();
@@ -54,9 +64,11 @@ impl FfmpegDecoder {
         let mut ctx = CodecContext::alloc(codec)?;
         let mut device = None;
         let mut hw_pix_fmt = None;
+        let mut hw_device = None;
         if hw == HwDecode::Auto && params.codec != Codec::Av1 {
-            for (device_type, _) in HW_DEVICE_ORDER {
+            for &(device_type, device_name) in HW_DEVICE_ORDER.iter() {
                 if let Some((candidate, format)) = try_hw_device(codec, device_type) {
+                    hw_device = Some(device_name);
                     unsafe {
                         (*ctx.0).hw_device_ctx = candidate.new_ref("av_buffer_ref")?;
                         (*ctx.0).opaque = format as isize as *mut c_void;
@@ -93,6 +105,7 @@ impl FfmpegDecoder {
             ctx,
             _device: device,
             hw_pix_fmt,
+            hw_device,
             packet: Packet::new()?,
             frame: Frame::new()?,
             sw_frame: Frame::new()?,
@@ -105,6 +118,10 @@ impl FfmpegDecoder {
     }
     pub fn is_hardware(&self) -> bool {
         self.hw_pix_fmt.is_some()
+    }
+    /// The hardware API decoding runs on (`videotoolbox`, `d3d11va`, ...), when it does.
+    pub fn hardware_device(&self) -> Option<&'static str> {
+        self.hw_device
     }
 }
 fn find_decoder(codec: Codec) -> Result<(*const ff::AVCodec, &'static str), CodecError> {
@@ -285,4 +302,31 @@ fn raw_from_avframe(frame: &ff::AVFrame, pool: &RawFramePool) -> Result<RawFrame
         }
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(os: &str) -> Vec<&'static str> {
+        hw_device_order(os).iter().map(|(_, name)| *name).collect()
+    }
+
+    #[test]
+    fn each_platform_tries_its_own_decode_api_first() {
+        assert_eq!(names("windows"), ["d3d11va", "cuda"]);
+        assert_eq!(names("linux"), ["vaapi", "cuda"]);
+        assert_eq!(names("macos"), ["videotoolbox"]);
+    }
+
+    #[test]
+    fn this_build_uses_the_order_for_its_own_platform() {
+        assert_eq!(
+            HW_DEVICE_ORDER
+                .iter()
+                .map(|(_, name)| *name)
+                .collect::<Vec<_>>(),
+            names(std::env::consts::OS)
+        );
+    }
 }

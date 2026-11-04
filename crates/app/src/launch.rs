@@ -107,8 +107,16 @@ pub async fn open_room(
         timings: RoomTimings::default(),
     };
     let room = match intent {
-        Intent::Join(ticket) => Room::join(config, ticket).await?,
-        Intent::Create => Room::create(config).await?,
+        Intent::Join(ticket) => {
+            let room = Room::join(config, ticket).await?;
+            tracing::info!("room joined");
+            room
+        }
+        Intent::Create => {
+            let room = Room::create(config).await?;
+            tracing::info!("room created");
+            room
+        }
     };
     if launch.relay != RelaySetting::Disabled && !room.online(RELAY_ONLINE_TIMEOUT).await {
         tracing::warn!(

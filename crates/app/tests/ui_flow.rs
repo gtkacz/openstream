@@ -720,6 +720,46 @@ fn a_dropdown_still_highlights_the_row_under_the_pointer() {
     );
 }
 
+/// A room you have just joined: one member sharing a stream nobody here watches yet.
+fn joined_room() -> brp_room::RoomSnapshot {
+    let mut snapshot = busy_room();
+    snapshot.own_lives.clear();
+    snapshot.watches.clear();
+    snapshot.members[0].path = brp_net::PathKind::Unknown;
+    snapshot
+}
+
+#[test]
+fn at_the_default_window_size_a_joined_room_lists_the_member_s_stream_and_its_switch() {
+    // DEFAULT_WINDOW_SIZE, in points as macOS now opens it.
+    let (width, height) = (1280.0, 720.0);
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = joined_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let has_text = |shapes: &[egui::epaint::ClippedShape], text: &str| {
+        shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape, egui::Shape::Text(s) if s.galley.text() == text))
+    };
+    let mut last = Vec::new();
+    for frame in 0..120 {
+        last = run_room(
+            &ctx,
+            timed(window(width, height), frame),
+            &snapshot,
+            &mut state,
+        )
+        .1;
+    }
+    assert!(has_text(&last, "Morgan"), "the member is listed");
+    assert!(
+        has_text(&last, "Monitor 1"),
+        "the member's stream is listed"
+    );
+    assert!(has_text(&last, "Watch"), "the stream can be switched on");
+}
+
 /// Draws the room for long enough that anything arriving settles, starting at `first_frame`
 /// because egui's clock must only ever move forward.
 fn settled_room_from(

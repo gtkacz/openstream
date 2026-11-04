@@ -62,6 +62,18 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 cpal = "0.18"
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-foundation = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-core-audio = "0.3"
+objc2-core-audio-types = "0.3"
+objc2-screen-capture-kit = "0.3"
+objc2-app-kit = "0.3"
 libc = "0.2"
 wasapi = "0.24"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }

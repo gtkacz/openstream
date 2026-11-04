@@ -234,47 +234,68 @@ impl FfmpegEncoder {
     }
 }
 
+/// One private option an encoder is opened with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EncoderOption {
+    Str(&'static str, &'static str),
+    Owned(&'static str, String),
+    Int(&'static str, i64),
+}
+
+/// The low-latency options for the encoder called `name`. A table rather than calls so every
+/// platform's settings are checked by one test run.
+pub(crate) fn low_latency_options(name: &str, software_lp: usize) -> Vec<EncoderOption> {
+    use EncoderOption::{Int, Owned, Str};
+    match name {
+        "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => vec![
+            Str("preset", "p4"),
+            Str("tune", "ull"),
+            Str("rc", "cbr"),
+            Int("zerolatency", 1),
+            Int("delay", 0),
+            Int("forced-idr", 1),
+            Int("rc-lookahead", 0),
+        ],
+        "h264_amf" | "hevc_amf" | "av1_amf" => {
+            vec![Str("usage", "ultralowlatency"), Str("rc", "cbr")]
+        }
+        "h264_qsv" | "hevc_qsv" | "av1_qsv" => vec![Int("async_depth", 1), Int("low_power", 1)],
+        // Hardware only: a software Media Foundation transform would defeat the probe order,
+        // where software AV1 is the deliberate last resort.
+        "h264_mf" | "hevc_mf" => vec![
+            Int("hw_encoding", 1),
+            Str("rate_control", "cbr"),
+            Str("scenario", "display_remoting"),
+        ],
+        // Hardware only for the same reason; `realtime` asks VideoToolbox for real-time
+        // compression and `prio_speed` lets it trade a little quality for latency.
+        "h264_videotoolbox" | "hevc_videotoolbox" => {
+            vec![Int("allow_sw", 0), Int("realtime", 1), Int("prio_speed", 1)]
+        }
+        // `lp` bounds SVT-AV1's own thread pool so several concurrently subscribed presets each
+        // get a share of the machine instead of every instance claiming every core.
+        "libsvtav1" => vec![
+            Str("preset", "10"),
+            Owned(
+                "svtav1-params",
+                format!("rc=2:pred-struct=1:rtc=1:lp={software_lp}"),
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 fn apply_low_latency_options(
     name: &str,
     ctx: &CodecContext,
     software_lp: usize,
 ) -> Result<(), CodecError> {
-    match name {
-        "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
-            set_opt(ctx, "preset", "p4")?;
-            set_opt(ctx, "tune", "ull")?;
-            set_opt(ctx, "rc", "cbr")?;
-            set_opt_int(ctx, "zerolatency", 1)?;
-            set_opt_int(ctx, "delay", 0)?;
-            set_opt_int(ctx, "forced-idr", 1)?;
-            set_opt_int(ctx, "rc-lookahead", 0)?;
+    for option in low_latency_options(name, software_lp) {
+        match option {
+            EncoderOption::Str(key, value) => set_opt(ctx, key, value)?,
+            EncoderOption::Owned(key, value) => set_opt(ctx, key, &value)?,
+            EncoderOption::Int(key, value) => set_opt_int(ctx, key, value)?,
         }
-        "h264_amf" | "hevc_amf" | "av1_amf" => {
-            set_opt(ctx, "usage", "ultralowlatency")?;
-            set_opt(ctx, "rc", "cbr")?;
-        }
-        "h264_qsv" | "hevc_qsv" | "av1_qsv" => {
-            set_opt_int(ctx, "async_depth", 1)?;
-            set_opt_int(ctx, "low_power", 1)?;
-        }
-        "h264_mf" | "hevc_mf" => {
-            // Hardware only: a software Media Foundation transform would defeat the probe order,
-            // where software AV1 is the deliberate last resort.
-            set_opt_int(ctx, "hw_encoding", 1)?;
-            set_opt(ctx, "rate_control", "cbr")?;
-            set_opt(ctx, "scenario", "display_remoting")?;
-        }
-        "libsvtav1" => {
-            set_opt(ctx, "preset", "10")?;
-            // `lp` bounds SVT-AV1's own thread pool so several concurrently subscribed presets
-            // each get a share of the machine instead of every instance claiming every core.
-            set_opt(
-                ctx,
-                "svtav1-params",
-                &format!("rc=2:pred-struct=1:rtc=1:lp={software_lp}"),
-            )?;
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -334,7 +355,40 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::Ordering;
 
-    use super::{SoftwareEncoderSlot, TOTAL_COMMITTED_LP, claim_software_encoder_lp};
+    use super::{
+        EncoderOption, SoftwareEncoderSlot, TOTAL_COMMITTED_LP, claim_software_encoder_lp,
+        low_latency_options,
+    };
+
+    #[test]
+    fn videotoolbox_runs_on_hardware_in_real_time_and_favours_speed() {
+        for name in ["h264_videotoolbox", "hevc_videotoolbox"] {
+            let options = low_latency_options(name, 0);
+            assert_eq!(
+                options,
+                vec![
+                    EncoderOption::Int("allow_sw", 0),
+                    EncoderOption::Int("realtime", 1),
+                    EncoderOption::Int("prio_speed", 1),
+                ],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_option_table_keeps_every_existing_encoder_setting() {
+        assert!(low_latency_options("hevc_nvenc", 0).contains(&EncoderOption::Str("tune", "ull")));
+        assert!(low_latency_options("h264_mf", 0).contains(&EncoderOption::Int("hw_encoding", 1)));
+        assert_eq!(
+            low_latency_options("libsvtav1", 6),
+            vec![
+                EncoderOption::Str("preset", "10"),
+                EncoderOption::Owned("svtav1-params", "rc=2:pred-struct=1:rtc=1:lp=6".to_string()),
+            ]
+        );
+        assert!(low_latency_options("unknown_encoder", 0).is_empty());
+    }
 
     // Guards tests that assert absolute values of the process-global `TOTAL_COMMITTED_LP`
     // against interleaving with any other test in this binary that acquires slots concurrently.

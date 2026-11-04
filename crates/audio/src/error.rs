@@ -6,6 +6,8 @@ pub enum AudioError {
     PipeWire(String),
     #[error("windows: {0}")]
     Windows(String),
+    #[error("macos: {0}")]
+    MacOs(String),
     #[error("unsupported on this system: {0}")]
     Unsupported(String),
     #[error("audio device: {0}")]

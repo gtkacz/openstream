@@ -1,5 +1,6 @@
 //! Registering the binary as the handler for `brp://` links, so a click in a browser opens the
-//! participant window. There is no installer: the window registers itself on every launch,
+//! participant window. On macOS the bundle's Info.plist claims the scheme and the link arrives as
+//! an Apple Event (`macos_links`). There is no installer: the window registers itself on every launch,
 //! pointing at whatever binary is running, so a moved or upgraded binary stays reachable. A
 //! failure is a warning, never a reason to keep the window from opening.
 
@@ -34,9 +35,55 @@ fn register() -> io::Result<()> {
     windows::register()
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+fn register() -> io::Result<()> {
+    macos::register()
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 fn register() -> io::Result<()> {
     Ok(())
+}
+
+/// macOS learns the scheme from the bundle's Info.plist. Registering the running bundle on every
+/// launch keeps LaunchServices pointed at the copy the user actually runs after a move or an
+/// update; a binary outside a bundle cannot claim a scheme at all.
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::io;
+
+    use objc2_core_foundation::{CFString, CFURL, CFURLPathStyle};
+
+    use crate::bundle::bundle_root;
+
+    #[link(name = "CoreServices", kind = "framework")]
+    unsafe extern "C" {
+        /// `LSRegisterURL(CFURLRef inURL, Boolean inUpdate)`.
+        fn LSRegisterURL(url: &CFURL, update: u8) -> i32;
+    }
+
+    pub fn register() -> io::Result<()> {
+        let exe = std::env::current_exe()?;
+        let Some(bundle) = bundle_root(&exe) else {
+            tracing::debug!(exe = %exe.display(), "not in an app bundle; brp:// links open only from a bundle");
+            return Ok(());
+        };
+        let path = CFString::from_str(&bundle.to_string_lossy());
+        let url = CFURL::with_file_system_path(
+            None,
+            Some(&path),
+            CFURLPathStyle::CFURLPOSIXPathStyle,
+            true,
+        )
+        .ok_or_else(|| io::Error::other(format!("{} is not a valid URL", bundle.display())))?;
+        // SAFETY: a live file URL; `update` asks LaunchServices to refresh an existing record.
+        let status = unsafe { LSRegisterURL(&url, 1) };
+        if status != 0 {
+            return Err(io::Error::other(format!("LSRegisterURL returned {status}")));
+        }
+        tracing::debug!(bundle = %bundle.display(), "registered with LaunchServices");
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]

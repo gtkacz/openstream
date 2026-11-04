@@ -47,3 +47,8 @@ ashpd = { workspace = true, features = ["settings"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["objc2-core-services"] }
+objc2-core-foundation.workspace = true

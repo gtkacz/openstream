@@ -4,8 +4,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::ARCHIVE_EXTENSION;
 use crate::error::UpdateError;
-use crate::{ARCHIVE_EXTENSION, PLATFORM};
 
 /// A plain `X.Y.Z`, the only shape the release workflow produces. Derived `Ord` compares the
 /// three numbers in order.
@@ -54,13 +54,26 @@ pub struct Release {
 }
 
 /// The archive's top-level directory, `brp-<version>-<platform>`.
-pub fn release_dir_name(version: Version) -> String {
-    format!("brp-{version}-{PLATFORM}")
+pub fn release_dir_name(version: Version, platform: &str) -> String {
+    format!("brp-{version}-{platform}")
 }
 
 /// The archive's file name on the release page.
-pub fn asset_name(version: Version) -> String {
-    format!("{}{ARCHIVE_EXTENSION}", release_dir_name(version))
+pub fn asset_name(version: Version, platform: &str) -> String {
+    format!("{}{ARCHIVE_EXTENSION}", release_dir_name(version, platform))
+}
+
+/// The release to offer a build of `platform` (`None` when nothing is published for it), given
+/// the URL the latest-release page led to.
+pub fn offered(
+    platform: Option<&str>,
+    current: Version,
+    final_url: &str,
+) -> Result<Option<Release>, UpdateError> {
+    match platform {
+        Some(_) => newer_release(current, final_url),
+        None => Ok(None),
+    }
 }
 
 /// The release the latest-release page led to, when it is newer than `current`. `final_url` is
@@ -148,10 +161,24 @@ mod tests {
     #[test]
     fn asset_names_follow_the_release_workflow() {
         let version = Version(0, 5, 0);
-        assert_eq!(release_dir_name(version), format!("brp-0.5.0-{PLATFORM}"));
         assert_eq!(
-            asset_name(version),
-            format!("brp-0.5.0-{PLATFORM}{ARCHIVE_EXTENSION}")
+            release_dir_name(version, "macos-aarch64"),
+            "brp-0.5.0-macos-aarch64"
+        );
+        assert_eq!(
+            asset_name(version, "macos-aarch64"),
+            format!("brp-0.5.0-macos-aarch64{ARCHIVE_EXTENSION}")
+        );
+    }
+
+    #[test]
+    fn a_build_with_no_published_platform_is_never_offered_an_update() {
+        let url = "https://github.com/gtkacz/openstream/releases/tag/v9.0.0";
+        assert_eq!(offered(None, Version(1, 0, 0), url).unwrap(), None);
+        assert!(
+            offered(Some("macos-aarch64"), Version(1, 0, 0), url)
+                .unwrap()
+                .is_some()
         );
     }
 

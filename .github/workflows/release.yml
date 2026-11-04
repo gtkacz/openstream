@@ -118,7 +118,9 @@ jobs:
           set -eu
           name="brp-$VERSION-linux-x86_64"
           ./ci/stage-linux.sh "dist/$name"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # ustar and no copyfile metadata: bsdtar would otherwise add AppleDouble `._` members,
+          # which the updater would copy into the install, and pax xattr headers.
+          COPYFILE_DISABLE=1 tar --format ustar -C dist -czf "dist/$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -148,8 +150,43 @@ jobs:
         with:
           name: windows
           path: dist/*.zip
+  macos:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/macos-ffmpeg
+      - run: cargo build --release -p brp
+        env:
+          # @executable_path makes the binary load the libraries staged beside it, both in the
+          # flat directory and in OpenStream.app/Contents/MacOS.
+          RUSTFLAGS: -C link-arg=-Wl,-rpath,@executable_path
+      - name: Stage the tarball and the app bundle
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -eu
+          name="brp-$VERSION-macos-aarch64"
+          ./ci/stage-macos.sh "dist/$name" dist/OpenStream.app
+          # The flat tarball is what an in-app update downloads; the zipped bundle is what a new
+          # user drags to Applications. ditto keeps the bundle's signature and modes intact.
+          # ustar and no copyfile metadata: bsdtar would otherwise add AppleDouble `._` members,
+          # which the updater would copy into the install, and pax xattr headers.
+          COPYFILE_DISABLE=1 tar --format ustar -C dist -czf "dist/$name.tar.gz" "$name"
+          ditto -c -k --keepParent dist/OpenStream.app "dist/OpenStream-$VERSION-macos-aarch64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
   publish:
-    needs: [prepare, linux, windows]
+    needs: [prepare, linux, windows, macos]
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:

@@ -13,4 +13,17 @@ pub enum CaptureError {
     UnsupportedFormat(String),
     #[error("windows: {0}")]
     Windows(String),
+    #[error(
+        "screen recording is not allowed: turn on OpenStream under System Settings › Privacy & Security › Screen & System Audio Recording ({0})"
+    )]
+    PermissionDenied(String),
+    #[error("macos: {0}")]
+    MacOs(String),
+}
+
+impl CaptureError {
+    /// Whether the user, or a policy, refused the capture, as opposed to it failing.
+    pub fn is_refusal(&self) -> bool {
+        matches!(self, Self::PortalDenied | Self::PermissionDenied(_))
+    }
 }
