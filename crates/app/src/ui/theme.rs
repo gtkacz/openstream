@@ -113,9 +113,15 @@ fn fonts() -> FontDefinitions {
     }
     fonts.font_data.insert(
         ICON_FAMILY.to_owned(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../../assets/fonts/Lucide-subset.ttf"
-        ))),
+        Arc::new(
+            FontData::from_static(include_bytes!("../../assets/fonts/Lucide-subset.ttf"))
+                // Lucide's glyphs sit high against Chakra Petch on egui's shared baseline. Match the
+                // text family's optical correction so paired icon and label ink share a visual centre.
+                .tweak(FontTweak {
+                    y_offset_factor: 0.04,
+                    ..Default::default()
+                }),
+        ),
     );
     fonts.families.insert(
         FontFamily::Name(ICON_FAMILY.into()),
@@ -591,7 +597,7 @@ pub fn live_dot(ui: &mut egui::Ui, live: bool) {
 }
 
 pub fn live_status(ui: &mut egui::Ui, text: &str, live: bool) {
-    ui.horizontal(|ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         live_dot(ui, live);
         ui.label(RichText::new(text).color(if live { LIVE } else { SECONDARY }));
@@ -599,7 +605,7 @@ pub fn live_status(ui: &mut egui::Ui, text: &str, live: bool) {
 }
 
 pub fn brand(ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         crate::icon::paint_mark(ui, 26.0);
         ui.label(RichText::new("OpenStream").font(semibold(18.0)));
     });

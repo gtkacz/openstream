@@ -85,7 +85,7 @@ fn own_block(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    ui.horizontal(|ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         avatar(ui, snapshot.me.as_bytes(), &snapshot.nickname);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -112,7 +112,7 @@ fn member_block(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    ui.horizontal(|ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         avatar(ui, member.id.as_bytes(), &member.nickname);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -121,7 +121,7 @@ fn member_block(
                     .truncate(),
             )
             .on_hover_text(format!("{} · {}", member.nickname, member.id.fmt_short()));
-            ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 path_glyph(ui, member.path);
                 ui.label(
