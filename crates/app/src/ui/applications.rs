@@ -133,15 +133,11 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
     let mut picker = state.applications.clone()?;
     let rows = picker.rows();
     let (mut done, mut cancelled, mut refresh) = (false, false, false);
-    let mut open = true;
-    egui::Window::new("Applications the room hears")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(400.0)
-        .max_width((ctx.content_rect().width() - 64.0).max(160.0))
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
+    let (_, dismissed) = super::theme::dialog(
+        ctx,
+        "application-picker",
+        "Applications the room hears",
+        |ui| {
             ui.radio_value(
                 &mut picker.only,
                 false,
@@ -153,7 +149,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
             }
             let only = picker.only;
             egui::ScrollArea::vertical()
-                .max_height(MAX_LIST_HEIGHT)
+                .max_height((ctx.content_rect().height() - 280.0).clamp(120.0, MAX_LIST_HEIGHT))
                 .show(ui, |ui| {
                     for row in &rows {
                         let mut chosen = picker.is_chosen(&row.key);
@@ -171,20 +167,23 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                         }
                     }
                 });
-            ui.add_space(16.0);
+            ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                refresh = ui.button("Refresh").clicked();
                 done = super::theme::primary_button(ui, "Done", true).clicked();
-                cancelled = ui.button("Cancel").clicked();
+                cancelled = ui
+                    .add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 36.0)))
+                    .clicked();
+                refresh = super::theme::action(ui, super::theme::icons::REFRESH, "Refresh", true)
+                    .clicked();
             });
-        });
-    let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        },
+    );
     if done {
         let applied = picker.applied();
         state.cancel_applications();
         return Some(PickerOutcome::Applied(applied));
     }
-    if cancelled || escape || !open {
+    if cancelled || dismissed {
         state.cancel_applications();
         return None;
     }

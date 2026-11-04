@@ -20,7 +20,7 @@ use crate::ui::state::UiState;
 use crate::window::AppEvent;
 
 /// The window's view of an open room: the handle, the snapshot the panels draw from, the ticket
-/// the status bar copies, the watch handles that feed tiles, and the share in flight.
+/// the room rail copies, the watch handles that feed tiles, and the share in flight.
 pub struct RoomView {
     pub room: Arc<Room>,
     pub snapshot: RoomSnapshot,

@@ -89,123 +89,121 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
         return None;
     }
     let mut saved = None;
-    let mut open = true;
-    egui::Window::new("Settings")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(400.0)
-        .default_height(640.0)
-        .max_height((ctx.content_rect().height() - 96.0).max(160.0))
-        .max_width((ctx.content_rect().width() - 64.0).max(160.0))
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 240.0).clamp(120.0, 560.0))
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.label(egui::RichText::new("Identity").size(18.0));
-                    ui.label("Your name");
+    let (_, dismissed) = super::theme::dialog(ctx, "settings", "Settings", |ui| {
+        egui::ScrollArea::vertical()
+            .max_height((ctx.content_rect().height() - 200.0).clamp(120.0, 560.0))
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                super::theme::section_heading(ui, "Your name");
+                ui.add(
+                    egui::TextEdit::singleline(&mut dialog.nickname_text)
+                        .margin(egui::vec2(12.0, 10.0))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(16.0);
+                super::theme::section_heading(ui, "Connection");
+                let mut kind = RelayKind::of(&dialog.draft.relay);
+                let before = kind;
+                ui.radio_value(&mut kind, RelayKind::Default, "Public relays");
+                ui.radio_value(&mut kind, RelayKind::Custom, "Custom relay URL");
+                ui.radio_value(&mut kind, RelayKind::Disabled, "No relay (LAN only)");
+                if kind != before {
+                    dialog.draft.relay = switch_relay(&dialog.draft.relay, kind);
+                }
+                if let RelayChoice::Custom(url) = &mut dialog.draft.relay {
                     ui.add(
-                        egui::TextEdit::singleline(&mut dialog.nickname_text)
+                        egui::TextEdit::singleline(url)
+                            .hint_text("https://relay.example.com/")
                             .margin(egui::vec2(12.0, 10.0))
                             .desired_width(f32::INFINITY),
                     );
-                    ui.add_space(16.0);
-                    ui.label(egui::RichText::new("Connection").size(18.0));
-                    let mut kind = RelayKind::of(&dialog.draft.relay);
-                    let before = kind;
-                    ui.radio_value(&mut kind, RelayKind::Default, "Public relays");
-                    ui.radio_value(&mut kind, RelayKind::Custom, "Custom relay URL");
-                    ui.radio_value(&mut kind, RelayKind::Disabled, "No relay (LAN only)");
-                    if kind != before {
-                        dialog.draft.relay = switch_relay(&dialog.draft.relay, kind);
-                    }
-                    if let RelayChoice::Custom(url) = &mut dialog.draft.relay {
-                        ui.add(
-                            egui::TextEdit::singleline(url)
-                                .hint_text("https://relay.example.com/")
-                                .desired_width(f32::INFINITY),
-                        );
-                    }
-                    ui.add_space(16.0);
-                    ui.label(egui::RichText::new("Video & audio").size(18.0));
-                    ui.label("Frame rate ceiling");
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut dialog.draft.fps)
-                                .range(1..=u32::MAX)
-                                .suffix(" fps"),
-                        );
-                        for fps in [30, 60] {
-                            if ui
-                                .selectable_label(dialog.draft.fps == fps, format!("{fps} fps"))
-                                .clicked()
-                            {
-                                dialog.draft.fps = fps;
-                            }
-                        }
-                    });
-                    ui.label("Audio output");
-                    let label =
-                        device_label(dialog.draft.audio.output_device.as_deref(), &dialog.devices);
-                    egui::ComboBox::from_id_salt("settings-output-device")
-                        .selected_text(label)
-                        .width(ui.available_width())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut dialog.draft.audio.output_device,
-                                None,
-                                "System default",
-                            );
-                            for device in &dialog.devices {
-                                ui.selectable_value(
-                                    &mut dialog.draft.audio.output_device,
-                                    Some(device.id.clone()),
-                                    &device.name,
-                                );
-                            }
-                        });
-                    ui.add_space(16.0);
-                    ui.label(egui::RichText::new("Updates").size(18.0));
-                    ui.checkbox(
-                        &mut dialog.draft.check_updates,
-                        "Check for updates at launch",
+                }
+                ui.add_space(16.0);
+                super::theme::section_heading(ui, "Frame rate ceiling");
+                ui.horizontal_wrapped(|ui| {
+                    super::theme::uniform_controls(ui);
+                    ui.add(
+                        egui::DragValue::new(&mut dialog.draft.fps)
+                            .range(1..=u32::MAX)
+                            .suffix(" fps"),
                     );
-                    ui.weak("Takes effect the next time OpenStream starts");
-                    ui.add_space(16.0);
-                    if let Some(error) = &dialog.devices_error {
-                        ui.colored_label(
-                            super::theme::ERROR,
-                            format!("could not list output devices: {error}"),
-                        );
-                    }
-                    if room_open {
-                        ui.weak("Changes apply to the next room you open");
-                    }
-                    if !dialog.error.is_empty() {
-                        ui.colored_label(super::theme::ERROR, &dialog.error);
+                    for fps in [30, 60] {
+                        if ui
+                            .add(
+                                egui::Button::new(format!("{fps} fps"))
+                                    .selected(dialog.draft.fps == fps),
+                            )
+                            .clicked()
+                        {
+                            dialog.draft.fps = fps;
+                        }
                     }
                 });
-            ui.add_space(16.0);
-            ui.horizontal(|ui| {
-                if super::theme::primary_button(ui, "Save changes", true).clicked() {
-                    dialog.draft.nickname = normalised_nickname(&dialog.nickname_text);
-                    match dialog.draft.validate() {
-                        Ok(()) => {
-                            saved = Some(dialog.draft.clone());
-                            dialog.open = false;
+                ui.add_space(16.0);
+                super::theme::section_heading(ui, "Audio output");
+                let label =
+                    device_label(dialog.draft.audio.output_device.as_deref(), &dialog.devices);
+                egui::ComboBox::from_id_salt("settings-output-device")
+                    .selected_text(label)
+                    .width(ui.available_width())
+                    .icon(super::theme::chevron)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut dialog.draft.audio.output_device,
+                            None,
+                            "System default",
+                        );
+                        for device in &dialog.devices {
+                            ui.selectable_value(
+                                &mut dialog.draft.audio.output_device,
+                                Some(device.id.clone()),
+                                &device.name,
+                            );
                         }
-                        Err(error) => dialog.error = error,
-                    }
+                    });
+                ui.add_space(16.0);
+                super::theme::section_heading(ui, "Updates");
+                super::theme::switch(
+                    ui,
+                    &mut dialog.draft.check_updates,
+                    "Check for updates at launch",
+                );
+                ui.weak("Takes effect the next time OpenStream starts");
+                if let Some(error) = &dialog.devices_error {
+                    ui.colored_label(
+                        super::theme::ERROR,
+                        format!("Could not list output devices: {error}"),
+                    );
                 }
-                if ui.button("Cancel").clicked() {
-                    dialog.open = false;
+                if room_open {
+                    ui.weak("Changes apply to the next room you open");
+                }
+                if !dialog.error.is_empty() {
+                    ui.colored_label(super::theme::ERROR, &dialog.error);
                 }
             });
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if super::theme::primary_button(ui, "Save changes", true).clicked() {
+                dialog.draft.nickname = normalised_nickname(&dialog.nickname_text);
+                match dialog.draft.validate() {
+                    Ok(()) => {
+                        saved = Some(dialog.draft.clone());
+                        dialog.open = false;
+                    }
+                    Err(error) => dialog.error = error,
+                }
+            }
+            if ui
+                .add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 36.0)))
+                .clicked()
+            {
+                dialog.open = false;
+            }
         });
-    // The title bar's close button behaves like Cancel.
-    dialog.open &= open;
+    });
+    // The title bar's close button and Esc behave like Cancel.
+    dialog.open &= !dismissed;
     saved
 }
 

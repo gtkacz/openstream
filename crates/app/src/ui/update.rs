@@ -1,4 +1,4 @@
-//! The update notice and button, drawn on the start screen and in the status bar. Kept apart from
+//! The update notice and button, drawn on the start screen and in the dock. Kept apart from
 //! `UiState`, which a room opening resets: a download in flight must survive that.
 
 use brp_update::{RELEASES_URL, Release};
@@ -106,7 +106,7 @@ pub fn draw(ui: &mut egui::Ui, state: &UpdateState) -> bool {
         }
     });
     if let UpdatePhase::Failed(message) = &state.phase {
-        ui.colored_label(egui::Color32::LIGHT_RED, message);
+        ui.colored_label(super::theme::ERROR, message);
     }
     clicked
 }

@@ -1,5 +1,5 @@
-//! Bottom panel: this participant's lives with per-preset encoder state and the controls that edit
-//! presets, plus the share buttons.
+//! This participant's side of the room: the share and audio controls for the dock, and the card
+//! for each of their streams with the controls that edit its presets.
 
 use brp_audio::AudioSelection;
 use brp_proto::constants::{MAX_BITRATE_KBPS, MAX_LIVES_PER_PARTICIPANT, MIN_BITRATE_KBPS};
@@ -8,107 +8,137 @@ use brp_room::{AudioCaptureState, OwnLiveView, RoomSnapshot};
 
 use super::applications::selection_summary;
 use super::state::UiState;
+use super::theme::{self, icons};
 use crate::commands::RoomCommand;
 use crate::presets;
 
-/// Draws the own-lives panel: share and stop buttons plus one row group per own live, pushing
-/// `Share`/`StopLive`/`SetPresets` commands for user edits.
-pub fn draw(
+/// Share and stop buttons, pushing `Share`/`StopLive` commands.
+pub fn share_buttons(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
+    state: &UiState,
+    commands: &mut Vec<RoomCommand>,
+    labelled: bool,
+) {
+    let can_share = !state.share_pending
+        && state.picker.is_none()
+        && snapshot.own_lives.len() < MAX_LIVES_PER_PARTICIPANT;
+    if theme::primary_action(ui, icons::SHARE_MONITOR, "Share monitor", can_share).clicked() {
+        commands.push(RoomCommand::Share {
+            kind: SourceKind::Monitor,
+            source: None,
+        });
+    }
+    let tool = |ui: &mut egui::Ui, glyph: &str, name: &str, enabled: bool| {
+        if labelled {
+            theme::action(ui, glyph, name, enabled).clicked()
+        } else {
+            theme::icon_button(ui, glyph, name, enabled).clicked()
+        }
+    };
+    if tool(ui, icons::SHARE_WINDOW, "Share window", can_share) {
+        commands.push(RoomCommand::Share {
+            kind: SourceKind::Window,
+            source: None,
+        });
+    }
+    if !snapshot.own_lives.is_empty() && tool(ui, icons::STOP, "Stop sharing", true) {
+        commands.extend(
+            snapshot
+                .own_lives
+                .iter()
+                .map(|live| RoomCommand::StopLive(live.info.id)),
+        );
+    }
+    if state.share_pending {
+        theme::spinner(ui, 16.0);
+        ui.weak("Starting your stream…");
+    }
+}
+
+/// The share-audio switch, the application chooser, and what the room hears right now. Without
+/// room for `show_status` that moves to the chooser's tooltip; a failure always shows.
+pub fn audio_controls(
+    ui: &mut egui::Ui,
+    snapshot: &RoomSnapshot,
+    commands: &mut Vec<RoomCommand>,
+    show_status: bool,
+) {
+    let mut share_audio = snapshot.own_audio.enabled;
+    if theme::switch(ui, &mut share_audio, "Share audio").changed() {
+        commands.push(RoomCommand::SetAudio(share_audio));
+    }
+    let status = audio_status(snapshot);
+    let selection = selection_summary(&snapshot.own_audio.selection);
+    let tooltip = match (&status, show_status) {
+        (Some(status), false) => format!("{selection} · {status}"),
+        _ => selection,
+    };
+    if ui
+        .add(egui::Button::new("Applications…").min_size(egui::vec2(0.0, theme::CONTROL_HEIGHT)))
+        .on_hover_text(tooltip)
+        .clicked()
+    {
+        commands.push(RoomCommand::ChooseApplications);
+    }
+    if let (true, Some(status)) = (show_status, &status) {
+        ui.weak(status);
+    }
+    if let AudioCaptureState::Failed(error) = &snapshot.own_audio.state {
+        ui.colored_label(theme::ERROR, format!("Audio failed: {error}"));
+    }
+}
+
+fn audio_status(snapshot: &RoomSnapshot) -> Option<String> {
+    match &snapshot.own_audio.state {
+        AudioCaptureState::Off | AudioCaptureState::Failed(_) => None,
+        AudioCaptureState::Idle => Some("Waiting for a listener".to_string()),
+        AudioCaptureState::Capturing => match &snapshot.own_audio.selection {
+            AudioSelection::Only(keys) if keys.is_empty() => {
+                Some("No applications selected".to_string())
+            }
+            _ => {
+                let n = snapshot.own_audio.subscribers;
+                let plural = if n == 1 { "" } else { "s" };
+                Some(format!("{n} listener{plural}"))
+            }
+        },
+    }
+}
+
+/// The compact window's Share sheet: what the dock holds in a wide one.
+pub fn share_sheet(
+    ui: &mut egui::Ui,
+    snapshot: &RoomSnapshot,
+    state: &UiState,
+    commands: &mut Vec<RoomCommand>,
+) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            theme::section_heading(ui, "Share");
+            ui.horizontal_wrapped(|ui| share_buttons(ui, snapshot, state, commands, true));
+            ui.add_space(12.0);
+            theme::section_heading(ui, "Audio");
+            ui.horizontal_wrapped(|ui| audio_controls(ui, snapshot, commands, true));
+            ui.add_space(12.0);
+            theme::section_heading(ui, "Upload");
+            ui.label(theme::figure(format!("{} kbps", state.upload_kbps)));
+        });
+}
+
+/// One of this participant's streams, pushing `StopLive`/`SetPresets` commands for user edits.
+pub fn live_card(
+    ui: &mut egui::Ui,
+    live: &OwnLiveView,
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    let narrow = ui.ctx().content_rect().width() < 600.0;
-    egui::Panel::bottom("own-lives")
-        .default_size(if snapshot.own_lives.is_empty() {
-            if narrow { 192.0 } else { 128.0 }
-        } else if narrow {
-            328.0
-        } else {
-            288.0
-        })
-        .min_size(120.0)
-        .max_size((ui.ctx().content_rect().height() * 0.6).max(160.0))
-        .resizable(true)
-        .frame(super::theme::panel())
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Your streams").size(18.0));
-                let can_share = !state.share_pending
-                    && state.picker.is_none()
-                    && snapshot.own_lives.len() < MAX_LIVES_PER_PARTICIPANT;
-                if super::theme::primary_button(ui, "Share monitor", can_share).clicked() {
-                    commands.push(RoomCommand::Share {
-                        kind: SourceKind::Monitor,
-                        source: None,
-                    });
-                }
-                if ui
-                    .add_enabled(can_share, egui::Button::new("Share window"))
-                    .clicked()
-                {
-                    commands.push(RoomCommand::Share {
-                        kind: SourceKind::Window,
-                        source: None,
-                    });
-                }
-                let can_stop = !snapshot.own_lives.is_empty();
-                if ui
-                    .add_enabled(can_stop, egui::Button::new("Stop sharing"))
-                    .clicked()
-                {
-                    commands.extend(
-                        snapshot
-                            .own_lives
-                            .iter()
-                            .map(|live| RoomCommand::StopLive(live.info.id)),
-                    );
-                }
-                if state.share_pending {
-                    ui.weak("Starting your stream…");
-                }
-            });
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                let mut share_audio = snapshot.own_audio.enabled;
-                if ui.checkbox(&mut share_audio, "Share audio").changed() {
-                    commands.push(RoomCommand::SetAudio(share_audio));
-                }
-                if ui.button("Choose applications…").clicked() {
-                    commands.push(RoomCommand::ChooseApplications);
-                }
-                ui.weak(selection_summary(&snapshot.own_audio.selection));
-                match &snapshot.own_audio.state {
-                    AudioCaptureState::Off => {}
-                    AudioCaptureState::Idle => {
-                        ui.weak("waiting for a listener");
-                    }
-                    AudioCaptureState::Capturing => match &snapshot.own_audio.selection {
-                        AudioSelection::Only(keys) if keys.is_empty() => {
-                            ui.weak("no applications selected");
-                        }
-                        _ => {
-                            let n = snapshot.own_audio.subscribers;
-                            let plural = if n == 1 { "" } else { "s" };
-                            ui.weak(format!("capturing · {n} listener{plural}"));
-                        }
-                    },
-                    AudioCaptureState::Failed(error) => {
-                        ui.colored_label(super::theme::ERROR, format!("audio failed: {error}"));
-                    }
-                }
-            });
-            let width = ui.available_width();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_width(width);
-                    for live in &snapshot.own_lives {
-                        live_rows(ui, live, state, commands);
-                    }
-                });
-        });
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        theme::uniform_controls(ui);
+        live_rows(ui, live, state, commands);
+    });
 }
 
 fn live_rows(
@@ -124,30 +154,46 @@ fn live_rows(
         .map(|p| p.fps)
         .unwrap_or(info.source_fps);
     let current_codec = info.presets.first().map(|p| p.codec).unwrap_or(Codec::H264);
-    ui.add_space(16.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.add(egui::Label::new(egui::RichText::new(&info.title).size(16.0)).truncate())
-            .on_hover_text(&info.title);
-        let streaming = live.presets.iter().any(|preset| {
-            preset
-                .encoder
-                .as_ref()
-                .is_some_and(|encoder| encoder.subscribers > 0)
-        });
-        if live
-            .presets
-            .iter()
-            .any(|preset| preset.last_error.is_some())
-        {
-            ui.colored_label(super::theme::ERROR, "Needs attention");
-        } else {
-            super::theme::live_status(ui, if streaming { "Live" } else { "Ready" }, streaming);
-        }
+    let streaming = live.presets.iter().any(|preset| {
+        preset
+            .encoder
+            .as_ref()
+            .is_some_and(|encoder| encoder.subscribers > 0)
     });
-    ui.weak(format!(
-        "{} × {} · {} fps",
-        info.source_width, info.source_height, info.source_fps
-    ));
+    let failing = live
+        .presets
+        .iter()
+        .any(|preset| preset.last_error.is_some());
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 20.0),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            // Placed first so a long title truncates against it instead of pushing it out.
+            if failing {
+                ui.colored_label(theme::ERROR, "Needs attention");
+            } else if streaming {
+                ui.colored_label(theme::LIVE, "Live");
+            } else {
+                ui.weak("Ready");
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                theme::live_dot(ui, streaming);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&info.title).font(theme::medium(14.0)))
+                        .truncate(),
+                )
+                .on_hover_text(&info.title);
+            });
+        },
+    );
+    ui.label(
+        egui::RichText::new(format!(
+            "{} × {} · {} fps",
+            info.source_width, info.source_height, info.source_fps
+        ))
+        .small()
+        .color(theme::SECONDARY),
+    );
     ui.horizontal_wrapped(|ui| {
         let fps = state.fps_edits.entry(info.id).or_insert(current_fps);
         let response = ui.add(
@@ -169,6 +215,8 @@ fn live_rows(
 
         let mut codec = current_codec;
         egui::ComboBox::from_id_salt(("codec", info.id))
+            .width(72.0)
+            .icon(theme::chevron)
             .selected_text(codec_name(codec))
             .show_ui(ui, |ui| {
                 for candidate in [Codec::Hevc, Codec::H264, Codec::Av1] {
@@ -190,7 +238,7 @@ fn live_rows(
     for preset in &live.presets {
         if let Some(error) = &preset.last_error {
             ui.colored_label(
-                super::theme::ERROR,
+                theme::ERROR,
                 format!("{} failed: {error}", preset.preset.name),
             );
         }
@@ -201,14 +249,13 @@ fn live_rows(
             .as_ref()
             .is_some_and(|encoder| brp_codec::is_software_encoder(encoder.name))
     }) {
-        ui.colored_label(super::theme::WARNING, "Software encoding · using the CPU");
+        ui.colored_label(theme::WARNING, "Software encoding · using the CPU");
     }
     egui::CollapsingHeader::new("Quality & encoding")
         .id_salt(("quality", info.id))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.add_space(12.0);
-                ui.label("Templates:");
+                ui.label("Templates");
                 // The last preset cannot be unticked: a live that offers nothing cannot be watched.
                 let last_one = info.presets.len() == 1;
                 for template in presets::templates_for(info) {
@@ -227,7 +274,6 @@ fn live_rows(
             for view in &live.presets {
                 let preset = &view.preset;
                 ui.horizontal_wrapped(|ui| {
-                    ui.add_space(12.0);
                     ui.label(format!(
                         "{} · {} × {}",
                         preset.name, preset.width, preset.height
@@ -257,13 +303,13 @@ fn live_rows(
                         (Some(encoder), _) => {
                             let plural = if encoder.subscribers == 1 { "" } else { "s" };
                             let measured = state.preset_kbps(info.id, preset.id).unwrap_or(0);
-                            ui.label(format!(
+                            ui.label(theme::figure(format!(
                                 "{} · {measured} kbps · {} viewer{plural} · {} frames",
                                 encoder.name, encoder.subscribers, encoder.frames_encoded
-                            ))
+                            )))
                         }
                         (None, Some(error)) => {
-                            ui.colored_label(super::theme::ERROR, format!("failed: {error}"))
+                            ui.colored_label(theme::ERROR, format!("failed: {error}"))
                         }
                         (None, None) => ui.weak("idle"),
                     };

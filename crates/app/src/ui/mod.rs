@@ -28,9 +28,9 @@ use state::UiState;
 pub struct UiOutput {
     pub commands: Vec<RoomCommand>,
     pub window_commands: Vec<WindowCommand>,
-    /// The status bar's Settings button was clicked.
+    /// The dock's Settings button was clicked.
     pub open_settings: bool,
-    /// The status bar's Update button was clicked.
+    /// The dock's Update button was clicked.
     pub update_clicked: bool,
     /// Where the video renderer draws each watched live, in egui points.
     pub tile_rects: Vec<(TileKey, egui::Rect)>,
@@ -58,18 +58,22 @@ pub fn draw(
     let mut window_commands = Vec::new();
     let mut open_settings = false;
     let mut update_clicked = false;
+    let compact = theme::is_compact(ui.ctx());
+    if !compact {
+        members::draw(ui, snapshot, ticket, state, &mut commands);
+    }
     status::draw(
         ui,
         snapshot,
-        ticket,
         state,
         &mut commands,
         &mut open_settings,
         update_state,
         &mut update_clicked,
     );
-    own_lives::draw(ui, snapshot, state, &mut commands);
-    members::draw(ui, snapshot, state, &mut commands);
+    if compact {
+        compact_sheet(ui, snapshot, ticket, state, &mut commands);
+    }
     let tile_rects = tiles::draw(
         ui,
         snapshot,
@@ -88,6 +92,26 @@ pub fn draw(
     }
 }
 
+/// Slides up over the bottom of the video, which keeps playing above it while a stream is chosen.
+fn compact_sheet(
+    ui: &mut egui::Ui,
+    snapshot: &RoomSnapshot,
+    ticket: &str,
+    state: &mut UiState,
+    commands: &mut Vec<RoomCommand>,
+) {
+    let height = (ui.ctx().content_rect().height() * 0.6).max(160.0);
+    let mut is_open = state.sheet_open;
+    egui::Panel::bottom("sheet")
+        .exact_size(height)
+        .frame(theme::rail())
+        .show_collapsible(ui, &mut is_open, |ui| match state.sheet {
+            state::CompactSheet::Room => members::contents(ui, snapshot, ticket, state, commands),
+            state::CompactSheet::Share => own_lives::share_sheet(ui, snapshot, state, commands),
+        });
+    state.sheet_open = is_open;
+}
+
 /// A volume slider with a mute toggle. Returns the new gain when the user changed it. Mute sets
 /// the gain to zero and unmute restores full volume; the room remembers nothing else.
 pub fn volume_control(
@@ -97,11 +121,16 @@ pub fn volume_control(
 ) -> Option<f32> {
     let mut value = gain;
     ui.push_id(id_salt, |ui| {
-        ui.add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(false));
         let mut muted = gain == 0.0;
-        if ui.toggle_value(&mut muted, "Mute").changed() {
+        let glyph = if muted {
+            theme::icons::MUTED
+        } else {
+            theme::icons::VOLUME
+        };
+        if theme::icon_toggle(ui, &mut muted, glyph, "Mute").changed() {
             value = toggled_gain(muted);
         }
+        ui.add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(false));
     });
     (value != gain).then_some(value)
 }

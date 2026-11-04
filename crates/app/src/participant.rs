@@ -53,7 +53,7 @@ pub fn run(
     let proxy = event_loop.create_proxy();
 
     // Encoder byte counters and last-seen ages move without any frame arriving, so a slow tick
-    // keeps the status bar honest when nothing is watched.
+    // keeps the dock honest when nothing is watched.
     let ticker = runtime.spawn({
         let proxy = proxy.clone();
         async move {

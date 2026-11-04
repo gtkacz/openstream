@@ -242,11 +242,293 @@ fn an_encoder_failure_stays_visible_with_quality_details_collapsed() {
                 ..Default::default()
             },
             |ui| {
-                brp_app::ui::own_lives::draw(ui, &snapshot, &mut state, &mut Vec::new());
+                brp_app::ui::draw(
+                    ui,
+                    &snapshot,
+                    "ticket",
+                    &mut state,
+                    &std::collections::HashSet::new(),
+                    &UpdateState::new(false),
+                );
             },
         );
         shapes = std::mem::take(&mut output.shapes);
         output.textures_delta.clear();
     }
     assert!(shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains("encoder could not start"))), "Failure must not be hidden behind Quality & encoding");
+}
+
+fn window(width: f32, height: f32) -> egui::RawInput {
+    egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(width, height),
+        )),
+        ..Default::default()
+    }
+}
+
+fn click_at(mut raw: egui::RawInput, pos: egui::Pos2, pressed: bool) -> egui::RawInput {
+    raw.events = vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        },
+    ];
+    raw
+}
+
+/// A room with one remote stream being watched and one stream of your own going out.
+fn busy_room() -> brp_room::RoomSnapshot {
+    use brp_room::{
+        AudioCaptureState, MemberView, OwnAudioView, OwnLiveView, PresetView, RoomSnapshot,
+        WatchState, WatchView,
+    };
+    let info = brp_proto::LiveInfo {
+        id: 1,
+        title: "Monitor 1".into(),
+        kind: brp_proto::SourceKind::Monitor,
+        source_width: 2560,
+        source_height: 1440,
+        source_fps: 60,
+        has_audio: false,
+        presets: brp_proto::template_presets(2560, 1440, 60, brp_proto::Codec::Hevc),
+    };
+    let publisher = iroh::SecretKey::from_bytes(&[2; 32]).public();
+    RoomSnapshot {
+        me: iroh::SecretKey::from_bytes(&[1; 32]).public(),
+        nickname: "Alex".into(),
+        version: 1,
+        members: vec![MemberView {
+            id: publisher,
+            nickname: "Morgan".into(),
+            lives: vec![info.clone()],
+            seen_ago_ms: 0,
+            path: brp_net::PathKind::Direct,
+            has_audio: false,
+            gain: 1.0,
+        }],
+        own_lives: vec![OwnLiveView {
+            presets: info
+                .presets
+                .iter()
+                .cloned()
+                .map(|preset| PresetView {
+                    preset,
+                    encoder: None,
+                    last_error: None,
+                })
+                .collect(),
+            info,
+        }],
+        watches: vec![WatchView {
+            publisher,
+            live_id: 1,
+            preset_id: 1,
+            state: WatchState::Live,
+            frames_decoded: 10,
+            keyframe_requests: 0,
+            audio: false,
+        }],
+        own_audio: OwnAudioView {
+            enabled: true,
+            state: AudioCaptureState::Idle,
+            selection: brp_audio::AudioSelection::All,
+            subscribers: 0,
+            packets_encoded: 0,
+        },
+        audio_output_error: None,
+        master_mute: false,
+    }
+}
+
+fn run_room(
+    ctx: &egui::Context,
+    raw: egui::RawInput,
+    snapshot: &brp_room::RoomSnapshot,
+    state: &mut brp_app::ui::state::UiState,
+) -> (brp_app::ui::UiOutput, Vec<egui::epaint::ClippedShape>) {
+    let mut result = None;
+    let mut output = ctx.run_ui(raw, |ui| {
+        result = Some(brp_app::ui::draw(
+            ui,
+            snapshot,
+            "ticket",
+            state,
+            &std::collections::HashSet::new(),
+            &UpdateState::new(false),
+        ));
+    });
+    output.textures_delta.clear();
+    (result.expect("the room was drawn"), output.shapes)
+}
+
+#[test]
+fn the_video_keeps_most_of_the_window_while_sharing_at_every_width() {
+    const LARGEST_DOCK: f32 = 128.0;
+    for (width, height) in [
+        (390.0, 844.0),
+        (799.0, 600.0),
+        (800.0, 640.0),
+        (1000.0, 640.0),
+        (1280.0, 800.0),
+        (1920.0, 1080.0),
+    ] {
+        let ctx = egui::Context::default();
+        brp_app::ui::theme::install(&ctx);
+        let snapshot = busy_room();
+        let mut state = brp_app::ui::state::UiState::new();
+        let mut placed = None;
+        for _ in 0..4 {
+            placed = Some(run_room(&ctx, window(width, height), &snapshot, &mut state).0);
+        }
+        let tile = placed.expect("drawn").tile_rects[0].1;
+        assert!(
+            tile.height() >= height - LARGEST_DOCK,
+            "at {width} wide the tile is only {} of {height} tall",
+            tile.height()
+        );
+        assert!(tile.right() <= width && tile.left() >= 0.0);
+    }
+}
+
+#[test]
+fn a_compact_window_folds_the_room_into_a_sheet_and_keeps_the_video_placed() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shapes) = run_room(&ctx, window(390.0, 844.0), &snapshot, &mut state);
+    let has_text = |shapes: &[egui::epaint::ClippedShape], text: &str| {
+        shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape, egui::Shape::Text(s) if s.galley.text() == text))
+    };
+    assert!(
+        !has_text(&shapes, "Copy link"),
+        "the rail is folded away at phone width"
+    );
+    let room = text_rect(&shapes, "Room").center();
+    for pressed in [true, false] {
+        let raw = click_at(window(390.0, 844.0), room, pressed);
+        run_room(&ctx, raw, &snapshot, &mut state);
+    }
+    assert!(state.sheet_open);
+    let mut last = run_room(&ctx, window(390.0, 844.0), &snapshot, &mut state);
+    for _ in 0..30 {
+        let mut raw = window(390.0, 844.0);
+        raw.predicted_dt = 0.1;
+        last = run_room(&ctx, raw, &snapshot, &mut state);
+    }
+    assert!(has_text(&last.1, "Copy link"), "the sheet holds the rail");
+    assert!(
+        last.0.tile_rects[0].1.height() > 100.0,
+        "the video keeps playing above the sheet"
+    );
+}
+
+#[test]
+fn escape_cancels_settings_but_a_stray_click_on_the_backdrop_keeps_the_draft() {
+    use brp_app::{settings::Settings, ui::settings};
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut dialog = settings::SettingsDialog::default();
+    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    let run = |raw: egui::RawInput, dialog: &mut settings::SettingsDialog| {
+        let mut output = ctx.run_ui(raw, |ui| {
+            settings::draw(ui.ctx(), dialog, false);
+        });
+        output.textures_delta.clear();
+    };
+    run(window(1280.0, 800.0), &mut dialog);
+    for pressed in [true, false] {
+        run(
+            click_at(window(1280.0, 800.0), egui::pos2(8.0, 8.0), pressed),
+            &mut dialog,
+        );
+    }
+    assert!(dialog.open, "the backdrop must not discard a draft");
+    let mut escape = window(1280.0, 800.0);
+    escape.events.push(egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    });
+    run(escape, &mut dialog);
+    assert!(!dialog.open, "Esc behaves like Cancel");
+}
+
+#[test]
+fn one_escape_closes_only_the_dialog_on_top() {
+    use brp_app::ui::theme;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let run = |raw: egui::RawInput| {
+        let mut dismissed = (false, false);
+        let mut output = ctx.run_ui(raw, |ui| {
+            dismissed.0 = theme::dialog(ui.ctx(), "under", "Under", |_| ()).1;
+            dismissed.1 = theme::dialog(ui.ctx(), "over", "Over", |_| ()).1;
+        });
+        output.textures_delta.clear();
+        dismissed
+    };
+    run(window(1280.0, 800.0));
+    let mut escape = window(1280.0, 800.0);
+    escape.events.push(egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    });
+    assert_eq!(run(escape), (false, true));
+}
+
+#[test]
+fn a_stalled_stream_does_not_keep_the_window_drawing_flat_out() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    snapshot.watches[0].state = brp_room::WatchState::Reconnecting;
+    let mut state = brp_app::ui::state::UiState::new();
+    let mut delay = std::time::Duration::ZERO;
+    // Past the panel and toolbar settling, which may each ask for one more pass.
+    for frame in 0..8 {
+        let mut raw = window(1280.0, 800.0);
+        raw.time = Some(f64::from(frame) * 0.05);
+        let mut output = ctx.run_ui(raw, |ui| {
+            brp_app::ui::draw(
+                ui,
+                &snapshot,
+                "ticket",
+                &mut state,
+                &std::collections::HashSet::new(),
+                &UpdateState::new(false),
+            );
+        });
+        output.textures_delta.clear();
+        delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+    }
+    // egui takes one predicted frame off a requested delay so the repaint lands on time; zero is
+    // what the window loop reads as "draw again at once".
+    assert!(
+        delay >= std::time::Duration::from_millis(30),
+        "repaint delay is {delay:?}"
+    );
+}
+
+#[test]
+fn dialogs_stay_usable_in_a_window_too_small_for_them() {
+    use brp_app::ui::theme;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let mut output = ctx.run_ui(window(24.0, 24.0), |ui| {
+        theme::dialog(ui.ctx(), "tiny", "Tiny", |_| ());
+    });
+    output.textures_delta.clear();
 }

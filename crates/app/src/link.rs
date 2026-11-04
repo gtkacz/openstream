@@ -1,4 +1,4 @@
-//! Join links: the share link the status bar copies, and the three forms every ticket entry
+//! Join links: the share link the room rail copies, and the three forms every ticket entry
 //! point accepts: a raw ticket, the `brp://` URL the operating system hands the binary, and the
 //! share link itself.
 

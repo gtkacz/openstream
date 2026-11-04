@@ -1,4 +1,4 @@
-//! Pure edits to one live's preset list. The bottom panel calls these and hands the result to
+//! Pure edits to one live's preset list. The stream card calls these and hands the result to
 //! `Room::set_presets`, which validates and restarts the affected encoders.
 
 use brp_proto::constants::{MAX_BITRATE_KBPS, MIN_BITRATE_KBPS};

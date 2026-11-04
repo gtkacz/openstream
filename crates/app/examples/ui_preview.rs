@@ -1,6 +1,6 @@
 //! Render the actual native UI without opening a window or connecting to peers.
 //! cargo run -p brp --example ui_preview -- /tmp/openstream start 1280 800
-//! Screens: start, room, watching, empty, settings, picker, applications.
+//! Screens: start, room, watching, grid, sheet, empty, settings, picker, applications.
 use std::{collections::HashSet, error::Error, io::Write};
 
 use brp_app::ui::{self, start::StartState, state::UiState, update::UpdateState};
@@ -63,7 +63,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         audio_output_error: None,
         master_mute: false,
     };
-    if screen == "room" || screen == "watching" {
+    if screen == "sheet" {
+        state.sheet_open = true;
+    }
+    if matches!(screen, "room" | "watching" | "grid" | "sheet") {
         snapshot.members.push(MemberView {
             id: SecretKey::from_bytes(&[2; 32]).public(),
             nickname: "Morgan".into(),
@@ -83,7 +86,33 @@ fn main() -> Result<(), Box<dyn Error>> {
             gain: 1.0,
         });
     }
-    if screen == "room" {
+    if screen == "grid" {
+        let mut sam = snapshot.members[0].clone();
+        sam.id = SecretKey::from_bytes(&[3; 32]).public();
+        sam.nickname = "Sam".into();
+        sam.path = PathKind::Relayed;
+        let mut rae = snapshot.members[0].clone();
+        rae.id = SecretKey::from_bytes(&[4; 32]).public();
+        rae.nickname = "Rae".into();
+        rae.path = PathKind::Direct;
+        let others = [sam, rae];
+        for (member, state) in others
+            .iter()
+            .zip([WatchState::Reconnecting, WatchState::Live])
+        {
+            snapshot.watches.push(WatchView {
+                publisher: member.id,
+                live_id: 1,
+                preset_id: 1,
+                state,
+                frames_decoded: 5400,
+                keyframe_requests: 2,
+                audio: false,
+            });
+        }
+        snapshot.members.extend(others);
+    }
+    if matches!(screen, "room" | "sheet") {
         let mut info = snapshot.members[0].lives[0].clone();
         info.title = "Monitor 1".into();
         snapshot.own_lives.push(OwnLiveView {
@@ -106,12 +135,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             info,
         });
     }
-    if screen == "watching" {
+    if matches!(screen, "watching" | "grid" | "sheet") {
         snapshot.watches.push(WatchView {
             publisher: snapshot.members[0].id,
             live_id: 1,
             preset_id: 1,
-            state: WatchState::Connecting,
+            state: if screen == "watching" {
+                WatchState::Connecting
+            } else {
+                WatchState::Live
+            },
             frames_decoded: 0,
             keyframe_requests: 0,
             audio: false,
@@ -138,10 +171,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
+    // Fake frames stand in for the video renderer, so the overlays are judged against a picture.
+    let mut tile_rects: Vec<(brp_app::render::tiles::TileKey, egui::Rect)> = Vec::new();
     // Warm up egui's multi-pass layout and window placement before capturing.
-    for frame in 0..3 {
+    for frame in 0..12 {
         let input = egui::RawInput {
-            events: if screen == "watching" {
+            events: if matches!(screen, "watching" | "grid") {
                 vec![egui::Event::PointerMoved(egui::pos2(
                     width as f32 * 0.7,
                     height as f32 * 0.3,
@@ -153,7 +188,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 egui::Pos2::ZERO,
                 egui::vec2(width as f32, height as f32),
             )),
-            time: Some(frame as f64),
+            time: Some(frame as f64 * 0.1),
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
@@ -163,14 +198,35 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui::settings::draw(ui.ctx(), &mut settings, false);
                 }
             } else {
-                ui::draw(
+                let painter = ui.ctx().layer_painter(egui::LayerId::background());
+                for (index, (key, rect)) in tile_rects.iter().enumerate() {
+                    let live = snapshot
+                        .watches
+                        .iter()
+                        .any(|w| (w.publisher, w.live_id) == *key && w.state == WatchState::Live);
+                    if live {
+                        let tint = [(38, 70, 83), (70, 58, 88), (84, 70, 44)][index % 3];
+                        painter.rect_filled(
+                            *rect,
+                            0.0,
+                            egui::Color32::from_rgb(tint.0, tint.1, tint.2),
+                        );
+                        painter.rect_filled(
+                            rect.shrink2(rect.size() * 0.2),
+                            0.0,
+                            egui::Color32::from_rgb(tint.0 + 60, tint.1 + 60, tint.2 + 60),
+                        );
+                    }
+                }
+                tile_rects = ui::draw(
                     ui,
                     &snapshot,
                     "preview-ticket",
                     &mut state,
                     &HashSet::new(),
                     &UpdateState::new(false),
-                );
+                )
+                .tile_rects;
                 ui::applications::draw(ui.ctx(), &mut state);
             }
         });

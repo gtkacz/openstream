@@ -21,11 +21,22 @@ pub struct SourcePicker {
     pub choices: Vec<SourceDescriptor>,
 }
 
+/// Which sheet a compact window shows above its dock.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CompactSheet {
+    #[default]
+    Room,
+    Share,
+}
+
 /// Window-local state the room snapshot cannot carry: pending edits, per-tile choices, and the
 /// status line.
 #[derive(Debug, Default)]
 pub struct UiState {
-    /// Last error or notice, shown in the status bar.
+    /// Kept while the sheet slides shut, so its content does not change on the way out.
+    pub sheet: CompactSheet,
+    pub sheet_open: bool,
+    /// Last error or notice, shown in the dock.
     pub status: String,
     /// True from the share click until the live started or failed: the portal dialog on Linux,
     /// capture start with its fallback on Windows.

@@ -43,7 +43,7 @@ are postcard-encoded on the versioned media ALPN `brp/media/1`.
 
 Run `brp` with no arguments, or double-click `brp.exe` on Windows, to open the
 start screen: pick a nickname, then Create room, or paste a ticket or a link and
-Join room. The status bar's Copy link button gives you an `https://` link that
+Join room. The room rail's Copy link button gives you an `https://` link that
 opens OpenStream into the room on a machine that has it and offers the download on one
 that does not; Copy ticket gives the bare ticket for the terminal. Each time
 the window starts it registers OpenStream as the handler for `brp://` links, pointing
@@ -65,7 +65,7 @@ cargo build --release
 ./target/release/brp publish --nickname alice [--ticket <ticket-or-link>] [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--no-relay]
 ```
 
-The Settings button on the start screen and in the status bar opens a dialog
+The Settings button on the start screen and in the dock opens a dialog
 for the nickname, the relay choice (public relays, a custom relay URL, or no
 relay), the capture frame rate ceiling, and the audio output device. Settings
 apply when the next room opens. The start screen lists recent rooms with a Join
@@ -73,7 +73,7 @@ button. Command line flags override the saved settings for that launch and are
 not saved.
 
 At launch OpenStream asks GitHub for the latest release and, when it is newer, shows
-"vX.Y.Z is available" on the start screen and in the status bar with an
+"vX.Y.Z is available" on the start screen and in the dock with an
 "Update and restart" button. The button downloads the release for this
 platform, checks it against the release's `SHA256SUMS`, replaces every file
 of the directory OpenStream runs from, and relaunches: from a room, straight back into
@@ -84,13 +84,14 @@ replaced. Closing the window during a download cancels it, or, if the files
 were already being swapped, finishes the swap without relaunching; the next
 launch runs the new version.
 
-In the window, the left panel lists members with a direct-or-relayed badge and
-their lives; tick a live to watch it and pick its preset, and hover a tile for
-the preset selector and the stats overlay. The bottom panel lists your own
-lives with a frame-rate control, a codec selector, template checkboxes
-(untick Source to cap what viewers can ask for), a bitrate per preset, the
-measured encode rate, and a stop button; Stop sharing ends every live at
-once. Share monitor and Share window open the desktop portal on Linux and an
+In the window, the room rail lists you and every member, with a direct-or-relayed
+badge and their lives; switch on a live to watch it and pick its preset, and hover
+a tile for the preset selector and the stats overlay. Your own lives sit under your
+name with a frame-rate control, a codec selector, template checkboxes (untick
+Source to cap what viewers can ask for), a bitrate per preset, the measured encode
+rate, and a stop button; Stop sharing in the dock ends every live at once. Below
+800 points of window width the rail folds into a Room sheet opened from the dock,
+and the share and audio controls into a Share sheet. Share monitor and Share window open the desktop portal on Linux and an
 in-app list of monitors or windows on Windows. `--fps` is the capture ceiling
 for lives shared from the window and defaults to the saved frame rate ceiling
 (60 out of the box).
@@ -101,12 +102,12 @@ same and makes that window borderless fullscreen. In a pop-out, F11 toggles
 fullscreen, Esc leaves it, and `back to grid` or closing the window puts the
 live back in the grid. A live is decoded once wherever it is shown.
 
-The own-lives panel also has a "Share audio" checkbox, on by default, beside
-a "Choose applications…" button. The button opens a window listing what is
+The dock also has a "Share audio" switch, on by default, beside an
+"Applications…" button. The button opens a dialog listing what is
 playing, with two radio buttons — all applications except OpenStream, or only the
 ones you tick — applied on Done and remembered in `settings.toml`. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
-that member in the members panel, and the status bar has a "mute all" for
+that member in the room rail, and the dock has a "Mute all" for
 every publisher at once. On Linux, capture links to the selected applications'
 PipeWire output, always excluding OpenStream's own. On Windows, the default remains
 one WASAPI process-loopback client in exclude mode; a selection enumerates

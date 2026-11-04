@@ -1,5 +1,6 @@
 //! The start screen: nickname and ticket entry with Create and Join, shown until a room is open.
 
+use super::theme::{self, icons};
 use super::update::{self, UpdateState};
 use crate::launch::Intent;
 use crate::link;
@@ -107,6 +108,10 @@ pub fn abbreviate_ticket(ticket: &str) -> String {
     format!("{head}…{tail}")
 }
 
+/// Wide enough to set the room diagram beside the form instead of dropping it.
+const DIAGRAM_MIN_WINDOW_WIDTH: f32 = 960.0;
+const FORM_WIDTH: f32 = 420.0;
+
 /// Draws the start screen and returns the button clicked, if any. Clicking a recent room fills
 /// the ticket field and joins it.
 pub fn draw(
@@ -120,99 +125,271 @@ pub fn draw(
     egui::CentralPanel::default()
         .frame(
             egui::Frame::NONE
-                .fill(super::theme::GROUND)
-                .inner_margin(24),
+                .fill(theme::GROUND)
+                .inner_margin(egui::Margin::same(24)),
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                super::theme::brand(ui);
+                theme::brand(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Settings").clicked() {
+                    if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
                         action = Some(StartAction::OpenSettings);
                     }
                 });
             });
-            ui.add_space(24.0);
+            let body = ui.available_rect_before_wrap();
+            let with_diagram = ui.ctx().content_rect().width() >= DIAGRAM_MIN_WINDOW_WIDTH;
+            if with_diagram {
+                let diagram = egui::Rect::from_min_max(
+                    egui::pos2(body.left() + FORM_WIDTH + 72.0, body.top() + 24.0),
+                    body.max,
+                );
+                room_diagram(ui, diagram);
+            }
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let width = ui.available_width().min(448.0);
-                let inset = ((ui.available_width() - width) / 2.0).max(0.0);
-                ui.add_space((ui.available_height() * 0.06).clamp(0.0, 40.0));
+                let width = ui.available_width().min(FORM_WIDTH);
+                let inset = if with_diagram {
+                    0.0
+                } else {
+                    ((ui.available_width() - width) / 2.0).max(0.0)
+                };
+                ui.add_space((ui.available_height() * 0.1).clamp(24.0, 88.0));
                 ui.horizontal(|ui| {
                     ui.add_space(inset);
                     ui.vertical(|ui| {
                         ui.set_width(width);
-                        ui.label(egui::RichText::new("Share your screen").size(28.0));
-                        ui.weak("A room for your screens, windows, and audio");
-                        ui.add_space(24.0);
-                        super::theme::card().show(ui, |ui| {
-                            ui.set_width((width - 48.0).max(0.0));
-                            ui.label("Your name");
-                            ui.add_enabled(
-                                !state.connecting,
-                                egui::TextEdit::singleline(&mut state.nickname)
-                                    .hint_text("Nickname")
-                                    .margin(egui::vec2(12.0, 10.0))
-                                    .desired_width(f32::INFINITY),
-                            );
-                            ui.add_space(8.0);
-                            ui.style_mut().spacing.button_padding.x = 20.0;
-                            if super::theme::primary_button(ui, "Create room", !state.connecting)
-                                .clicked()
-                            {
-                                action = Some(StartAction::Create);
-                            }
-                            ui.add_space(24.0);
-                            ui.label(egui::RichText::new("Join a room").size(18.0));
-                            ui.weak("Have an invite? Paste the link or ticket");
-                            ui.add_enabled(
-                                !state.connecting,
-                                egui::TextEdit::singleline(&mut state.ticket)
-                                    .hint_text("Room link or ticket")
-                                    .margin(egui::vec2(12.0, 10.0))
-                                    .desired_width(f32::INFINITY),
-                            );
-                            let can_join = !state.connecting && !state.ticket.trim().is_empty();
-                            if ui
-                                .add_enabled(can_join, egui::Button::new("Join room"))
-                                .clicked()
-                            {
-                                action = Some(StartAction::Join);
-                            }
-                            if state.connecting {
-                                ui.add_space(8.0);
-                                super::theme::live_status(ui, "Connecting to the room…", false);
-                            }
-                            if !state.error.is_empty() {
-                                ui.add_space(8.0);
-                                ui.colored_label(super::theme::ERROR, &state.error);
-                            }
-                        });
-                        if !recent.is_empty() {
-                            ui.add_space(24.0);
-                            ui.label("Recent rooms");
-                            for room in recent {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(abbreviate_ticket(&room.ticket));
-                                    ui.weak(relative_age(room.last_joined_unix, now_unix));
-                                    if ui
-                                        .add_enabled(!state.connecting, egui::Button::new("Join"))
-                                        .clicked()
-                                    {
-                                        state.ticket = room.ticket.clone();
-                                        action = Some(StartAction::Join);
-                                    }
-                                });
-                            }
-                        }
-                        ui.add_space(16.0);
-                        if update::draw(ui, update_state) {
-                            action = Some(StartAction::Update);
-                        }
+                        form(ui, state, recent, now_unix, update_state, &mut action);
                     });
                 });
             });
         });
     action
+}
+
+fn form(
+    ui: &mut egui::Ui,
+    state: &mut StartState,
+    recent: &[RecentRoom],
+    now_unix: u64,
+    update_state: &UpdateState,
+    action: &mut Option<StartAction>,
+) {
+    ui.label(
+        egui::RichText::new("Share your screen")
+            .font(theme::semibold(36.0))
+            .extra_letter_spacing(-0.5),
+    );
+    ui.label(
+        egui::RichText::new("A room for your screens, windows, and audio")
+            .size(16.0)
+            .color(theme::SECONDARY),
+    );
+    ui.add_space(24.0);
+    theme::section_heading(ui, "Your name");
+    ui.add_enabled(
+        !state.connecting,
+        egui::TextEdit::singleline(&mut state.nickname)
+            .hint_text("Nickname")
+            .margin(egui::vec2(12.0, 10.0))
+            .desired_width(f32::INFINITY),
+    );
+    ui.add_space(16.0);
+    let has_ticket = !state.ticket.trim().is_empty();
+    let full_width = egui::vec2(ui.available_width(), 40.0);
+    // Pasting a ticket says what this person came to do, so Join takes the light surface from
+    // Create for as long as the field holds one.
+    let create =
+        egui::Button::new((theme::icon(icons::CREATE), "Create room")).min_size(full_width);
+    let created = if has_ticket {
+        ui.add_enabled(!state.connecting, create)
+    } else {
+        theme::inverted(ui, |ui| ui.add_enabled(!state.connecting, create))
+    };
+    if created.clicked() {
+        *action = Some(StartAction::Create);
+    }
+    ui.add_space(20.0);
+    theme::section_heading(ui, "Have an invite?");
+    ui.add_enabled(
+        !state.connecting,
+        egui::TextEdit::singleline(&mut state.ticket)
+            .hint_text("Paste a room link or ticket")
+            .margin(egui::vec2(12.0, 10.0))
+            .desired_width(f32::INFINITY),
+    );
+    let can_join = !state.connecting && has_ticket;
+    let join = egui::Button::new((theme::icon(icons::JOIN), "Join room")).min_size(full_width);
+    let joined = if has_ticket {
+        theme::inverted(ui, |ui| ui.add_enabled(can_join, join))
+    } else {
+        ui.add_enabled(can_join, join)
+    };
+    if joined.clicked() {
+        *action = Some(StartAction::Join);
+    }
+    if state.connecting {
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            theme::spinner(ui, 16.0);
+            ui.weak("Connecting to the room…");
+        });
+    }
+    if !state.error.is_empty() {
+        ui.add_space(8.0);
+        ui.colored_label(theme::ERROR, &state.error);
+    }
+    if !recent.is_empty() {
+        ui.add_space(24.0);
+        theme::section_heading(ui, "Recent rooms");
+        for room in recent {
+            ui.horizontal(|ui| {
+                ui.label(theme::figure(abbreviate_ticket(&room.ticket)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(!state.connecting, egui::Button::new("Join"))
+                        .clicked()
+                    {
+                        state.ticket = room.ticket.clone();
+                        *action = Some(StartAction::Join);
+                    }
+                    ui.weak(relative_age(room.last_joined_unix, now_unix));
+                });
+            });
+        }
+    }
+    ui.add_space(16.0);
+    if update::draw(ui, update_state) {
+        *action = Some(StartAction::Update);
+    }
+}
+
+/// What a room is, drawn with the product's own vocabulary: one person's screen arriving as the
+/// same picture on everyone else's, with no server in the middle, directly where it can and through
+/// a relay where it cannot. Fractions of the area, so it scales with the window.
+fn room_diagram(ui: &egui::Ui, area: egui::Rect) {
+    const SCREENS: [(f32, f32, f32); 3] =
+        [(0.44, 0.31, 0.74), (0.80, 0.77, 0.40), (0.17, 0.80, 0.30)];
+    const ASPECT: f32 = 9.0 / 16.0;
+    let scale = area.width().min(area.height() * 1.1);
+    let painter = ui.painter_at(area);
+    let point = |x: f32, y: f32| area.lerp_inside(egui::vec2(x, y));
+    let [sharer, direct_peer, relayed_peer] = SCREENS.map(|(x, y, _)| point(x, y));
+    let rule = egui::Stroke::new(1.0, theme::MUTED);
+    painter.line_segment([sharer, direct_peer], rule);
+    painter.line_segment([sharer, relayed_peer], rule);
+    painter.extend(egui::Shape::dashed_line(
+        &[direct_peer, relayed_peer],
+        rule,
+        4.0,
+        4.0,
+    ));
+    for (index, (x, y, width)) in SCREENS.into_iter().enumerate() {
+        let rect =
+            egui::Rect::from_center_size(point(x, y), egui::vec2(width, width * ASPECT) * scale);
+        shared_picture(&painter, rect);
+        // The same ring that rounds real tiles rounds these.
+        painter.rect_stroke(
+            rect,
+            10.0,
+            egui::Stroke::new(6.0, theme::GROUND),
+            egui::StrokeKind::Outside,
+        );
+        let is_sharer = index == 0;
+        let (text, ink) = if is_sharer {
+            ("Live", theme::LIVE)
+        } else {
+            ("Watching", theme::TEXT)
+        };
+        let galley = painter.layout_no_wrap(text.to_string(), theme::medium(12.0), ink);
+        let chip = egui::Rect::from_min_size(
+            rect.min + egui::vec2(10.0, 10.0),
+            galley.size() + egui::vec2(28.0, 8.0),
+        );
+        painter.rect_filled(chip, 6.0, theme::SURFACE);
+        painter.circle_filled(
+            chip.left_center() + egui::vec2(11.0, 0.0),
+            3.0,
+            if is_sharer { theme::LIVE } else { theme::MUTED },
+        );
+        painter.galley(chip.min + egui::vec2(20.0, 4.0), galley, ink);
+    }
+    let tag = |at: egui::Pos2, text: &str| {
+        let galley = painter.layout_no_wrap(
+            text.to_string(),
+            egui::FontId::proportional(12.0),
+            theme::SECONDARY,
+        );
+        let backing = egui::Rect::from_center_size(at, galley.size() + egui::vec2(12.0, 6.0));
+        painter.rect_filled(backing, 4.0, theme::GROUND);
+        painter.galley(at - galley.size() / 2.0, galley, theme::SECONDARY);
+    };
+    // Further along than halfway on the sharer's links: its large screen covers their first half.
+    tag(sharer + (direct_peer - sharer) * 0.62, "Direct");
+    tag(sharer + (relayed_peer - sharer) * 0.62, "Direct");
+    tag(direct_peer + (relayed_peer - direct_peer) * 0.5, "Relayed");
+}
+
+/// The picture being shared: a low sun going down behind a ridgeline, in flat fills from the live
+/// hue's family. Drawn once per screen, so every peer visibly holds the same frame.
+fn shared_picture(painter: &egui::Painter, rect: egui::Rect) {
+    const SKY: egui::Color32 = egui::Color32::from_rgb(13, 44, 45);
+    const FAR: egui::Color32 = egui::Color32::from_rgb(9, 30, 33);
+    const NEAR: egui::Color32 = egui::Color32::from_rgb(6, 18, 21);
+    const SUN_CENTER: (f32, f32) = (0.63, 0.56);
+    const SUN_RADIUS: f32 = 0.36;
+    /// Slices taken out of the sun's lower half: top of each as a fraction of the height, then its
+    /// thickness.
+    const SUN_BANDS: [(f32, f32); 3] = [(0.50, 0.02), (0.56, 0.03), (0.63, 0.045)];
+    const FAR_RIDGE: [(f32, f32); 7] = [
+        (0.0, 0.70),
+        (0.16, 0.54),
+        (0.30, 0.66),
+        (0.46, 0.60),
+        (0.68, 0.74),
+        (0.86, 0.58),
+        (1.0, 0.66),
+    ];
+    const NEAR_RIDGE: [(f32, f32); 6] = [
+        (0.0, 0.86),
+        (0.20, 0.72),
+        (0.42, 0.88),
+        (0.64, 0.80),
+        (0.82, 0.90),
+        (1.0, 0.76),
+    ];
+    let at = |x: f32, y: f32| rect.lerp_inside(egui::vec2(x, y));
+    painter.rect_filled(rect, 0.0, SKY);
+    painter.circle_filled(
+        at(SUN_CENTER.0, SUN_CENTER.1),
+        rect.height() * SUN_RADIUS,
+        theme::LIVE,
+    );
+    for (top, thickness) in SUN_BANDS {
+        painter.rect_filled(
+            egui::Rect::from_min_max(at(0.0, top), at(1.0, top + thickness)),
+            0.0,
+            SKY,
+        );
+    }
+    for (ridge, fill) in [(&FAR_RIDGE[..], FAR), (&NEAR_RIDGE[..], NEAR)] {
+        // A ridgeline as one polygon is concave and epaint only fills convex shapes, so each span
+        // is its own quad down to the bottom edge. Each runs a point under the next, because two
+        // feathered edges meeting exactly would leave a visible seam.
+        for span in ridge.windows(2) {
+            let ((x0, y0), (x1, y1)) = (span[0], span[1]);
+            let overlap = egui::vec2(1.0, 0.0);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    at(x0, y0),
+                    at(x1, y1) + overlap,
+                    at(x1, 1.0) + overlap,
+                    at(x0, 1.0),
+                ],
+                fill,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
