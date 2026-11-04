@@ -209,7 +209,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    // Fake frames stand in for the video renderer, so the overlays are judged against a picture.
+    // The real video path on made-up frames, so overlays are judged against what a picture really
+    // does in its tile rather than a colour painted across the tile's whole rect.
+    let mut tiles = brp_app::render::tiles::TileRenderer::new(&device, format);
+    for (index, watch) in snapshot
+        .watches
+        .iter()
+        .filter(|w| w.state == WatchState::Live)
+        .enumerate()
+    {
+        let (u, v) = [(150, 110), (160, 140), (100, 150)][index % 3];
+        tiles.upload(
+            &device,
+            &queue,
+            (watch.publisher, watch.live_id),
+            &test_card(u, v),
+        );
+    }
     let mut tile_rects: Vec<(brp_app::render::tiles::TileKey, egui::Rect)> = Vec::new();
     // Warm up egui's multi-pass layout and window placement before capturing.
     for frame in 0..frames {
@@ -246,35 +262,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ui::settings::draw(ui.ctx(), &mut settings, false);
                 }
             } else {
-                let painter = ui.ctx().layer_painter(egui::LayerId::background());
-                for (index, (key, rect)) in tile_rects.iter().enumerate() {
-                    let live = snapshot
-                        .watches
-                        .iter()
-                        .any(|w| (w.publisher, w.live_id) == *key && w.state == WatchState::Live);
-                    if live {
-                        let tint = [(38, 70, 83), (70, 58, 88), (84, 70, 44)][index % 3];
-                        painter.rect_filled(
-                            *rect,
-                            0.0,
-                            egui::Color32::from_rgb(tint.0, tint.1, tint.2),
-                        );
-                        painter.rect_filled(
-                            rect.shrink2(rect.size() * 0.2),
-                            0.0,
-                            egui::Color32::from_rgb(tint.0 + 60, tint.1 + 60, tint.2 + 60),
-                        );
-                    }
-                }
-                tile_rects = ui::draw(
+                let drawn = ui::draw(
                     ui,
                     &snapshot,
                     "preview-ticket",
                     &mut state,
                     &HashSet::new(),
                     &UpdateState::new(false),
-                )
-                .tile_rects;
+                );
+                tile_rects = drawn.tile_rects;
                 ui::applications::draw(ui.ctx(), &mut state);
             }
         });
@@ -292,6 +288,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 renderer.update_texture(&device, &queue, id, &delta);
             }
         }
+        let output_pixels_per_point = output.pixels_per_point;
         let jobs = ctx.tessellate(output.shapes, output.pixels_per_point);
         let descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [width, height],
@@ -301,6 +298,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         let commands = renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &descriptor);
         {
             let view = texture.create_view(&Default::default());
+            let placements: Vec<_> = tile_rects
+                .iter()
+                .map(|(key, rect)| {
+                    let pixels = brp_app::render::grid::to_pixels(
+                        *rect,
+                        output_pixels_per_point,
+                        (width, height),
+                    );
+                    (*key, pixels, 1.0)
+                })
+                .collect();
+            tiles.update_fits(&queue, &placements);
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -313,7 +322,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 })],
                 ..Default::default()
             });
-            renderer.render(&mut pass.forget_lifetime(), &jobs, &descriptor);
+            let mut pass = pass.forget_lifetime();
+            tiles.draw(&mut pass, &placements);
+            renderer.render(&mut pass, &jobs, &descriptor);
         }
         queue.submit(commands.into_iter().chain([encoder.finish()]));
         for id in output.textures_delta.free.drain() {
@@ -360,4 +371,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("{path}");
     Ok(())
+}
+
+/// A 16:9 frame with an inner panel, so a picture's edges and corners can be told from its tile's.
+fn test_card(u: u8, v: u8) -> brp_codec::RawFrame {
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 720;
+    let mut frame = brp_codec::RawFrame::black(WIDTH, HEIGHT, 0);
+    for (row, line) in frame.y.chunks_mut(frame.y_stride).enumerate() {
+        for (column, luma) in line.iter_mut().enumerate() {
+            let inner = (WIDTH as usize / 5..WIDTH as usize * 4 / 5).contains(&column)
+                && (HEIGHT as usize / 5..HEIGHT as usize * 4 / 5).contains(&row);
+            *luma = if inner { 170 } else { 90 };
+        }
+    }
+    for pair in frame.uv.as_chunks_mut::<2>().0 {
+        *pair = [u, v];
+    }
+    frame
 }

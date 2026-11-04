@@ -8,19 +8,25 @@
 <title>Join an OpenStream room</title>
 <link rel="icon" type="image/svg+xml" href="icon.svg">
 <style>
-  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #09090b; color: #f2f2f5; color-scheme: dark; }
+  :root { --ground: #0a1017; --surface: #111a23; --raised: #1b2632; --highlight: #273544; --text: #eef5fa; --secondary: #a3b3c2; --accent: #5cc8ff; --accent-hover: #84d7ff; --on-accent: #041624; }
+  body { font: 16px/1.5 "IBM Plex Sans", system-ui, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--ground); color: var(--text); color-scheme: dark; }
   main { max-width: 32rem; padding: 2rem; }
-  h1 { font-size: 1.5rem; margin: 0 0 1rem; }
-  p { margin: 0 0 1rem; }
-  .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.5rem 0; }
-  a.button, button { font: inherit; padding: .6rem 1rem; border-radius: .4rem; border: 1px solid #555; background: #222; color: #eee; text-decoration: none; cursor: pointer; }
-  a.button.primary { background: #f2f2f5; border-color: #f2f2f5; color: #09090b; }
-  code { display: block; word-break: break-all; padding: .75rem; background: #000; border-radius: .4rem; }
+  .mark { display: block; margin: 0 0 1.25rem; }
+  h1 { font-size: 1.75rem; font-weight: 600; line-height: 1.2; letter-spacing: -.01em; margin: 0 0 1rem; }
+  p { margin: 0 0 1rem; color: var(--secondary); }
+  .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1.5rem 0; }
+  a.button, button { font: inherit; font-weight: 500; line-height: 1.5; padding: .5rem 1rem; border-radius: .5rem; border: 0; background: var(--raised); color: var(--text); text-decoration: none; cursor: pointer; transition: background-color 120ms ease; }
+  a.button:hover, button:hover { background: var(--highlight); }
+  a.button.primary { background: var(--accent); color: var(--on-accent); }
+  a.button.primary:hover { background: var(--accent-hover); }
+  a.button:focus-visible, button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  code { display: block; word-break: break-all; padding: .75rem; background: var(--surface); border-radius: .5rem; font-size: .875rem; }
   [hidden] { display: none; }
 </style>
 </head>
 <body>
 <main>
+  <img class="mark" src="icon.svg" alt="" width="40" height="40">
   <h1>Join an OpenStream room</h1>
   <section id="opening">
     <p>Opening OpenStream…</p>

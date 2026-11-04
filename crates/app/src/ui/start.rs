@@ -2,7 +2,8 @@
 
 use brp_net::PathKind;
 
-use super::members;
+use super::members::{self, PathShape};
+use super::motion;
 use super::theme::{self, icons};
 use super::update::{self, UpdateState};
 use crate::launch::Intent;
@@ -152,7 +153,7 @@ pub fn draw(
                 let with_diagram = ui.ctx().content_rect().width() >= DIAGRAM_MIN_WINDOW_WIDTH;
                 if with_diagram {
                     let beside = egui::pos2(body.left() + FORM_WIDTH + COLUMN_GAP, body.top());
-                    room_diagram(ui, egui::Rect::from_min_max(beside, body.max));
+                    room_diagram(ui, egui::Rect::from_min_max(beside, body.max), state);
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let width = ui.available_width().min(FORM_WIDTH);
@@ -313,12 +314,51 @@ fn diagram_screens(area: egui::Rect) -> [egui::Rect; 3] {
     ]
 }
 
+/// What a screen in the diagram says, moving from `away` to `here` as `blend` rises: the words
+/// cross-fade and the chip's width follows, so a name passing between screens never jumps.
+struct DiagramChip {
+    away: String,
+    here: String,
+    blend: f32,
+    ink: egui::Color32,
+    dot: egui::Color32,
+}
+
+fn paint_chip(painter: &egui::Painter, rect: egui::Rect, chip: DiagramChip) {
+    const DOT_SPACE: f32 = 20.0;
+    const SIDES: egui::Vec2 = egui::vec2(28.0, 8.0);
+    let widest = (rect.width() - 20.0 - SIDES.x).max(0.0);
+    let galley = |text: String| {
+        let mut job = egui::text::LayoutJob::simple_singleline(text, theme::medium(12.0), chip.ink);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(widest);
+        painter.layout_job(job)
+    };
+    let (away, here) = (galley(chip.away), galley(chip.here));
+    let size = egui::vec2(
+        egui::lerp(away.size().x..=here.size().x, chip.blend),
+        away.size().y,
+    ) + SIDES;
+    let frame = egui::Rect::from_min_size(rect.min + egui::Vec2::splat(10.0), size);
+    painter.rect_filled(frame, theme::RADIUS_CHIP, theme::SURFACE);
+    painter.circle_filled(frame.left_center() + egui::vec2(11.0, 0.0), 3.0, chip.dot);
+    let at = frame.min + egui::vec2(DOT_SPACE, 4.0);
+    let words = painter.with_clip_rect(frame.intersect(painter.clip_rect()));
+    if chip.blend < 1.0 {
+        words.galley(at, away, chip.ink.gamma_multiply(1.0 - chip.blend));
+    }
+    if chip.blend > 0.0 {
+        words.galley(at, here, chip.ink.gamma_multiply(chip.blend));
+    }
+}
+
 /// What a room is, drawn with the product's own vocabulary: one person's screen arriving as the
 /// same picture on everyone else's, with no server in the middle, directly where it can and through
-/// a relay where it cannot.
-fn room_diagram(ui: &egui::Ui, area: egui::Rect) {
+/// a relay where it cannot. It answers the form: the name being typed is on the screen that person
+/// will have, which is the sharer's until an invite in the form makes them a viewer.
+fn room_diagram(ui: &egui::Ui, area: egui::Rect, state: &StartState) {
     const DOT_RADIUS: f32 = 3.0;
     const LINK_INSET: f32 = 10.0;
+    const YOU_RING: f32 = 1.5;
     let painter = ui.painter_at(area);
     let [sharer, direct_peer, relayed_peer] = diagram_screens(area);
     for (rect, path, name) in [
@@ -330,7 +370,14 @@ fn room_diagram(ui: &egui::Ui, area: egui::Rect) {
             egui::pos2(x, sharer.bottom() + LINK_INSET),
             egui::pos2(x, rect.top() - LINK_INSET),
         );
-        members::paint_path(&painter, from, to, path, DOT_RADIUS, theme::SECONDARY);
+        members::paint_path(
+            &painter,
+            from,
+            to,
+            PathShape::of(path),
+            DOT_RADIUS,
+            theme::SECONDARY,
+        );
         painter.text(
             egui::pos2(x + 14.0, (from.y + to.y) / 2.0),
             egui::Align2::LEFT_CENTER,
@@ -339,20 +386,66 @@ fn room_diagram(ui: &egui::Ui, area: egui::Rect) {
             theme::SECONDARY,
         );
     }
-    for (rect, text, ink, dot) in [
-        (sharer, "Live", theme::LIVE, theme::LIVE),
-        (direct_peer, "Watching", theme::TEXT, theme::MUTED),
-        (relayed_peer, "Watching", theme::TEXT, theme::MUTED),
-    ] {
+    let joining = motion::follow(
+        ui.ctx(),
+        egui::Id::new("diagram-joining"),
+        !state.ticket.trim().is_empty(),
+        motion::SURFACE,
+    );
+    let name = state.nickname.trim();
+    let with_name = |role: &str| {
+        if name.is_empty() {
+            role.to_string()
+        } else {
+            format!("{name} · {role}")
+        }
+    };
+    let screens = [
+        (
+            sharer,
+            1.0 - joining,
+            DiagramChip {
+                away: "Live".to_string(),
+                here: with_name("Live"),
+                blend: 1.0 - joining,
+                ink: theme::LIVE,
+                dot: theme::LIVE,
+            },
+        ),
+        (
+            direct_peer,
+            joining,
+            DiagramChip {
+                away: "Watching".to_string(),
+                here: with_name("Watching"),
+                blend: joining,
+                ink: theme::TEXT,
+                dot: theme::MUTED,
+            },
+        ),
+        (
+            relayed_peer,
+            0.0,
+            DiagramChip {
+                away: "Watching".to_string(),
+                here: "Watching".to_string(),
+                blend: 0.0,
+                ink: theme::TEXT,
+                dot: theme::MUTED,
+            },
+        ),
+    ];
+    for (rect, yours, chip) in screens {
         shared_picture(&painter, rect);
-        let galley = painter.layout_no_wrap(text.to_string(), theme::medium(12.0), ink);
-        let chip = egui::Rect::from_min_size(
-            rect.min + egui::Vec2::splat(10.0),
-            galley.size() + egui::vec2(28.0, 8.0),
-        );
-        painter.rect_filled(chip, theme::RADIUS_CHIP, theme::SURFACE);
-        painter.circle_filled(chip.left_center() + egui::vec2(11.0, 0.0), 3.0, dot);
-        painter.galley(chip.min + egui::vec2(20.0, 4.0), galley, ink);
+        paint_chip(&painter, rect, chip);
+        if yours > 0.0 {
+            painter.rect_stroke(
+                rect,
+                theme::RADIUS_CARD,
+                egui::Stroke::new(YOU_RING, theme::ACCENT.gamma_multiply(yours)),
+                egui::StrokeKind::Inside,
+            );
+        }
     }
 }
 

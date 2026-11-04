@@ -15,11 +15,15 @@ const SHADER: &str = include_str!("nv12.wgsl");
 /// A watched live: publisher and live id. Tiles, watch handles, and per-tile UI choices share it.
 pub type TileKey = (PublicKey, u32);
 
+/// Where one tile's video goes this frame, and how shown it is, down to black on its way out.
+pub type TilePlacement = (TileKey, PixelRect, f32);
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Fit {
     scale: [f32; 2],
-    _pad: [f32; 2],
+    shown: f32,
+    _pad: f32,
 }
 
 struct Tile {
@@ -81,7 +85,7 @@ impl TileRenderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -190,21 +194,23 @@ impl TileRenderer {
         );
     }
 
-    /// Drops planes for watches that no longer exist.
+    /// Drops planes for watches that no longer exist and tiles that have finished leaving.
     pub fn retain(&mut self, keep: impl Fn(&TileKey) -> bool) {
         self.tiles.retain(|key, _| keep(key));
     }
 
-    /// Writes each placed tile's letterbox scale. Call before the render pass is recorded.
-    pub fn update_fits(&self, queue: &wgpu::Queue, placements: &[(TileKey, PixelRect)]) {
-        for (key, rect) in placements {
+    /// Writes each placed tile's letterbox scale and how shown it is. Call before the render pass is
+    /// recorded.
+    pub fn update_fits(&self, queue: &wgpu::Queue, placements: &[TilePlacement]) {
+        for (key, rect, shown) in placements {
             if let Some(tile) = self.tiles.get(key) {
                 let fit = Fit {
                     scale: fit_scale(
                         (tile.width, tile.height),
                         (rect.width as u32, rect.height as u32),
                     ),
-                    _pad: [0.; 2],
+                    shown: *shown,
+                    _pad: 0.,
                 };
                 queue.write_buffer(&tile.fit, 0, bytemuck::bytes_of(&fit));
             }
@@ -212,9 +218,9 @@ impl TileRenderer {
     }
 
     /// Draws every placed tile that has received a frame. Tiles without a frame stay black.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, placements: &[(TileKey, PixelRect)]) {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'static>, placements: &[TilePlacement]) {
         pass.set_pipeline(&self.pipeline);
-        for (key, rect) in placements {
+        for (key, rect, _) in placements {
             let Some(tile) = self.tiles.get(key) else {
                 continue;
             };
@@ -255,7 +261,8 @@ impl TileRenderer {
             label: Some("nv12-fit"),
             contents: bytemuck::bytes_of(&Fit {
                 scale: [1.; 2],
-                _pad: [0.; 2],
+                shown: 1.,
+                _pad: 0.,
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });

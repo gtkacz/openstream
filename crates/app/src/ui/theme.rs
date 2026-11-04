@@ -405,7 +405,13 @@ pub fn tactile(
 ) -> Response {
     const PRESS_INSET: f32 = 1.0;
     let backing = ui.painter().add(egui::Shape::Noop);
-    let accent_ink = tone == Tone::Primary && enabled;
+    // Read before the scope takes the next id: a control's tone can change while it stays put.
+    let accent = motion::follow(
+        ui.ctx(),
+        ui.next_auto_id().with("accent"),
+        tone == Tone::Primary,
+        motion::TRAVEL,
+    );
     let response = ui
         .scope(|ui| {
             if !enabled {
@@ -425,8 +431,9 @@ pub fn tactile(
                 widget.weak_bg_fill = Color32::TRANSPARENT;
                 widget.bg_stroke = Stroke::NONE;
                 widget.expansion = 0.0;
-                if accent_ink {
-                    widget.fg_stroke.color = ON_ACCENT;
+                if enabled {
+                    widget.fg_stroke.color =
+                        widget.fg_stroke.color.lerp_to_gamma(ON_ACCENT, accent);
                 }
             }
             add(ui)
@@ -439,8 +446,11 @@ pub fn tactile(
     let live = motion::follow(&ctx, id.with("enabled"), enabled, motion::TRAVEL);
     let focus = motion::follow(&ctx, id.with("focus"), response.has_focus(), motion::HOVER);
     let (rest, over, down) = match tone {
-        Tone::Primary => (ACCENT, ACCENT_HOVER, ACCENT_PRESSED),
-        Tone::Neutral => (RAISED, HIGHLIGHT, PRESSED),
+        Tone::Primary | Tone::Neutral => (
+            RAISED.lerp_to_gamma(ACCENT, accent),
+            HIGHLIGHT.lerp_to_gamma(ACCENT_HOVER, accent),
+            PRESSED.lerp_to_gamma(ACCENT_PRESSED, accent),
+        ),
         Tone::Quiet => (Color32::TRANSPARENT, HIGHLIGHT, PRESSED),
     };
     let fill = SURFACE

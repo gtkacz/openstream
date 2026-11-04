@@ -56,19 +56,33 @@ the S. Files and how to regenerate them: [crates/app/assets/icon](crates/app/ass
   room: share, audio, upload, mute, Settings. Sharing no longer costs the video any height.
 - **Dock.** Always one row, because a second would come out of the video. As the width falls it
   sheds words instead: the audio status first, then the tools' labels, the audio labels, the upload
-  figure, and the main action's label last.
-- **Tiles.** One 8-point gap, between tiles and to the window's edge. A last row that is not full
-  sits centred. A name chip stays on every grid tile so screens can be told apart. A tile with no
-  picture yet carries a wash, so it reads as a tile rather than words adrift on the canvas. Controls
-  rise from the bottom edge on hover or Tab, hug their content, and lose their labels below 640
-  points of tile width. In a pop-out the chip leaves with the controls.
+  figure, and the main action's label last. Accent says what to do next: Share monitor carries it
+  only while you are not sharing and someone else is, and the canvas's own Share button carries it
+  while nobody is. The audio switch and its application chooser are one control on one surface.
+- **Tiles.** A tile is the shape of its picture, known from the stream's preset before its first
+  frame, so its corners, name chip, and controls sit on the video rather than around a letterbox. All
+  tiles share one height, one 8-point gap apart. The column count is whichever shows the most
+  picture in the area, so two wide streams stack in a normal window and sit side by side in a short
+  wide one; the current count is kept while it stays within 10% of the best, so a window resized near
+  a tie does not flip the layout. The block sits centred, and so does a last row that is not full. A
+  name chip stays on every grid tile so screens can be told apart. A tile with no picture yet carries
+  a wash, so it reads as a tile rather than words adrift on the canvas. Controls rise from the bottom
+  edge on hover or Tab, hug their content, and lose their labels below 640 points of tile width. In a
+  pop-out the window is whatever shape it was dragged to, so the picture still letterboxes there, and
+  the chip leaves with the controls.
+- **Empty canvas.** It holds whatever gets something onto it, at the place the video will appear.
+  Alone in a room: the invite link and Share. With others and no streams: Share. With streams on
+  offer: one target per stream, which starts it with a click.
 - **Dialogs.** Settings has two columns, labels on one edge and controls on another, stacking below
   400 points. Actions end on the content's right edge with the main one last.
 - **Compact, below 800 points.** The rail folds away. The dock opens a Room or Share sheet that
-  slides up over the bottom of the video, which keeps playing above it.
+  slides up over the bottom of the video, which keeps playing above it. A sheet is only as tall as
+  what it holds, up to 60% of the window, past which it scrolls.
 - **Signature.** A small line between two nodes says how a person's video reaches you: straight for
-  direct, a node in the middle for relayed, dashes while the path is unknown. The rail and the start
-  diagram draw it with one function.
+  direct, a node in the middle for relayed, dashes while the path is unknown. The rail, the start
+  diagram, and a tile waiting for its video draw it with one function.
+- **Start diagram.** It answers the form. The name being typed is on the screen that person will
+  have, ringed in the accent: the sharer's, until an invite in the form makes them a viewer.
 
 ## Alignment
 
@@ -102,8 +116,11 @@ thrown. No input is ever locked out for an animation to finish.
   about 220 ms, and selection and focus ease too. Fields, radios, checks, and switches ease the same
   way, a segmented control's thumb travels between its choices, and a chevron turns over.
 - **Tiles.** When the grid changes, tiles and their video flow to their new places in about 360 ms,
-  with X and Y independent. They spring in fractions of the canvas, so resizing the window or
-  dragging the rail stays 1:1 with no lag.
+  with X and Y independent. A tile is its target plus an offset that decays to nothing, and only a
+  change of place adds to the offset, so resizing the window or dragging the rail stays 1:1 with no
+  lag whatever shape the tile keeps. A tile asked for from a card grows out of that card. A closed
+  tile darkens to the canvas and shrinks where it stood, in the video shader rather than under a wash,
+  which would also darken a neighbour moving into its space.
 - **Surfaces.** Tile controls rise from the bottom edge and sink back the same way. Compact sheets
   grow from the dock, with the video tracking their edge. Dialogs rise 12 points over a deepening
   scrim and leave the way they came, without blocking the room while they go. A click on the backdrop
@@ -113,10 +130,14 @@ thrown. No input is ever locked out for an animation to finish.
   notice line opens and shuts the same way, so the video gives up that height smoothly. The Connecting
   wash fades off the picture as video arrives, still saying what it last said. Join and Create cross-fade their surfaces. Stop sharing is always in the dock, so
   starting a stream shoves nothing sideways.
-- **At rest, nothing moves.** A settled spring asks for no frames, so an idle window sleeps. Spinners
-  run only while something is in flight, capped at 20 frames a second.
+- **The connection line.** A path that resolves is watched doing it: the dashes close into a line and
+  a relay's node grows out of it. A tile waiting for video shows the same line with a pulse crossing
+  it from the publisher, blue while connecting and amber while reconnecting.
+- **At rest, nothing moves.** A settled spring asks for no frames, so an idle window sleeps. Pulses
+  and spinners run only while something is in flight, capped at 20 frames a second.
 
-egui has no reduced-motion signal, so travel is kept to a few points everywhere.
+egui has no reduced-motion signal, so travel is kept to a few points everywhere. Reading the
+operating system's setting directly is on the [roadmap](docs/ROADMAP.md).
 
 ## References
 
@@ -130,5 +151,6 @@ egui has no reduced-motion signal, so travel is kept to a few points everywhere.
   taken as measures rather than copied. Vercel's system is mostly light and fits less well here.
 - Apple's *Designing Fluid Interfaces* and Emil Kowalski's animation guidance: springs,
   interruptibility, symmetric paths, feedback on press. Velocity handoff and momentum projection
-  are not used yet, because nothing here is dragged and released.
+  are not used yet, because nothing here is thrown; the [roadmap](docs/ROADMAP.md)'s collapsible rail
+  would be the first.
 - Unslop craft guidance by [Damir Sokolovsky](https://heydamir.design/unslop), CC BY 4.0.

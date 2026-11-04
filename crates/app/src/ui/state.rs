@@ -22,11 +22,20 @@ pub struct SourcePicker {
 }
 
 /// Which sheet a compact window shows above its dock.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum CompactSheet {
     #[default]
     Room,
     Share,
+}
+
+/// What a tile needs to go on showing once its watch has gone.
+#[derive(Debug, Clone)]
+pub struct DrawnTile {
+    pub rect: egui::Rect,
+    pub chip: String,
+    /// It had no picture of its own to fade: the state wash was covering it.
+    pub washed: bool,
 }
 
 /// Window-local state the room snapshot cannot carry: pending edits, per-tile choices, and the
@@ -49,6 +58,20 @@ pub struct UiState {
     window_shares: u32,
     /// Preset picked for a remote live before it is watched.
     pub preset_choice: HashMap<TileKey, u32>,
+    /// How many tiles the grid last held and in how many columns, kept so a window resized near a
+    /// tie does not flip the layout. A different number of tiles is a fresh choice.
+    pub grid_columns: Option<(usize, usize)>,
+    /// Where a tile about to appear should grow out of: the card that asked for it. Only taken when
+    /// that tile appears, so a watch that fails leaves its entry for that stream's next tile, which
+    /// grows from the old card once. Cosmetic, and clearing it sooner would race the watch arriving.
+    pub tile_origins: HashMap<TileKey, egui::Rect>,
+    /// What the grid drew on its last pass.
+    pub drawn_tiles: HashMap<TileKey, DrawnTile>,
+    /// Tiles fading out where they stood.
+    pub leaving_tiles: HashMap<TileKey, DrawnTile>,
+    /// Tiles that finished leaving, whose video the window can drop. Kept here rather than in a
+    /// pass's output because egui can discard the pass that finished them.
+    pub gone_tiles: Vec<TileKey>,
     /// Tiles with the stats overlay open.
     pub stats_visible: HashSet<TileKey>,
     /// This participant's lives with their quality details unfolded.
@@ -82,6 +105,11 @@ impl UiState {
             SourceKind::Window => "Window",
         };
         format!("{name} {counter}")
+    }
+
+    /// Whether this tile is still on screen, so its video has to outlive its watch until it has left.
+    pub fn keeps_picture(&self, key: &TileKey) -> bool {
+        self.drawn_tiles.contains_key(key) || self.leaving_tiles.contains_key(key)
     }
 
     /// Opens the picker. Refuses while a share is pending or a picker is already open, so a
@@ -239,6 +267,11 @@ pub fn visible_watches<'a>(
         .filter(|w| w.state != WatchState::Ended)
         .filter(|w| !popped.contains(&(w.publisher, w.live_id)))
         .collect()
+}
+
+/// No stream anywhere in the room, so sharing is the thing to do next and the canvas offers it.
+pub fn nobody_is_sharing(snapshot: &RoomSnapshot) -> bool {
+    snapshot.own_lives.is_empty() && snapshot.members.iter().all(|m| m.lives.is_empty())
 }
 
 /// The live's title as its publisher advertises it, or `None` once the publisher is gone.

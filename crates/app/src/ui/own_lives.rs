@@ -3,12 +3,12 @@
 
 use brp_audio::AudioSelection;
 use brp_proto::constants::{MAX_BITRATE_KBPS, MAX_LIVES_PER_PARTICIPANT, MIN_BITRATE_KBPS};
-use brp_proto::{Codec, SourceKind};
-use brp_room::{AudioCaptureState, OwnLiveView, RoomSnapshot};
+use brp_proto::{Codec, LiveInfo, Preset, SourceKind};
+use brp_room::{AudioCaptureState, OwnLiveView, PresetView, RoomSnapshot};
 
 use super::applications::selection_summary;
 use super::motion;
-use super::state::UiState;
+use super::state::{UiState, nobody_is_sharing};
 use super::theme::{self, icons};
 use crate::commands::RoomCommand;
 use crate::presets;
@@ -24,6 +24,66 @@ pub enum ShareLayout {
     Stacked,
 }
 
+/// A click on Share would start something now.
+pub fn can_share(snapshot: &RoomSnapshot, state: &UiState) -> bool {
+    !state.share_pending
+        && state.picker.is_none()
+        && snapshot.own_lives.len() < MAX_LIVES_PER_PARTICIPANT
+}
+
+/// A rate for reading rather than for machines: one fixed decimal once it reaches megabits, so a
+/// figure that changes while it is watched holds its width.
+pub fn bitrate(kbps: u64) -> String {
+    if kbps < 1000 {
+        format!("{kbps} kbps")
+    } else {
+        format!("{:.1} Mbps", kbps as f64 / 1000.0)
+    }
+}
+
+/// What was typed into a bitrate, in kilobits. The allowed range in megabits and the allowed range
+/// in kilobits do not overlap, so a number with no unit can only mean one of them, and one that fits
+/// neither is refused rather than clamped to a limit nobody asked for.
+fn parse_bitrate(text: &str) -> Option<f64> {
+    let text = text.trim().to_lowercase();
+    let kbps = if let Some(number) = text.strip_suffix("mbps") {
+        number.trim().parse::<f64>().ok()? * 1000.0
+    } else if let Some(number) = text.strip_suffix("kbps") {
+        number.trim().parse::<f64>().ok()?
+    } else {
+        let number = text.parse::<f64>().ok()?;
+        if number <= f64::from(MAX_BITRATE_KBPS) / 1000.0 {
+            number * 1000.0
+        } else if number >= f64::from(MIN_BITRATE_KBPS) {
+            number
+        } else {
+            return None;
+        }
+    };
+    kbps.is_finite().then_some(kbps.round())
+}
+
+/// A new bitrate restarts the encoders, so a change has to be one the field can show. Clicking in and
+/// out of "4.4 Mbps" re-reads those words as 4400, which must not restart a 4437 kbps preset.
+fn visibly_differs(a: u32, b: u32) -> bool {
+    bitrate(u64::from(a)) != bitrate(u64::from(b))
+}
+
+/// An encoder as a person would name it, without the codec the card already shows beside it.
+fn encoder_label(name: &str) -> &str {
+    if brp_codec::is_software_encoder(name) {
+        return "Software";
+    }
+    match name.rsplit('_').next() {
+        Some("vaapi") => "VAAPI",
+        Some("nvenc") => "NVENC",
+        Some("amf") => "AMF",
+        Some("qsv") => "Quick Sync",
+        Some("mf") => "Media Foundation",
+        _ => name,
+    }
+}
+
 /// Share and stop buttons, pushing `Share`/`StopLive` commands.
 pub fn share_buttons(
     ui: &mut egui::Ui,
@@ -32,19 +92,27 @@ pub fn share_buttons(
     commands: &mut Vec<RoomCommand>,
     layout: ShareLayout,
 ) {
-    let can_share = !state.share_pending
-        && state.picker.is_none()
-        && snapshot.own_lives.len() < MAX_LIVES_PER_PARTICIPANT;
-    let button = |ui: &mut egui::Ui, glyph: &str, name: &str, tone: theme::Tone, enabled: bool| {
+    let can_share = can_share(snapshot, state);
+    // Accent says what to do next, so it leaves once you are sharing, and sits on the canvas's own
+    // Share button while the canvas offers one.
+    let share_tone = if snapshot.own_lives.is_empty() && !nobody_is_sharing(snapshot) {
+        theme::Tone::Primary
+    } else {
+        theme::Tone::Neutral
+    };
+    let button = |ui: &mut egui::Ui,
+                  glyph: &str,
+                  name: &str,
+                  tone: theme::Tone,
+                  main: bool,
+                  enabled: bool| {
         let labelled = match layout {
             ShareLayout::Stacked => {
                 let size = egui::vec2(ui.available_width(), theme::CONTROL_HEIGHT);
                 return theme::wide_action(ui, glyph, name, tone, enabled, size);
             }
             // The main action keeps its words longest: it is the one a newcomer has to find.
-            ShareLayout::Row { share_labelled, .. } if tone == theme::Tone::Primary => {
-                share_labelled
-            }
+            ShareLayout::Row { share_labelled, .. } if main => share_labelled,
             ShareLayout::Row { tools_labelled, .. } => tools_labelled,
         };
         match (labelled, tone) {
@@ -57,7 +125,8 @@ pub fn share_buttons(
         ui,
         icons::SHARE_MONITOR,
         "Share monitor",
-        theme::Tone::Primary,
+        share_tone,
+        true,
         can_share,
     )
     .clicked()
@@ -72,6 +141,7 @@ pub fn share_buttons(
         icons::SHARE_WINDOW,
         "Share window",
         theme::Tone::Neutral,
+        false,
         can_share,
     )
     .clicked()
@@ -87,6 +157,7 @@ pub fn share_buttons(
         icons::STOP,
         "Stop sharing",
         theme::Tone::Neutral,
+        false,
         !snapshot.own_lives.is_empty(),
     )
     .clicked()
@@ -100,8 +171,9 @@ pub fn share_buttons(
     }
 }
 
-/// The share-audio switch, the application chooser, and what the room hears right now. Without
-/// room for `show_status` that moves to the chooser's tooltip. A failure is the dock's to say.
+/// One control for what the room hears: the share-audio switch with its application chooser on the
+/// same surface, then what the room hears right now. Without room for `show_status` that moves to
+/// the chooser's tooltip. A failure is the dock's to say.
 pub fn audio_controls(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
@@ -109,25 +181,42 @@ pub fn audio_controls(
     show_status: bool,
     labelled: bool,
 ) {
-    let mut share_audio = snapshot.own_audio.enabled;
-    let switch_text = if labelled { "Share audio" } else { "Audio" };
-    if theme::switch(ui, &mut share_audio, switch_text).changed() {
-        commands.push(RoomCommand::SetAudio(share_audio));
-    }
+    const SWITCH_INSET: f32 = 10.0;
     let status = audio_status(snapshot);
     let selection = selection_summary(&snapshot.own_audio.selection);
     let tooltip = match (&status, show_status) {
         (Some(status), false) => format!("{selection} · {status}"),
         _ => selection,
     };
-    let chooser = if labelled {
-        theme::text_button(ui, "Applications…", true).on_hover_text(tooltip)
-    } else {
-        theme::icon_button(ui, icons::APPLICATIONS, "Applications…", true).on_hover_text(tooltip)
-    };
+    // Painted under the two controls afterwards rather than framed around them: a frame is a group,
+    // which starts at the top of a row instead of its centre and cannot wrap with the row.
+    let backing = ui.painter().add(egui::Shape::Noop);
+    ui.add_space(SWITCH_INSET);
+    let mut share_audio = snapshot.own_audio.enabled;
+    let switch_text = if labelled { "Share audio" } else { "Audio" };
+    let switch = theme::switch(ui, &mut share_audio, switch_text);
+    if switch.changed() {
+        commands.push(RoomCommand::SetAudio(share_audio));
+    }
+    let chooser = theme::toned_icon_button(
+        ui,
+        theme::Tone::Quiet,
+        icons::APPLICATIONS,
+        "Applications…",
+        true,
+    )
+    .on_hover_text(tooltip);
     if chooser.clicked() {
         commands.push(RoomCommand::ChooseApplications);
     }
+    let surface = egui::Rect::from_min_max(
+        egui::pos2(switch.rect.left() - SWITCH_INSET, chooser.rect.top()),
+        chooser.rect.max,
+    );
+    ui.painter().set(
+        backing,
+        egui::Shape::rect_filled(surface, theme::RADIUS_CONTROL, theme::RAISED),
+    );
     if let (true, Some(status)) = (show_status, &status) {
         ui.weak(status);
     }
@@ -150,14 +239,16 @@ fn audio_status(snapshot: &RoomSnapshot) -> Option<String> {
     }
 }
 
-/// The compact window's Share sheet: what the dock holds in a wide one.
+/// The compact window's Share sheet: what the dock holds in a wide one. Returns the height it would
+/// like, for the sheet to fit itself to.
 pub fn share_sheet(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
     state: &UiState,
     commands: &mut Vec<RoomCommand>,
-) {
-    egui::ScrollArea::vertical()
+) -> f32 {
+    let top = ui.min_rect().top();
+    let output = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             theme::section_heading(ui, "Share");
@@ -170,8 +261,9 @@ pub fn share_sheet(
             });
             ui.add_space(12.0);
             theme::section_heading(ui, "Upload");
-            ui.label(theme::figure(format!("{} kbps", state.upload_kbps)));
+            ui.label(theme::figure(bitrate(state.upload_kbps)));
         });
+    output.inner_rect.top() - top + output.content_size.y
 }
 
 /// One of this participant's streams, pushing `StopLive`/`SetPresets` commands for user edits.
@@ -325,6 +417,8 @@ fn live_rows(
     });
 }
 
+/// Every quality this live could offer, each ticked on its own row with what it costs. The last one
+/// on cannot be unticked: a live that offers nothing cannot be watched.
 fn quality_details(
     ui: &mut egui::Ui,
     live: &OwnLiveView,
@@ -332,78 +426,95 @@ fn quality_details(
     commands: &mut Vec<RoomCommand>,
 ) {
     let info = &live.info;
-    ui.label(
-        egui::RichText::new("Templates")
-            .small()
-            .color(theme::SECONDARY),
-    );
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 16.0;
-        // The last preset cannot be unticked: a live that offers nothing cannot be watched.
-        let last_one = info.presets.len() == 1;
-        for template in presets::templates_for(info) {
-            let mut enabled = info.presets.iter().any(|p| p.id == template.id);
-            let locked = enabled && last_one;
-            // Not `add_enabled_ui`: its child scope would keep this row from wrapping.
-            let check = |ui: &mut egui::Ui| theme::check(ui, &mut enabled, template.name.as_str());
-            if ui.add_enabled(!locked, check).changed() {
-                commands.push(RoomCommand::SetPresets {
-                    live_id: info.id,
-                    presets: presets::toggle_template(info, template.id),
-                });
-            }
-        }
-    });
-    for view in &live.presets {
-        let preset = &view.preset;
-        let dimensions = format!("{} × {}", preset.width, preset.height);
-        ui.add_space(8.0);
+    let last_one = info.presets.len() == 1;
+    for template in presets::templates_for(info) {
+        let view = live.presets.iter().find(|v| v.preset.id == template.id);
+        let mut toggled = false;
+        ui.add_space(4.0);
         theme::split_row(
             ui,
             theme::CONTROL_HEIGHT,
             |ui| {
-                ui.label(preset.name.as_str());
+                let mut enabled = view.is_some();
+                let locked = enabled && last_one;
+                let check =
+                    |ui: &mut egui::Ui| theme::check(ui, &mut enabled, template.name.as_str());
+                toggled = ui.add_enabled(!locked, check).changed();
             },
             |ui| {
-                let key = (info.id, preset.id);
-                let kbps = state
-                    .bitrate_edits
-                    .entry(key)
-                    .or_insert(preset.bitrate_kbps);
-                let response = theme::drag_value(
-                    ui,
-                    egui::DragValue::new(kbps)
-                        .range(MIN_BITRATE_KBPS..=MAX_BITRATE_KBPS)
-                        .speed(100.0)
-                        .suffix(" kbps"),
-                );
-                if !response.dragged() && !response.has_focus() {
-                    let value = *kbps;
-                    state.bitrate_edits.remove(&key);
-                    if value != preset.bitrate_kbps {
-                        commands.push(RoomCommand::SetPresets {
-                            live_id: info.id,
-                            presets: presets::with_bitrate(info, preset.id, value),
-                        });
-                    }
+                if let Some(view) = view {
+                    bitrate_field(ui, info, &view.preset, state, commands);
                 }
             },
         );
-        match (&view.encoder, &view.last_error) {
-            (Some(encoder), _) => {
-                let plural = if encoder.subscribers == 1 { "" } else { "s" };
-                let measured = state.preset_kbps(info.id, preset.id).unwrap_or(0);
-                // Two fixed lines, because wrapped as one they break next to a separator.
-                ui.label(theme::figure(format!("{dimensions} · {}", encoder.name)));
-                ui.label(theme::figure(format!(
-                    "{measured} kbps · {} viewer{plural} · {} frames",
-                    encoder.subscribers, encoder.frames_encoded
-                )))
-            }
-            (None, Some(error)) => ui.colored_label(theme::ERROR, format!("failed: {error}")),
-            (None, None) => ui.label(theme::figure(format!("{dimensions} · idle"))),
-        };
+        if toggled {
+            commands.push(RoomCommand::SetPresets {
+                live_id: info.id,
+                presets: presets::toggle_template(info, template.id),
+            });
+        }
+        if let Some(view) = view {
+            preset_detail(ui, info.id, view, state);
+        }
     }
+}
+
+fn bitrate_field(
+    ui: &mut egui::Ui,
+    info: &LiveInfo,
+    preset: &Preset,
+    state: &mut UiState,
+    commands: &mut Vec<RoomCommand>,
+) {
+    let key = (info.id, preset.id);
+    let kbps = state
+        .bitrate_edits
+        .entry(key)
+        .or_insert(preset.bitrate_kbps);
+    let response = theme::drag_value(
+        ui,
+        egui::DragValue::new(kbps)
+            .range(MIN_BITRATE_KBPS..=MAX_BITRATE_KBPS)
+            .speed(100.0)
+            .custom_formatter(|value, _| bitrate(value as u64))
+            .custom_parser(parse_bitrate),
+    );
+    // Commit on release rather than on every change: each commit restarts the encoders.
+    if !response.dragged() && !response.has_focus() {
+        let value = *kbps;
+        state.bitrate_edits.remove(&key);
+        if visibly_differs(value, preset.bitrate_kbps) {
+            commands.push(RoomCommand::SetPresets {
+                live_id: info.id,
+                presets: presets::with_bitrate(info, preset.id, value),
+            });
+        }
+    }
+}
+
+fn preset_detail(ui: &mut egui::Ui, live_id: u32, view: &PresetView, state: &UiState) {
+    let preset = &view.preset;
+    let dimensions = format!("{} × {}", preset.width, preset.height);
+    match (&view.encoder, &view.last_error) {
+        (Some(encoder), _) => {
+            let plural = if encoder.subscribers == 1 { "" } else { "s" };
+            let measured = state.preset_kbps(live_id, preset.id).unwrap_or(0);
+            // Two fixed lines, because wrapped as one they break next to a separator.
+            ui.label(theme::figure(format!(
+                "{dimensions} · {}",
+                encoder_label(encoder.name)
+            )))
+            .on_hover_text(encoder.name);
+            ui.label(theme::figure(format!(
+                "{} · {} viewer{plural}",
+                bitrate(measured),
+                encoder.subscribers
+            )))
+            .on_hover_text(format!("{} frames encoded", encoder.frames_encoded))
+        }
+        (None, Some(error)) => ui.colored_label(theme::ERROR, format!("failed: {error}")),
+        (None, None) => ui.label(theme::figure(format!("{dimensions} · idle"))),
+    };
 }
 
 fn codec_name(codec: Codec) -> &'static str {
@@ -411,5 +522,64 @@ fn codec_name(codec: Codec) -> &'static str {
         Codec::H264 => "H.264",
         Codec::Hevc => "HEVC",
         Codec::Av1 => "AV1",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_reads_in_kilobits_until_it_reaches_a_megabit_and_holds_one_decimal_after() {
+        assert_eq!(bitrate(0), "0 kbps");
+        assert_eq!(bitrate(999), "999 kbps");
+        assert_eq!(bitrate(1000), "1.0 Mbps");
+        assert_eq!(bitrate(4437), "4.4 Mbps");
+        assert_eq!(bitrate(40_000), "40.0 Mbps");
+    }
+
+    #[test]
+    fn a_typed_rate_takes_its_own_unit() {
+        assert_eq!(parse_bitrate("4.5 Mbps"), Some(4500.0));
+        assert_eq!(parse_bitrate("8000 kbps"), Some(8000.0));
+        assert_eq!(parse_bitrate(" 2.5mbps "), Some(2500.0));
+    }
+
+    #[test]
+    fn a_bare_number_is_whichever_unit_it_could_be_in_range() {
+        assert_eq!(parse_bitrate("40"), Some(40_000.0));
+        assert_eq!(parse_bitrate("250"), Some(250_000.0));
+        assert_eq!(parse_bitrate("8000"), Some(8000.0));
+    }
+
+    #[test]
+    fn a_number_that_fits_neither_unit_or_is_not_a_number_is_refused() {
+        assert_eq!(parse_bitrate("800"), None);
+        assert_eq!(parse_bitrate("fast"), None);
+        assert_eq!(parse_bitrate("nan"), None);
+        assert_eq!(parse_bitrate("inf"), None);
+        assert_eq!(parse_bitrate("inf mbps"), None);
+    }
+
+    #[test]
+    fn typed_megabits_land_on_whole_kilobits_despite_float_rounding() {
+        assert_eq!(parse_bitrate("2.3 Mbps"), Some(2300.0));
+        assert_eq!(parse_bitrate("1.1"), Some(1100.0));
+    }
+
+    #[test]
+    fn only_a_change_the_field_can_show_counts_as_a_change() {
+        assert!(!visibly_differs(4400, 4437), "clicking in and out");
+        assert!(visibly_differs(4500, 4437));
+        assert!(visibly_differs(5000, 4437));
+    }
+
+    #[test]
+    fn an_encoder_is_named_for_a_person_and_an_unknown_one_keeps_its_own_name() {
+        assert_eq!(encoder_label("hevc_vaapi"), "VAAPI");
+        assert_eq!(encoder_label("av1_nvenc"), "NVENC");
+        assert_eq!(encoder_label("h264_qsv"), "Quick Sync");
+        assert_eq!(encoder_label("libsvtav1"), "Software");
+        assert_eq!(encoder_label("mystery"), "mystery");
     }
 }

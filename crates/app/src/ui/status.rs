@@ -85,8 +85,8 @@ struct DockFit {
 impl DockFit {
     fn for_width(width: f32) -> Self {
         Self {
-            audio_status: width >= 1120.0,
-            tools_labelled: width >= 960.0,
+            audio_status: width >= 1050.0,
+            tools_labelled: width >= 890.0,
             audio_labelled: width >= 700.0,
             upload: width >= 580.0,
             share_labelled: width >= 470.0,
@@ -199,7 +199,7 @@ fn master_mute(
 
 fn upload(ui: &mut egui::Ui, state: &UiState) {
     ui.spacing_mut().item_spacing.x = 4.0;
-    ui.label(theme::figure(format!("{} kbps", state.upload_kbps)))
+    ui.label(theme::figure(own_lives::bitrate(state.upload_kbps)))
         .on_hover_text("What you are sending to the room");
     ui.label(theme::icon(icons::UPLOAD).color(theme::SECONDARY));
 }
@@ -237,7 +237,8 @@ mod tests {
             own_audio: OwnAudioView {
                 enabled: true,
                 state: AudioCaptureState::Capturing,
-                selection: AudioSelection::All,
+                // The longest thing the status can say, so the widths hold at the worst case.
+                selection: AudioSelection::Only(Default::default()),
                 subscribers: 12,
                 packets_encoded: 0,
             },

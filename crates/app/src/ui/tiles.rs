@@ -4,13 +4,19 @@
 
 use std::collections::HashSet;
 
+use brp_net::PathKind;
+use brp_proto::{LiveInfo, SourceKind};
 use brp_room::{RoomSnapshot, WatchState, WatchView};
 
-use super::members::{offered_preset, preset_selector};
+use super::members::{PathShape, copy_button, offered_preset, paint_path, preset_selector};
 use super::motion;
-use super::state::{UiState, live_title, visible_watches};
+use super::own_lives::can_share;
+use super::state::{
+    DrawnTile, UiState, live_title, nobody_is_sharing, ordered_members, visible_watches,
+};
 use super::theme::{self, icons};
 use crate::commands::{RoomCommand, WindowCommand};
+use crate::link;
 use crate::render::grid;
 use crate::render::tiles::TileKey;
 
@@ -23,10 +29,10 @@ pub enum Placement {
     PopOut { fullscreen: bool },
 }
 
-/// The gap around each tile, as the inset of the area and of each cell from its grid neighbours.
-/// Equal, so the gap to the window's edge is the same as the gap between tiles.
-const AREA_INSET: f32 = 4.0;
-const CELL_INSET: f32 = 4.0;
+/// The gap between tiles, and from a tile to the window's edge.
+const TILE_GAP: f32 = 8.0;
+/// A stream whose shape nothing has told us yet, such as one whose publisher has left.
+const USUAL_ASPECT: f32 = 16.0 / 9.0;
 const TILE_RADIUS: u8 = theme::RADIUS_CARD;
 /// Wide enough to cover a square viewport's corners under `TILE_RADIUS`, which reach 0.42 of the
 /// radius past the curve, and narrow enough not to touch the next tile.
@@ -37,38 +43,169 @@ const TOOLBAR_HEIGHT: f32 = 48.0;
 const BAR_PADDING: f32 = 6.0;
 const TOOLBAR_MARGIN: f32 = 12.0;
 const EMPTY_GAP: f32 = 4.0;
+const PUBLISHER_LEFT: &str = "Publisher left";
 
-/// Draws the tile grid without the popped-out lives, returning where the video renderer should
-/// place each drawn live's frame, in egui points.
+/// What the renderer has to do with the tiles of one pass.
+#[derive(Debug, Default)]
+pub struct Grid {
+    /// Where each drawn live's frame goes, in egui points.
+    pub placements: Vec<(TileKey, egui::Rect)>,
+    /// Tiles on their way out: where they stand and how shown they still are.
+    pub leaving: Vec<(TileKey, egui::Rect, f32)>,
+}
+
+/// The shape of the picture this watch will show, known before its first frame arrives so the tile
+/// does not change shape when it does. A frame of another shape still letterboxes inside it.
+fn picture_aspect(snapshot: &RoomSnapshot, watch: &WatchView) -> f32 {
+    let live = snapshot
+        .members
+        .iter()
+        .find(|member| member.id == watch.publisher)
+        .and_then(|member| member.lives.iter().find(|live| live.id == watch.live_id));
+    let size = live.map(|live| {
+        live.presets
+            .iter()
+            .find(|preset| preset.id == watch.preset_id)
+            .map_or((live.source_width, live.source_height), |preset| {
+                (preset.width, preset.height)
+            })
+    });
+    match size {
+        Some((width, height)) if width > 0 && height > 0 => width as f32 / height as f32,
+        _ => USUAL_ASPECT,
+    }
+}
+
+fn chip_text(snapshot: &RoomSnapshot, key: TileKey, title: &str) -> String {
+    let owner = snapshot.members.iter().find(|m| m.id == key.0);
+    owner.map_or_else(
+        || title.to_string(),
+        |member| format!("{} · {title}", member.nickname),
+    )
+}
+
+/// Moves what the grid no longer shows from drawn to leaving. A popped-out tile went to its own
+/// window rather than away, and one that came back mid-exit carries on from where it was.
+fn note_departures(state: &mut UiState, watches: &[&WatchView], popped: &HashSet<TileKey>) {
+    let shown: HashSet<TileKey> = watches.iter().map(|w| (w.publisher, w.live_id)).collect();
+    for (key, tile) in std::mem::take(&mut state.drawn_tiles) {
+        if !shown.contains(&key) && !popped.contains(&key) {
+            state.leaving_tiles.insert(key, tile);
+        }
+    }
+    state.leaving_tiles.retain(|key, _| !shown.contains(key));
+}
+
+/// Fades each leaving tile where it stands: the video darkens to the canvas in the renderer rather
+/// than under a wash here, because a wash would also darken a neighbour moving into its space.
+fn draw_leaving(ui: &mut egui::Ui, state: &mut UiState, grid: &mut Grid) {
+    const WASH: f32 = 0.85;
+    let id = ui.id();
+    let mut finished = Vec::new();
+    for (key, tile) in &state.leaving_tiles {
+        let shown = motion::leave(ui.ctx(), id.with(("tile-leaving", *key)), motion::SURFACE);
+        if shown <= 0.0 {
+            finished.push(*key);
+            continue;
+        }
+        let rect = tile
+            .rect
+            .shrink2(tile.rect.size() * motion::GROW_FROM * (1.0 - shown));
+        grid.leaving.push((*key, rect, shown));
+        if tile.washed {
+            ui.painter().rect_filled(
+                rect,
+                TILE_RADIUS,
+                theme::SURFACE.gamma_multiply(WASH * shown),
+            );
+        }
+        name_chip(ui, rect, &tile.chip, 1.0, shown);
+        round_corners(ui, rect, shown);
+    }
+    for key in &finished {
+        state.leaving_tiles.remove(key);
+    }
+    state.gone_tiles.extend(finished);
+}
+
+/// The renderer draws square viewports under this layer. A canvas-coloured ring just outside the
+/// tile covers the corners, which rounds the video without a mask in the video shader.
+fn round_corners(ui: &egui::Ui, rect: egui::Rect, opacity: f32) {
+    ui.painter().rect_stroke(
+        rect,
+        TILE_RADIUS,
+        egui::Stroke::new(TILE_RING, theme::CANVAS.gamma_multiply(opacity)),
+        egui::StrokeKind::Outside,
+    );
+}
+
+/// Draws the tile grid without the popped-out lives, returning what the renderer has to place.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
+    ticket: &str,
     state: &mut UiState,
     popped: &HashSet<TileKey>,
     commands: &mut Vec<RoomCommand>,
     window_commands: &mut Vec<WindowCommand>,
-) -> Vec<(TileKey, egui::Rect)> {
-    let mut placements = Vec::new();
+) -> Grid {
+    let mut grid = Grid::default();
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {
             let watches = visible_watches(snapshot, popped);
-            if watches.is_empty() {
-                empty_canvas(ui, snapshot, popped);
-                return;
+            let canvas_shown = motion::appear(
+                ui.ctx(),
+                ui.id().with("empty-canvas"),
+                watches.is_empty(),
+                motion::SURFACE,
+            );
+            if canvas_shown > 0.0 {
+                let active = watches.is_empty();
+                empty_canvas(
+                    ui,
+                    snapshot,
+                    ticket,
+                    state,
+                    popped,
+                    commands,
+                    canvas_shown,
+                    active,
+                );
             }
-            let area = ui.max_rect().shrink(AREA_INSET);
-            let rects = grid::layout(area, watches.len());
-            for (watch, cell) in watches.iter().zip(rects) {
+            note_departures(state, &watches, popped);
+            draw_leaving(ui, state, &mut grid);
+            let area = ui.max_rect().shrink(TILE_GAP);
+            let aspects: Vec<f32> = watches
+                .iter()
+                .map(|watch| picture_aspect(snapshot, watch))
+                .collect();
+            let current = state
+                .grid_columns
+                .filter(|(count, _)| *count == aspects.len())
+                .map(|(_, columns)| columns);
+            let columns = grid::columns(area.size(), &aspects, TILE_GAP, current);
+            state.grid_columns = Some((aspects.len(), columns));
+            // A tile changes place only when the grid itself changes, not when the window resizes.
+            let layout_id = egui::Id::new((
+                "tile-layout",
+                columns,
+                aspects.iter().map(|a| a.to_bits()).collect::<Vec<_>>(),
+            ));
+            let rects = grid::layout(area, &aspects, TILE_GAP, columns);
+            for (index, (watch, target)) in watches.iter().zip(rects).enumerate() {
                 let key = (watch.publisher, watch.live_id);
                 // The video renderer reads this same rect, so the picture itself moves.
                 let rect = motion::flowing_rect(
                     ui.ctx(),
                     ui.id().with(("tile-place", key)),
                     area,
-                    cell.shrink(CELL_INSET),
+                    target,
+                    layout_id.with(index),
+                    state.tile_origins.remove(&key),
                 );
-                placements.push((key, rect));
+                grid.placements.push((key, rect));
                 tile_overlay(
                     ui,
                     snapshot,
@@ -80,65 +217,194 @@ pub fn draw(
                     rect,
                     Placement::Grid,
                 );
-                // The renderer draws square viewports under this layer. A canvas-coloured ring
-                // just outside the tile covers the corners, which rounds the video without a mask
-                // in the video shader.
-                ui.painter().rect_stroke(
-                    rect,
-                    TILE_RADIUS,
-                    egui::Stroke::new(TILE_RING, theme::CANVAS),
-                    egui::StrokeKind::Outside,
+                round_corners(ui, rect, 1.0);
+                let title = live_title(snapshot, key).unwrap_or_else(|| PUBLISHER_LEFT.to_string());
+                state.drawn_tiles.insert(
+                    key,
+                    DrawnTile {
+                        rect,
+                        chip: chip_text(snapshot, key, &title),
+                        washed: watch.state != WatchState::Live,
+                    },
                 );
             }
         });
-    placements
+    grid
 }
 
-fn empty_canvas(ui: &mut egui::Ui, snapshot: &RoomSnapshot, popped: &HashSet<TileKey>) {
-    let someone_is_sharing = snapshot.members.iter().any(|m| !m.lives.is_empty());
-    let (title, hint) = if !popped.is_empty() {
-        (
-            "Watching in pop-outs",
-            "Your streams are open in their own windows",
-        )
-    } else if someone_is_sharing {
-        (
-            "Ready to watch",
-            "Switch on a stream in the room list to start watching",
-        )
-    } else {
-        (
-            "Nothing on screen yet",
-            "Streams appear in the room list when someone shares",
-        )
-    };
-    let shown = motion::arrive(ui.ctx(), ui.id().with("empty-canvas"), motion::SURFACE);
-    let painter = ui.painter();
-    let title = painter.layout_no_wrap(
-        title.to_string(),
-        theme::semibold(18.0),
-        theme::TEXT.gamma_multiply(shown),
-    );
-    let mut hint_job = egui::text::LayoutJob::single_section(
-        hint.to_string(),
-        egui::TextFormat::simple(
-            egui::FontId::proportional(14.0),
-            theme::SECONDARY.gamma_multiply(shown),
+/// What the canvas holds while nothing is on it: whatever gets something onto it. Fades over the
+/// tiles arriving or leaving, and takes no input once it is on its way out.
+#[allow(clippy::too_many_arguments)]
+fn empty_canvas(
+    ui: &mut egui::Ui,
+    snapshot: &RoomSnapshot,
+    ticket: &str,
+    state: &mut UiState,
+    popped: &HashSet<TileKey>,
+    commands: &mut Vec<RoomCommand>,
+    shown: f32,
+    active: bool,
+) {
+    const COLUMN_WIDTH: f32 = 380.0;
+    let canvas = ui.max_rect();
+    let column = egui::Rect::from_center_size(
+        canvas.center() + motion::rise(shown, 6.0),
+        egui::vec2(
+            (canvas.width() - 32.0).clamp(0.0, COLUMN_WIDTH),
+            canvas.height(),
         ),
     );
-    hint_job.wrap.max_width = (ui.available_width() - 32.0).clamp(32.0, 360.0);
-    hint_job.halign = egui::Align::Center;
-    let hint = painter.layout_job(hint_job);
-    // The pair is centred as one block, whichever way the hint wrapped.
-    let center = ui.max_rect().center() + motion::rise(shown, 6.0);
-    let top = center.y - (title.size().y + EMPTY_GAP + hint.size().y) / 2.0;
-    let hint_top = top + title.size().y + EMPTY_GAP;
-    painter.galley(
-        egui::pos2(center.x - title.size().x / 2.0, top),
-        title,
-        theme::TEXT,
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt("empty-canvas")
+            .max_rect(column),
+        |ui| {
+            ui.set_opacity(shown);
+            if !active {
+                ui.disable();
+            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                theme::vertically_centred(ui, "empty-canvas", |ui| {
+                    canvas_contents(ui, snapshot, ticket, state, popped, commands);
+                });
+            });
+        },
     );
-    painter.galley(egui::pos2(center.x, hint_top), hint, theme::SECONDARY);
+}
+
+fn canvas_contents(
+    ui: &mut egui::Ui,
+    snapshot: &RoomSnapshot,
+    ticket: &str,
+    state: &mut UiState,
+    popped: &HashSet<TileKey>,
+    commands: &mut Vec<RoomCommand>,
+) {
+    let heading = |ui: &mut egui::Ui, title: &str, hint: &str| {
+        ui.vertical_centered(|ui| {
+            ui.spacing_mut().item_spacing.y = EMPTY_GAP;
+            ui.label(egui::RichText::new(title).font(theme::semibold(18.0)));
+            ui.label(egui::RichText::new(hint).size(14.0).color(theme::SECONDARY));
+        });
+        ui.add_space(16.0);
+    };
+    if !popped.is_empty() {
+        heading(
+            ui,
+            "Watching in pop-outs",
+            "Your streams are open in their own windows",
+        );
+        return;
+    }
+    let offers: Vec<_> = ordered_members(snapshot)
+        .into_iter()
+        .flat_map(|member| member.lives.iter().map(move |live| (member, live)))
+        .filter_map(|(member, live)| {
+            let key = (member.id, live.id);
+            let wanted = state.preset_choice.get(&key).copied();
+            offered_preset(live, wanted).map(|preset_id| (member, live, key, preset_id))
+        })
+        .collect();
+    if !offers.is_empty() {
+        heading(ui, "Ready to watch", "Pick a stream to bring it on screen");
+        for (member, live, key, preset_id) in offers {
+            let offer = stream_offer(ui, &member.nickname, live);
+            if offer.clicked() {
+                state.tile_origins.insert(key, offer.rect);
+                commands.push(RoomCommand::Watch { key, preset_id });
+            }
+        }
+        return;
+    }
+    if snapshot.members.is_empty() {
+        heading(
+            ui,
+            "You’re the first here",
+            "Send this link to bring someone in",
+        );
+        let link = link::share_link(ticket);
+        let mut shown_link = link.as_str();
+        theme::field(
+            ui,
+            egui::TextEdit::singleline(&mut shown_link),
+            theme::FORM_HEIGHT,
+        );
+        copy_button(ui, icons::LINK, "Copy link", theme::FORM_HEIGHT, || link);
+    } else {
+        heading(
+            ui,
+            "Nothing on screen yet",
+            "Streams appear here when someone shares",
+        );
+    }
+    if nobody_is_sharing(snapshot) {
+        let size = egui::vec2(ui.available_width(), theme::FORM_HEIGHT);
+        if theme::wide_action(
+            ui,
+            icons::SHARE_MONITOR,
+            "Share monitor",
+            theme::Tone::Primary,
+            can_share(snapshot, state),
+            size,
+        )
+        .clicked()
+        {
+            commands.push(RoomCommand::Share {
+                kind: SourceKind::Monitor,
+                source: None,
+            });
+        }
+    }
+}
+
+/// A stream on offer, as one target: who it is, what it is, and the word for what a click does.
+fn stream_offer(ui: &mut egui::Ui, owner: &str, live: &LiveInfo) -> egui::Response {
+    const HEIGHT: f32 = 56.0;
+    const PADDING: f32 = 12.0;
+    const LINE_GAP: f32 = 2.0;
+    let title = format!("{owner} · {}", live.title);
+    let response = theme::tactile(ui, theme::Tone::Neutral, false, true, |ui| {
+        let size = egui::vec2(ui.available_width(), HEIGHT);
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let painter = ui.painter();
+        let action = painter.layout_no_wrap("Watch".to_string(), theme::medium(14.0), theme::TEXT);
+        let room = (rect.width() - 3.0 * PADDING - action.size().x).max(0.0);
+        let mut title_job = egui::text::LayoutJob::simple_singleline(
+            title.clone(),
+            theme::medium(14.0),
+            theme::TEXT,
+        );
+        title_job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let title_galley = painter.layout_job(title_job);
+        let mut detail_job = egui::text::LayoutJob::simple_singleline(
+            format!(
+                "{} × {} · {} fps",
+                live.source_width, live.source_height, live.source_fps
+            ),
+            egui::FontId::proportional(12.0),
+            theme::SECONDARY,
+        );
+        detail_job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let detail = painter.layout_job(detail_job);
+        let left = rect.left() + PADDING;
+        let top = rect.center().y - (title_galley.size().y + LINE_GAP + detail.size().y) / 2.0;
+        let detail_top = top + title_galley.size().y + LINE_GAP;
+        painter.galley(egui::pos2(left, top), title_galley, theme::TEXT);
+        painter.galley(egui::pos2(left, detail_top), detail, theme::SECONDARY);
+        painter.galley(
+            egui::pos2(
+                rect.right() - PADDING - action.size().x,
+                rect.center().y - action.size().y / 2.0,
+            ),
+            action,
+            theme::TEXT,
+        );
+        response
+    });
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Watch {title}"))
+    });
+    response
 }
 
 /// The name that stays on the video, so a grid of screens can always be told apart.
@@ -173,8 +439,46 @@ fn name_chip(ui: &egui::Ui, rect: egui::Rect, title: &str, live: f32, opacity: f
     );
 }
 
-/// What is happening instead of video: the stream's name, why it is not showing, and a spinner
-/// while something is still in flight. A wash covers the whole tile: it dims the last frame a
+/// The stream still on its way: the rail's own drawing of how it reaches you, with a pulse crossing
+/// it from the publisher. Asks for 20 frames a second rather than every frame, because a stream can
+/// sit in Reconnecting for as long as its publisher stays away.
+fn crossing_path(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    path: PathKind,
+    pulse: egui::Color32,
+    shown: f32,
+) {
+    const FRAME: std::time::Duration = std::time::Duration::from_millis(50);
+    const CROSSING_SECONDS: f64 = 1.2;
+    const DOT_RADIUS: f32 = 3.0;
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    ui.ctx().request_repaint_after(FRAME);
+    let (from, to) = (rect.left_center(), rect.right_center());
+    let crossed = (ui.input(|input| input.time) / CROSSING_SECONDS).fract() as f32;
+    let mut painter = ui.painter_at(rect.expand(DOT_RADIUS));
+    painter.multiply_opacity(shown);
+    paint_path(
+        &painter,
+        from,
+        to,
+        PathShape::of(path),
+        DOT_RADIUS,
+        theme::MUTED,
+    );
+    // Dimmed at both ends, so the jump back to the start cannot be seen.
+    let presence = (crossed * std::f32::consts::PI).sin();
+    painter.circle_filled(
+        from.lerp(to, crossed),
+        DOT_RADIUS,
+        pulse.gamma_multiply(presence),
+    );
+}
+
+/// What is happening instead of video: the stream's name, why it is not showing, and its path with
+/// a pulse crossing it while something is still in flight. A wash covers the whole tile: it dims the last frame a
 /// reconnecting tile can still be holding, in any colour, and with no frame yet it shows where the
 /// tile is, so the words read as centred in something rather than adrift on the black canvas. When
 /// video arrives it fades off the picture still saying what it last said, rather than vanishing on
@@ -186,10 +490,11 @@ fn tile_state(
     radius: u8,
     title: &str,
     state: WatchState,
+    path: PathKind,
 ) {
     const WASH: f32 = 0.85;
-    const SPINNER: f32 = 20.0;
-    const SPINNER_GAP: f32 = 12.0;
+    const PATH_SIZE: egui::Vec2 = egui::vec2(64.0, 20.0);
+    const PATH_GAP: f32 = 12.0;
     let shown = motion::appear(ui.ctx(), id, state != WatchState::Live, motion::TRAVEL);
     if shown <= 0.0 {
         return;
@@ -220,24 +525,28 @@ fn tile_state(
         egui::text::TextWrapping::truncate_at_width((rect.width() - 2.0 * TOOLBAR_MARGIN).max(0.0));
     let title = painter.layout_job(title_job);
     let status = painter.layout_no_wrap(status.to_string(), egui::FontId::proportional(13.0), ink);
-    let spinner_space = if in_flight {
-        SPINNER + SPINNER_GAP
+    let path_space = if in_flight {
+        PATH_SIZE.y + PATH_GAP
     } else {
         0.0
     };
     let center = rect.center();
-    let top = center.y - (spinner_space + title.size().y + status.size().y) / 2.0;
+    let top = center.y - (path_space + title.size().y + status.size().y) / 2.0;
     if in_flight {
-        theme::spinner_at(
+        let pulse = if said == WatchState::Reconnecting {
+            theme::WARNING
+        } else {
+            theme::ACCENT
+        };
+        crossing_path(
             ui,
-            egui::Rect::from_min_size(
-                egui::pos2(center.x - SPINNER / 2.0, top),
-                egui::Vec2::splat(SPINNER),
-            ),
+            egui::Rect::from_min_size(egui::pos2(center.x - PATH_SIZE.x / 2.0, top), PATH_SIZE),
+            path,
+            pulse,
             shown,
         );
     }
-    let title_top = top + spinner_space;
+    let title_top = top + path_space;
     let status_top = title_top + title.size().y;
     painter.galley(
         egui::pos2(center.x - title.size().x / 2.0, title_top),
@@ -265,18 +574,10 @@ pub fn tile_overlay(
     placement: Placement,
 ) {
     let response = ui.allocate_rect(rect, egui::Sense::hover());
-    let live = snapshot
-        .members
-        .iter()
-        .find(|m| m.id == key.0)
-        .and_then(|m| m.lives.iter().find(|l| l.id == key.1));
-    let title = live_title(snapshot, key).unwrap_or_else(|| "Publisher left".to_string());
-    let owner = snapshot
-        .members
-        .iter()
-        .find(|m| m.id == key.0)
-        .map(|m| m.nickname.as_str());
-    let chip_text = owner.map_or_else(|| title.clone(), |name| format!("{name} · {title}"));
+    let publisher = snapshot.members.iter().find(|m| m.id == key.0);
+    let live = publisher.and_then(|m| m.lives.iter().find(|l| l.id == key.1));
+    let title = live_title(snapshot, key).unwrap_or_else(|| PUBLISHER_LEFT.to_string());
+    let chip = chip_text(snapshot, key, &title);
     tile_state(
         ui,
         ui.id().with(("tile-state", key)),
@@ -287,6 +588,7 @@ pub fn tile_overlay(
         },
         &title,
         watch.state,
+        publisher.map_or(PathKind::Unknown, |member| member.path),
     );
     if state.stats_visible.contains(&key) {
         let preset = live
@@ -335,7 +637,7 @@ pub fn tile_overlay(
             watch.state == WatchState::Live,
             motion::TRAVEL,
         );
-        name_chip(ui, rect, &chip_text, live, chip_opacity);
+        name_chip(ui, rect, &chip, live, chip_opacity);
     }
     if opacity <= 0.0 {
         return;

@@ -372,6 +372,8 @@ fn run_room(
 fn the_video_keeps_most_of_the_window_while_sharing_at_every_width() {
     // One row of controls, its separator, and the gaps around the tile, at every width.
     const LARGEST_DOCK: f32 = 74.0;
+    const WINDOW_EDGES: f32 = 16.0;
+    const RAIL: f32 = 288.0;
     for (width, height) in [
         (390.0, 844.0),
         (799.0, 600.0),
@@ -391,10 +393,12 @@ fn the_video_keeps_most_of_the_window_while_sharing_at_every_width() {
             placed = Some(run_room(&ctx, raw, &snapshot, &mut state).0);
         }
         let tile = placed.expect("drawn").tile_rects[0].1;
+        // The tile has its picture's shape, so one direction fills and the other is whatever is left.
+        let rail = if width < 800.0 { 0.0 } else { RAIL };
         assert!(
-            tile.height() >= height - LARGEST_DOCK,
-            "at {width} wide the tile is only {} of {height} tall",
-            tile.height()
+            tile.height() >= height - LARGEST_DOCK || tile.width() >= width - rail - WINDOW_EDGES,
+            "at {width} by {height} the tile is only {:?}",
+            tile.size()
         );
         assert!(tile.right() <= width && tile.left() >= 0.0);
     }
@@ -575,7 +579,8 @@ fn tiles_flow_to_their_new_places_and_track_a_resized_window_directly() {
     let mut run =
         |snapshot: &brp_room::RoomSnapshot, state: &mut brp_app::ui::state::UiState, width: f32| {
             frame += 1;
-            run_room(&ctx, timed(window(width, 800.0), frame), snapshot, state)
+            // Short enough that two wide pictures sit side by side.
+            run_room(&ctx, timed(window(width, 600.0), frame), snapshot, state)
                 .0
                 .tile_rects
         };
@@ -836,7 +841,7 @@ fn the_start_form_is_centred_on_the_same_axis_as_the_diagram() {
     let join_label = text_rect(&shapes, "Join room");
     // The Join button is 40 tall around its label, so its bottom edge is 20 below the label's centre.
     let form = (title.top() + join_label.center().y + 20.0) / 2.0;
-    let live = text_rect(&shapes, "Live");
+    let live = text_rect(&shapes, "Alex · Live");
     let relayed = text_rect(&shapes, "Relayed");
     assert!(live.top() < form && relayed.bottom() > form);
     let body = (24.0 + 36.0 + 8.0 + 800.0 - 24.0) / 2.0;
@@ -953,7 +958,7 @@ fn unfolded_quality_details_show_each_preset_and_fold_away_again() {
     let snapshot = busy_room();
     let mut state = brp_app::ui::state::UiState::new();
     let (_, shut) = settled_room(&ctx, (1280.0, 1000.0), &snapshot, &mut state);
-    assert!(text_rects(&shut, "Templates").is_empty());
+    assert!(text_rects(&shut, "480p").is_empty());
     let header = text_rect(&shut, "Quality & encoding").center();
     for (frame, pressed) in [(60, true), (61, false)] {
         let click = timed(click_at(window(1280.0, 1000.0), header, pressed), frame);
@@ -961,7 +966,7 @@ fn unfolded_quality_details_show_each_preset_and_fold_away_again() {
     }
     assert!(state.quality_open.contains(&1));
     let (_, open) = settled_room_from(62, &ctx, (1280.0, 1000.0), &snapshot, &mut state);
-    assert!(!text_rects(&open, "Templates").is_empty());
+    assert!(!text_rects(&open, "480p").is_empty());
 }
 
 #[test]
@@ -1057,4 +1062,541 @@ fn checks_in_a_wrapped_row_move_to_the_next_line_rather_than_truncating() {
     );
     assert!(third.top() > first.bottom(), "the row never wrapped");
     assert!(third.right() <= 240.0);
+}
+
+fn accent_surfaces(shapes: &[egui::epaint::ClippedShape]) -> usize {
+    // The logo is drawn in the accent too, in bars far thinner than any control.
+    const CONTROL_AT_LEAST: f32 = 24.0;
+    fn count(shape: &egui::Shape) -> usize {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().map(count).sum(),
+            egui::Shape::Rect(rect)
+                if rect.fill == brp_app::ui::theme::ACCENT
+                    && rect.rect.height() >= CONTROL_AT_LEAST =>
+            {
+                1
+            }
+            _ => 0,
+        }
+    }
+    shapes.iter().map(|shape| count(&shape.shape)).sum()
+}
+
+fn lonely_room() -> brp_room::RoomSnapshot {
+    let mut snapshot = busy_room();
+    snapshot.members.clear();
+    snapshot.own_lives.clear();
+    snapshot.watches.clear();
+    snapshot
+}
+
+fn room_with_an_unwatched_stream() -> brp_room::RoomSnapshot {
+    let mut snapshot = busy_room();
+    snapshot.own_lives.clear();
+    snapshot.watches.clear();
+    snapshot
+}
+
+fn click_text(
+    ctx: &egui::Context,
+    first_frame: u32,
+    size: (f32, f32),
+    at: egui::Pos2,
+    snapshot: &brp_room::RoomSnapshot,
+    state: &mut brp_app::ui::state::UiState,
+) -> Vec<brp_app::commands::RoomCommand> {
+    let mut commands = Vec::new();
+    for (offset, pressed) in [(0, true), (1, false)] {
+        let raw = timed(
+            click_at(window(size.0, size.1), at, pressed),
+            first_frame + offset,
+        );
+        commands.extend(run_room(ctx, raw, snapshot, state).0.commands);
+    }
+    commands
+}
+
+#[test]
+fn a_tile_has_the_shape_of_its_picture_with_its_name_on_the_picture() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (output, shapes) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    let tile = output.tile_rects[0].1;
+    let preset = &snapshot.members[0].lives[0].presets[0];
+    let picture = preset.width as f32 / preset.height as f32;
+    assert!(
+        (tile.width() / tile.height() - picture).abs() < 0.01,
+        "{tile:?} is not the shape of a {picture} picture"
+    );
+    let chip = text_rect(&shapes, "Morgan · Monitor 1");
+    assert!(tile.contains_rect(chip));
+    assert!(
+        chip.top() - tile.top() < 24.0,
+        "the chip floats {} below the picture's top",
+        chip.top() - tile.top()
+    );
+}
+
+#[test]
+fn a_closed_tile_fades_where_it_stood_and_its_video_is_released_once_it_has_gone() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    let mut second = snapshot.watches[0].clone();
+    second.live_id = 2;
+    snapshot.watches.push(second);
+    let closing = (snapshot.watches[1].publisher, snapshot.watches[1].live_id);
+    let mut state = brp_app::ui::state::UiState::new();
+    let (settled, _) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    let stood = settled.tile_rects[1].1;
+    assert!(
+        state.keeps_picture(&closing),
+        "its planes must outlive its watch"
+    );
+
+    snapshot.watches.pop();
+    let first = run_room(
+        &ctx,
+        timed(window(1440.0, 900.0), 60),
+        &snapshot,
+        &mut state,
+    )
+    .0;
+    assert_eq!(first.tile_rects.len(), 1);
+    let (key, rect, shown) = first.leaving_tiles[0];
+    assert_eq!(key, closing);
+    assert!(shown > 0.8 && shown < 1.0, "started at {shown}");
+    assert!(
+        (rect.center() - stood.center()).length() < 1.0,
+        "it left its place: {rect:?} from {stood:?}"
+    );
+
+    for frame in 61..180 {
+        run_room(
+            &ctx,
+            timed(window(1440.0, 900.0), frame),
+            &snapshot,
+            &mut state,
+        );
+    }
+    assert_eq!(state.gone_tiles, vec![closing]);
+    assert!(!state.keeps_picture(&closing));
+}
+
+#[test]
+fn a_tile_watched_again_mid_exit_stops_leaving_and_carries_on_from_where_it_was() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    let watch = snapshot.watches.pop().expect("one watch");
+    let leaving = run_room(
+        &ctx,
+        timed(window(1440.0, 900.0), 60),
+        &snapshot,
+        &mut state,
+    )
+    .0;
+    assert_eq!(leaving.leaving_tiles.len(), 1);
+    snapshot.watches.push(watch);
+    let back = run_room(
+        &ctx,
+        timed(window(1440.0, 900.0), 61),
+        &snapshot,
+        &mut state,
+    )
+    .0;
+    assert!(back.leaving_tiles.is_empty() && state.gone_tiles.is_empty());
+    assert_eq!(back.tile_rects.len(), 1);
+}
+
+#[test]
+fn a_tile_popped_out_goes_to_its_window_without_an_exit_in_the_grid() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let key = (snapshot.watches[0].publisher, snapshot.watches[0].live_id);
+    let mut state = brp_app::ui::state::UiState::new();
+    settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    let popped = std::collections::HashSet::from([key]);
+    let mut result = None;
+    let mut output = ctx.run_ui(timed(window(1440.0, 900.0), 60), |ui| {
+        result = Some(brp_app::ui::draw(
+            ui,
+            &snapshot,
+            "ticket",
+            &mut state,
+            &popped,
+            &UpdateState::new(false),
+        ));
+    });
+    output.textures_delta.clear();
+    let drawn = result.expect("drawn");
+    assert!(drawn.tile_rects.is_empty() && drawn.leaving_tiles.is_empty());
+}
+
+#[test]
+fn alone_in_a_room_the_canvas_holds_the_invite_and_the_one_accent_share_button() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = lonely_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shapes) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    assert!(!text_rects(&shapes, "You’re the first here").is_empty());
+    assert_eq!(
+        text_rects(&shapes, "You’re the first here").len(),
+        1,
+        "said once, on the canvas rather than also in the rail"
+    );
+    assert_eq!(accent_surfaces(&shapes), 1, "one primary action on screen");
+    // Two labelled Share buttons: the canvas's accent one and the dock's neutral one.
+    let shares = text_rects(&shapes, "Share monitor");
+    assert_eq!(shares.len(), 2);
+    let on_canvas = shares
+        .iter()
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .expect("two");
+    let commands = click_text(
+        &ctx,
+        60,
+        (1440.0, 900.0),
+        on_canvas.center(),
+        &snapshot,
+        &mut state,
+    );
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        brp_app::commands::RoomCommand::Share {
+            kind: brp_proto::SourceKind::Monitor,
+            source: None
+        }
+    )));
+}
+
+#[test]
+fn a_stream_on_the_canvas_starts_with_one_click_and_its_tile_grows_out_of_that_card() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = room_with_an_unwatched_stream();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shapes) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    let card = text_rect(&shapes, "Morgan · Monitor 1");
+    let commands = click_text(
+        &ctx,
+        60,
+        (1440.0, 900.0),
+        card.center(),
+        &snapshot,
+        &mut state,
+    );
+    let preset_id = commands
+        .iter()
+        .find_map(|command| match command {
+            brp_app::commands::RoomCommand::Watch { preset_id, .. } => Some(*preset_id),
+            _ => None,
+        })
+        .expect("the click asked to watch");
+
+    snapshot.watches.push(brp_room::WatchView {
+        publisher: snapshot.members[0].id,
+        live_id: 1,
+        preset_id,
+        state: brp_room::WatchState::Connecting,
+        frames_decoded: 0,
+        keyframe_requests: 0,
+        audio: false,
+    });
+    let first = run_room(
+        &ctx,
+        timed(window(1440.0, 900.0), 62),
+        &snapshot,
+        &mut state,
+    )
+    .0;
+    let tile = first.tile_rects[0].1;
+    assert!(
+        tile.height() < 120.0 && tile.expand(24.0).contains(card.center()),
+        "the tile began at {tile:?}, far from its card around {card:?}"
+    );
+    let settled = settled_room_from(63, &ctx, (1440.0, 900.0), &snapshot, &mut state).0;
+    assert!(settled.tile_rects[0].1.height() > 500.0);
+}
+
+#[test]
+fn the_accent_marks_the_next_thing_to_do_and_leaves_once_you_are_sharing() {
+    let run = |snapshot: &brp_room::RoomSnapshot| {
+        let ctx = egui::Context::default();
+        brp_app::ui::theme::install(&ctx);
+        let mut state = brp_app::ui::state::UiState::new();
+        settled_room(&ctx, (1440.0, 900.0), snapshot, &mut state).1
+    };
+    assert_eq!(
+        accent_surfaces(&run(&room_with_an_unwatched_stream())),
+        1,
+        "not sharing: the dock's Share is the way in"
+    );
+    let mut sharing = busy_room();
+    sharing.members.clear();
+    sharing.watches.clear();
+    assert_eq!(accent_surfaces(&run(&sharing)), 0, "already sharing");
+}
+
+#[test]
+fn the_tone_of_a_control_eases_rather_than_cutting() {
+    use brp_app::ui::theme;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let fill_at = |frame: u32, tone: theme::Tone| {
+        let mut output = ctx.run_ui(timed(window(400.0, 200.0), frame), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                theme::wide_action(
+                    ui,
+                    theme::icons::CREATE,
+                    "Act",
+                    tone,
+                    true,
+                    egui::vec2(200.0, 36.0),
+                );
+            });
+        });
+        output.textures_delta.clear();
+        // A control's backing is the one group of shapes in this window.
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Vec(group) => group.iter().find_map(|part| match part {
+                egui::Shape::Rect(rect) => Some(rect.fill),
+                _ => None,
+            }),
+            _ => None,
+        })
+    };
+    for frame in 0..30 {
+        fill_at(frame, theme::Tone::Primary);
+    }
+    assert_eq!(fill_at(30, theme::Tone::Primary), Some(theme::ACCENT));
+    let next = fill_at(31, theme::Tone::Neutral).expect("a surface");
+    assert_ne!(next, theme::RAISED, "cut straight to the new tone");
+    assert_ne!(next, theme::ACCENT, "did not start moving");
+    for frame in 32..90 {
+        fill_at(frame, theme::Tone::Neutral);
+    }
+    assert_eq!(fill_at(90, theme::Tone::Neutral), Some(theme::RAISED));
+}
+
+#[test]
+fn the_audio_switch_and_its_chooser_are_one_control_with_two_targets() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shapes) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    assert!(text_rects(&shapes, "Applications…").is_empty());
+    let label = text_rect(&shapes, "Share audio");
+    let chooser = text_rect(&shapes, brp_app::ui::theme::icons::APPLICATIONS);
+    assert!(
+        (chooser.center().y - label.center().y).abs() < 2.0,
+        "{chooser:?} beside {label:?}"
+    );
+    assert!(
+        chooser.left() - label.right() < 24.0,
+        "they must read as one"
+    );
+    let commands = click_text(
+        &ctx,
+        60,
+        (1440.0, 900.0),
+        label.center(),
+        &snapshot,
+        &mut state,
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, brp_app::commands::RoomCommand::SetAudio(false)))
+    );
+    let commands = click_text(
+        &ctx,
+        70,
+        (1440.0, 900.0),
+        chooser.center(),
+        &snapshot,
+        &mut state,
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, brp_app::commands::RoomCommand::ChooseApplications))
+    );
+}
+
+#[test]
+fn the_start_diagram_puts_the_typed_name_on_the_screen_that_person_will_have() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut state = start::StartState::new("Alex".into());
+    let run = |state: &mut start::StartState, from: u32| {
+        let mut shapes = Vec::new();
+        for frame in from..from + 60 {
+            let mut output = ctx.run_ui(timed(window(1440.0, 900.0), frame), |ui| {
+                start::draw(ui, state, &[], 0, &UpdateState::new(false));
+            });
+            shapes = std::mem::take(&mut output.shapes);
+            output.textures_delta.clear();
+        }
+        shapes
+    };
+    let creating = run(&mut state, 0);
+    assert!(!text_rects(&creating, "Alex · Live").is_empty());
+    assert!(text_rects(&creating, "Alex · Watching").is_empty());
+
+    state.nickname = "Sam".into();
+    let renamed = run(&mut state, 60);
+    assert!(!text_rects(&renamed, "Sam · Live").is_empty());
+
+    state.ticket = "brpsomething".into();
+    let joining = run(&mut state, 120);
+    assert!(!text_rects(&joining, "Sam · Watching").is_empty());
+    assert!(text_rects(&joining, "Sam · Live").is_empty());
+
+    state.nickname = "   ".into();
+    let nameless = run(&mut state, 180);
+    assert_eq!(text_rects(&nameless, "Watching").len(), 2);
+    assert!(text_rects(&nameless, "   · Watching").is_empty());
+}
+
+#[test]
+fn each_quality_is_ticked_on_its_own_row_with_its_bitrate_in_plain_units() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    // Only the first template on offer, as if the sharer had unticked the rest.
+    let live = &mut snapshot.own_lives[0];
+    live.presets.truncate(1);
+    live.info.presets.truncate(1);
+    let on = live.presets[0].preset.name.clone();
+    let bitrate = brp_app::ui::own_lives::bitrate(u64::from(live.presets[0].preset.bitrate_kbps));
+    let mut state = brp_app::ui::state::UiState::new();
+    state.quality_open.insert(live.info.id);
+    let (_, shapes) = settled_room(&ctx, (1440.0, 1000.0), &snapshot, &mut state);
+    let (tick, cost) = (text_rect(&shapes, &on), text_rect(&shapes, &bitrate));
+    assert!(
+        (tick.center().y - cost.center().y).abs() < 2.0,
+        "{tick:?} and {cost:?} should share a row"
+    );
+    assert!(bitrate.ends_with("Mbps"), "was {bitrate}");
+    let off = text_rect(&shapes, "480p");
+    assert!(off.top() > tick.bottom(), "unticked qualities stay listed");
+    assert!(text_rects(&shapes, "Templates").is_empty());
+}
+
+#[test]
+fn a_sheet_is_only_as_tall_as_what_it_holds_so_the_video_keeps_the_rest() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    state.sheet = brp_app::ui::state::CompactSheet::Share;
+    state.sheet_open = true;
+    let (output, shapes) = settled_room(&ctx, (720.0, 900.0), &snapshot, &mut state);
+    let figure = text_rect(&shapes, "0 kbps");
+    let dock = text_rect(&shapes, "Room");
+    assert!(
+        dock.top() - figure.bottom() < 56.0,
+        "{} of nothing under the sheet's last line",
+        dock.top() - figure.bottom()
+    );
+    let heading = text_rect(&shapes, "Audio");
+    assert!(
+        heading.top() > 900.0 * 0.45,
+        "the sheet still reaches {}",
+        heading.top()
+    );
+    assert!(
+        output.tile_rects[0].1.width() > 690.0,
+        "the picture regains its width"
+    );
+}
+
+#[test]
+fn a_sheet_with_more_than_fits_stops_at_its_limit_and_scrolls() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    state.sheet = brp_app::ui::state::CompactSheet::Share;
+    state.sheet_open = true;
+    let (output, _) = settled_room(&ctx, (720.0, 320.0), &snapshot, &mut state);
+    let tile = output.tile_rects[0].1;
+    assert!(tile.height() > 40.0, "the video is still there: {tile:?}");
+}
+
+#[test]
+fn a_path_that_resolves_is_watched_closing_rather_than_cut_to() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    snapshot.members[0].path = brp_net::PathKind::Unknown;
+    let mut state = brp_app::ui::state::UiState::new();
+    let lines = |shapes: &[egui::epaint::ClippedShape]| {
+        fn count(shape: &egui::Shape) -> usize {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().map(count).sum(),
+                egui::Shape::LineSegment { .. } => 1,
+                _ => 0,
+            }
+        }
+        shapes
+            .iter()
+            .map(|shape| count(&shape.shape))
+            .sum::<usize>()
+    };
+    let (_, dashed) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    let unknown = lines(&dashed);
+    snapshot.members[0].path = brp_net::PathKind::Direct;
+    let (_, closing) = run_room(
+        &ctx,
+        timed(window(1440.0, 900.0), 60),
+        &snapshot,
+        &mut state,
+    );
+    assert!(
+        lines(&closing) >= unknown,
+        "the dashes must not vanish at once"
+    );
+    let (_, solid) = settled_room_from(61, &ctx, (1440.0, 900.0), &snapshot, &mut state);
+    assert!(
+        lines(&solid) < unknown,
+        "the dashes must close into one line"
+    );
+}
+
+#[test]
+fn a_tile_that_finishes_leaving_in_a_discarded_pass_still_has_its_video_released() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    let closing = (snapshot.watches[0].publisher, snapshot.watches[0].live_id);
+    let mut state = brp_app::ui::state::UiState::new();
+    settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    snapshot.watches.clear();
+    // Every frame runs twice and only the second pass's output is kept, as the window loop does.
+    ctx.options_mut(|options| options.max_passes = std::num::NonZeroUsize::new(2).expect("two"));
+    for frame in 60..180 {
+        let mut kept = None;
+        let mut output = ctx.run_ui(timed(window(1440.0, 900.0), frame), |ui| {
+            ui.ctx().request_discard("as a resizing layout would");
+            kept = Some(brp_app::ui::draw(
+                ui,
+                &snapshot,
+                "ticket",
+                &mut state,
+                &std::collections::HashSet::new(),
+                &UpdateState::new(false),
+            ));
+        });
+        output.textures_delta.clear();
+    }
+    assert_eq!(state.gone_tiles, vec![closing]);
 }

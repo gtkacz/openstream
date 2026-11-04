@@ -72,7 +72,7 @@ impl RoomView {
             let live = self.watched_keys();
             self.handles.retain(|key, _| live.contains(key));
             if let Some(tiles) = tiles {
-                tiles.retain(|key| live.contains(key));
+                tiles.retain(|key| live.contains(key) || state.keeps_picture(key));
             }
         }
         state.refresh_rates(&self.snapshot, Instant::now());
