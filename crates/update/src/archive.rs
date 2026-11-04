@@ -192,6 +192,41 @@ mod tests {
     }
 
     #[test]
+    fn the_macos_release_layout_extracts_like_the_linux_one() {
+        // What stage-macos.sh puts in the flat directory: the binary, its dylibs, the licences.
+        let dir = temp_dir("tar_macos");
+        let archive = dir.join("release.tar.gz");
+        let members = [
+            "brp",
+            "libavcodec.62.dylib",
+            "libavutil.60.dylib",
+            "libswscale.9.dylib",
+            "libswresample.6.dylib",
+            "libopus.0.dylib",
+            "FFMPEG-LICENSE.txt",
+            "LICENSE",
+            "README.md",
+        ];
+        let entries: Vec<(String, &[u8], u32)> = members
+            .iter()
+            .map(|name| (format!("{TOP}/{name}"), b"x".as_slice(), 0o755))
+            .collect();
+        let borrowed: Vec<(&str, &[u8], u32)> = entries
+            .iter()
+            .map(|(name, data, mode)| (name.as_str(), *data, *mode))
+            .collect();
+        write_tar_gz(&archive, &borrowed, true);
+        let out = dir.join("out");
+        fs::create_dir(&out).unwrap();
+        let mut files = extract_tar_gz(&archive, TOP, &out).unwrap();
+        files.sort();
+        let mut expected: Vec<OsString> = members.iter().map(OsString::from).collect();
+        expected.sort();
+        assert_eq!(files, expected);
+        assert!(out.join(crate::RELEASE_MARKER).is_file());
+    }
+
+    #[test]
     fn a_tarball_extracts_its_files_with_their_modes_and_skips_the_directory_entry() {
         let dir = temp_dir("tar_ok");
         let archive = dir.join("release.tar.gz");

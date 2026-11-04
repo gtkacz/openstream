@@ -118,7 +118,9 @@ jobs:
           set -eu
           name="brp-$VERSION-linux-x86_64"
           ./ci/stage-linux.sh "dist/$name"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # ustar and no copyfile metadata: bsdtar would otherwise add AppleDouble `._` members,
+          # which the updater would copy into the install, and pax xattr headers.
+          COPYFILE_DISABLE=1 tar --format ustar -C dist -czf "dist/$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -173,7 +175,9 @@ jobs:
           ./ci/stage-macos.sh "dist/$name" dist/OpenStream.app
           # The flat tarball is what an in-app update downloads; the zipped bundle is what a new
           # user drags to Applications. ditto keeps the bundle's signature and modes intact.
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # ustar and no copyfile metadata: bsdtar would otherwise add AppleDouble `._` members,
+          # which the updater would copy into the install, and pax xattr headers.
+          COPYFILE_DISABLE=1 tar --format ustar -C dist -czf "dist/$name.tar.gz" "$name"
           ditto -c -k --keepParent dist/OpenStream.app "dist/OpenStream-$VERSION-macos-aarch64.zip"
       - uses: actions/upload-artifact@v4
         with:

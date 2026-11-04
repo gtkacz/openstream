@@ -726,6 +726,10 @@ impl ApplicationHandler<AppEvent> for App {
         if self.main.is_some() {
             return;
         }
+        // Installed before the loop ran to catch the link that launched the app; installed again
+        // now that launching has finished, in case AppKit claimed the event while it did.
+        #[cfg(target_os = "macos")]
+        crate::macos_links::install(self.proxy.clone());
         let window = match event_loop.create_window(with_app_icon(
             Window::default_attributes()
                 .with_title("OpenStream")
