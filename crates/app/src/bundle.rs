@@ -147,6 +147,7 @@ mod tests {
         assert!(crate::link::SCHEME_JOIN_PREFIX.starts_with(&format!("{URL_SCHEME}://")));
     }
 
+    #[cfg(unix)]
     fn line(step: &Step) -> String {
         std::iter::once(step.program.to_string())
             .chain(step.args.iter().map(|a| a.to_string_lossy().into_owned()))
