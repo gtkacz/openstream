@@ -464,14 +464,7 @@ pub fn live_status(ui: &mut egui::Ui, text: &str, live: bool) {
 
 pub fn brand(ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), Sense::hover());
-        let back =
-            egui::Rect::from_min_size(rect.min + egui::vec2(1.0, 3.0), egui::vec2(18.0, 14.0));
-        let front = back.translate(egui::vec2(6.0, 6.0));
-        let painter = ui.painter();
-        painter.rect_stroke(back, 3.0, Stroke::new(1.5, TEXT), egui::StrokeKind::Inside);
-        painter.rect_filled(front.expand(1.5), 4.5, GROUND);
-        painter.rect_filled(front, 3.0, TEXT);
+        crate::icon::paint_mark(ui, 26.0);
         ui.label(RichText::new("OpenStream").font(semibold(18.0)));
     });
 }
