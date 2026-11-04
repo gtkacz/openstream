@@ -3,7 +3,7 @@
 use brp_codec::ffmpeg::{FfmpegDecoder, HwDecode};
 use brp_codec::select::{open_encoder, open_encoder_auto};
 use brp_codec::{CodecError, EncoderConfig, RawFrame, VideoDecoder, VideoEncoder};
-use brp_proto::{ChromaLayout, Codec, VideoQuality};
+use brp_proto::{ChromaLayout, Codec, EncodedFrame, VideoQuality};
 
 fn cfg(codec: Codec) -> EncoderConfig {
     EncoderConfig {
@@ -279,4 +279,104 @@ fn av1_at_full_chroma_says_so_instead_of_falling_back() {
         open_encoder(&config),
         Err(CodecError::NoFullChromaEncoder(Codec::Av1))
     ));
+}
+
+/// An IDR slice header followed by noise. FFmpeg takes it without error and produces nothing, which
+/// is how many hardware refusals look.
+fn corrupt_keyframe() -> EncodedFrame {
+    let mut data = vec![0, 0, 0, 1, 0x26, 0x01];
+    data.extend(std::iter::repeat_n(0xFF, 512));
+    EncodedFrame {
+        seq: 0,
+        capture_ts_us: 0,
+        keyframe: true,
+        data,
+    }
+}
+
+#[test]
+fn a_hardware_decoder_that_never_produces_a_frame_carries_on_in_software() {
+    if !gated() {
+        return;
+    }
+    let Ok(mut encoder) = open_encoder(&cfg(Codec::Hevc)) else {
+        return;
+    };
+    let mut decoder = FfmpegDecoder::open(&encoder.params(), HwDecode::Auto).unwrap();
+    if !decoder.is_hardware() {
+        eprintln!("no hardware decoder here");
+        return;
+    }
+    let pool = decoder.pool().unwrap();
+    let mut last = Ok(Vec::new());
+    for _ in 0..30 {
+        assert!(decoder.is_hardware(), "gave up on the hardware too early");
+        last = decoder.decode(&corrupt_keyframe());
+    }
+    assert!(!decoder.is_hardware(), "the fallback happened");
+    assert!(
+        last.is_err(),
+        "the viewer must be told to ask for a keyframe"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&pool, &decoder.pool().unwrap()),
+        "whoever displays frames still returns them to the same pool"
+    );
+
+    let keyframe = RawFrame::black(320, 240, 1);
+    let decoded: Vec<RawFrame> = encoder
+        .encode(&keyframe, true)
+        .unwrap()
+        .iter()
+        .flat_map(|packet| decoder.decode(packet).unwrap())
+        .collect();
+    assert_eq!(decoded.len(), 1, "software picks up at the next keyframe");
+}
+
+#[test]
+fn packets_before_the_first_keyframe_do_not_count_against_the_hardware_decoder() {
+    if !gated() {
+        return;
+    }
+    let Ok(encoder) = open_encoder(&cfg(Codec::Hevc)) else {
+        return;
+    };
+    let mut decoder = FfmpegDecoder::open(&encoder.params(), HwDecode::Auto).unwrap();
+    if !decoder.is_hardware() {
+        return;
+    }
+    let late_keyframe = EncodedFrame {
+        keyframe: false,
+        ..corrupt_keyframe()
+    };
+    for _ in 0..60 {
+        let _ = decoder.decode(&late_keyframe);
+    }
+    assert!(decoder.is_hardware());
+}
+
+#[test]
+fn a_bad_packet_after_decoding_has_started_does_not_cost_the_hardware_decoder() {
+    if !gated() {
+        return;
+    }
+    let Ok(mut encoder) = open_encoder(&cfg(Codec::Hevc)) else {
+        return;
+    };
+    let mut decoder = FfmpegDecoder::open(&encoder.params(), HwDecode::Auto).unwrap();
+    if !decoder.is_hardware() {
+        return;
+    }
+    for packet in encoder.encode(&RawFrame::black(320, 240, 1), true).unwrap() {
+        decoder.decode(&packet).unwrap();
+    }
+    let lost_reference = EncodedFrame {
+        keyframe: false,
+        ..corrupt_keyframe()
+    };
+    for _ in 0..60 {
+        let _ = decoder.decode(&lost_reference);
+        let _ = decoder.decode(&corrupt_keyframe());
+    }
+    assert!(decoder.is_hardware(), "this decoder has shown it can do it");
 }
