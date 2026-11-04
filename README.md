@@ -326,43 +326,6 @@ Windows zip, and publishes a GitHub Release with checksums. Commits starting wit
 `fix:` do not release; the generated `chore(release): ...` commit is ignored by
 the workflow so it cannot start another release.
 
-## Roadmap
-
-1. **Linux vertical slice** — done: one publisher, one viewer, portal capture,
-   hardware encode and decode, NV12 rendering.
-2. **Rooms and multiple lives** — done: gossip presence, the catalog, several
-   lives per participant, tile grid, preset editing and switching, keyframe
-   recovery, stats overlay.
-3. **Windows** — done, pending a run on Windows hardware: Graphics Capture with
-   the duplication fallback, Windows hardware codecs and D3D11VA decode,
-   bundled FFmpeg, Windows CI, the in-app picker, and a start screen so the
-   app needs no terminal.
-4. **Audio** — done on Linux pending the manual two-instance check; Windows
-   pending hardware: everything the machine plays except OpenStream itself, Opus over
-   the existing frame streams, one stream per publisher, per-publisher volume
-   and a master mute.
-5. **Window management and polish** — done: pop-outs and fullscreen, settings
-   UI and persistence, tagged releases for Windows and Linux.
-6. **Per-application audio** — implemented on Linux and Windows pending their
-   manual hardware checks: share every application except OpenStream, which stays the
-   default, or only the applications you select, stored by executable name so
-   the choice survives restarts.
-7. **Join links** — done on Linux pending the manual browser check and the
-   Pages deployment, Windows pending its hardware check: one `https://` link
-   that opens the app into the room, the app registering itself as the
-   `brp://` handler on Windows and Linux, and a static join page on GitHub
-   Pages with the download as the fallback.
-8. **Self-update** — done pending the first release pair: the launch check,
-   the in-app update with checksum verification and rollback, and the relaunch
-   into the same room.
-
-Backlog, unordered: macOS, zero-copy GPU paths on both OSes, lossless and
-4:4:4 presets, congestion-driven preset switching, self-hosted relay
-documentation, a send volume per shared application, viewer-side visibility
-of which applications a publisher is mixing, microphone capture and voice
-chat behind an echo-cancellation dependency, and a self-updating application
-list in the audio picker.
-
 The product model, protocol, constraints, and design rationale are in
 [`docs/superpowers/specs/2026-09-04-p2p-screen-sharing-design.md`](docs/superpowers/specs/2026-09-04-p2p-screen-sharing-design.md).
 Phase 1 was implemented from
