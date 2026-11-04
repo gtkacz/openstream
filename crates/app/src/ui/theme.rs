@@ -1156,7 +1156,7 @@ mod tests {
                 })
                 .collect();
             assert_eq!(ink.len(), rects.len() * 2);
-            for (rect, pair) in rects.iter().zip(ink.chunks_exact(2)) {
+            for (rect, pair) in rects.iter().zip(ink.as_chunks::<2>().0) {
                 for bounds in pair {
                     assert!((bounds.center().y - rect.center().y).abs() <= 2.0);
                     assert!(rect.contains_rect(*bounds));
@@ -1182,10 +1182,10 @@ mod tests {
             .shapes
             .iter()
             .filter_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape {
-                    if text.galley.text().len() > 3 {
-                        return Some(text.pos.y);
-                    }
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text().len() > 3
+                {
+                    return Some(text.pos.y);
                 }
                 None
             })
