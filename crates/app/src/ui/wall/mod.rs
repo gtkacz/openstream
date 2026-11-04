@@ -160,6 +160,17 @@ pub fn draw(ui: &mut Ui, area: Rect) {
             u8::from(lift_of(cell).is_some())
         }
     });
+    // Every loaded still, in view or not: started on first sight, this would keep asking for uncapped
+    // frames for as long as new stills scroll in, and fade them in at the window's edge.
+    let arrivals: Vec<f32> = (0..STILLS.len())
+        .map(|still| {
+            if wall.loader.texture(still).is_some() {
+                motion::appear(&ctx, Id::new((STILL_ARRIVAL, still)), true, motion::SURFACE)
+            } else {
+                0.0
+            }
+        })
+        .collect();
     let painter = ui.painter().with_clip_rect(area);
     for cell in &cells {
         let still = still_index(cell.column, cell.row, STILLS.len());
@@ -167,8 +178,7 @@ pub fn draw(ui: &mut Ui, area: Rect) {
             continue;
         };
         let lift = lift_of(cell).unwrap_or(0.0);
-        let arrival = motion::appear(&ctx, Id::new((STILL_ARRIVAL, still)), true, motion::SURFACE);
-        let brightness = egui::lerp(REST_BRIGHTNESS..=1.0, lift) * arrival;
+        let brightness = egui::lerp(REST_BRIGHTNESS..=1.0, lift) * arrivals[still];
         let lift_z = if allowed { LIFT * lift } else { 0.0 };
         painter.add(Shape::mesh(tile_mesh(
             &pose,
@@ -344,13 +354,17 @@ mod tests {
             run.settle(&[], true);
             run.offsets()
         };
-        let output = run.settle(&[], true);
+        run.settle(&[], true);
         assert_ne!(before, run.offsets());
-        let delay = delay(&output);
-        assert!(
-            delay >= Duration::from_millis(15) && delay <= Duration::from_millis(18),
-            "repaint delay is {delay:?}"
-        );
+        // Long enough for stills that were out of view to scroll in, which must not ask for more.
+        for _ in 0..1800 {
+            let delay = delay(&run.step(Vec::new(), true));
+            assert!(
+                delay >= Duration::from_millis(15) && delay <= Duration::from_millis(18),
+                "repaint delay is {delay:?} at frame {}",
+                run.frame
+            );
+        }
     }
 
     #[test]
