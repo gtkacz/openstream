@@ -199,6 +199,7 @@ struct OwnLive {
     session: Option<Box<dyn CaptureSession>>,
     fan: Arc<CaptureFan>,
     presets: BTreeMap<u32, PresetState>,
+    full_chroma: bool,
     /// One converter per distinct subscribed `GroupKey`; created on first subscribe, stopped once
     /// its last member preset stops.
     groups: BTreeMap<GroupKey, Arc<ConversionGroup>>,
@@ -279,6 +280,7 @@ impl LiveRegistry {
     ) -> Result<u32, RoomError> {
         let source = session.info();
         validate_presets(&presets, source.width, source.height, source.fps)?;
+        let full_chroma = self.encoders.offers_full_chroma();
         let mut inner = lock(&self.inner);
         if inner.lives.len() >= MAX_LIVES_PER_PARTICIPANT {
             return Err(RoomError::TooManyLives);
@@ -316,6 +318,7 @@ impl LiveRegistry {
                 session: Some(session),
                 fan,
                 presets,
+                full_chroma,
                 groups: BTreeMap::new(),
             },
         );
@@ -544,6 +547,7 @@ impl LiveRegistry {
             .lives
             .values()
             .map(|live| OwnLiveView {
+                full_chroma: live.full_chroma,
                 info: LiveInfo {
                     has_audio,
                     ..live.info.clone()

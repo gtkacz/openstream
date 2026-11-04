@@ -427,7 +427,7 @@ fn quality_details(
 ) {
     let info = &live.info;
     let last_one = info.presets.len() == 1;
-    for template in presets::templates_for(info) {
+    for template in presets::templates_offered(info, live.full_chroma) {
         let view = live.presets.iter().find(|v| v.preset.id == template.id);
         let mut toggled = false;
         ui.add_space(4.0);
@@ -443,7 +443,10 @@ fn quality_details(
             },
             |ui| {
                 // Lossless has no bitrate to choose: it takes what the picture needs.
-                if let Some(view) = view.filter(|v| v.preset.quality() != VideoQuality::Lossless) {
+                if template.quality() == VideoQuality::Lossless {
+                    let hint = egui::RichText::new("Fast link only");
+                    ui.label(hint.small().color(theme::SECONDARY));
+                } else if let Some(view) = view {
                     bitrate_field(ui, info, &view.preset, state, commands);
                 }
             },

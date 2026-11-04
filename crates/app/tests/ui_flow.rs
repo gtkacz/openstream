@@ -202,6 +202,7 @@ fn an_encoder_failure_stays_visible_with_quality_details_collapsed() {
         members: Vec::new(),
         watches: Vec::new(),
         own_lives: vec![OwnLiveView {
+            full_chroma: true,
             info: brp_proto::LiveInfo {
                 id: 1,
                 title: "Monitor 1".into(),
@@ -315,6 +316,7 @@ fn busy_room() -> brp_room::RoomSnapshot {
             gain: 1.0,
         }],
         own_lives: vec![OwnLiveView {
+            full_chroma: true,
             presets: info
                 .presets
                 .iter()

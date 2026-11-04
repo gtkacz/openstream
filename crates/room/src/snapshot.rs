@@ -24,6 +24,8 @@ pub struct PresetView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnLiveView {
     pub info: LiveInfo,
+    /// Whether this machine can encode the 4:4:4 and lossless presets.
+    pub full_chroma: bool,
     pub presets: Vec<PresetView>,
 }
 

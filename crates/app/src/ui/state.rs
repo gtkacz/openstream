@@ -341,6 +341,7 @@ mod tests {
             codec: Codec::H264,
         };
         OwnLiveView {
+            full_chroma: true,
             info: LiveInfo {
                 id: 7,
                 title: "desk".into(),

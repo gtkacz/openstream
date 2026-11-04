@@ -31,6 +31,12 @@ pub trait EncoderFactory: Send + Sync + 'static {
     /// then H.264, then the software AV1 fallback.
     fn preferred_codec(&self) -> Codec;
 
+    /// Whether this machine can encode a 4:4:4 preset at all. May block on a probe, like
+    /// [`Self::preferred_codec`].
+    fn offers_full_chroma(&self) -> bool {
+        false
+    }
+
     fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError>;
 }
 
@@ -62,6 +68,7 @@ fn config_for(preset: &Preset) -> EncoderConfig {
 #[derive(Debug, Default)]
 pub struct FfmpegCodecs {
     probed_codec: OnceLock<Codec>,
+    probed_full_chroma: OnceLock<bool>,
 }
 
 impl EncoderFactory for FfmpegCodecs {
@@ -100,6 +107,22 @@ impl EncoderFactory for FfmpegCodecs {
             brp_codec::open_encoder_auto(probe, None)
                 .map(|e| e.params().codec)
                 .unwrap_or(Codec::Av1)
+        })
+    }
+
+    fn offers_full_chroma(&self) -> bool {
+        *self.probed_full_chroma.get_or_init(|| {
+            [Codec::Hevc, Codec::H264].into_iter().any(|codec| {
+                open_encoder(&EncoderConfig {
+                    width: PROBE_WIDTH,
+                    height: PROBE_HEIGHT,
+                    fps: 30,
+                    bitrate_kbps: 1_000,
+                    codec,
+                    quality: VideoQuality::Chroma444,
+                })
+                .is_ok()
+            })
         })
     }
 
@@ -152,6 +175,10 @@ pub mod fake {
 
         fn preferred_codec(&self) -> Codec {
             Codec::H264
+        }
+
+        fn offers_full_chroma(&self) -> bool {
+            true
         }
 
         fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {

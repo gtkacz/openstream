@@ -2,7 +2,7 @@
 //! `Room::set_presets`, which validates and restarts the affected encoders.
 
 use brp_proto::constants::{MAX_BITRATE_KBPS, MIN_BITRATE_KBPS};
-use brp_proto::{Codec, LiveInfo, Preset, quality_presets, template_presets};
+use brp_proto::{Codec, LiveInfo, Preset, VideoQuality, quality_presets, template_presets};
 
 /// The presets the templates offer for this live, Source and the full-chroma ones included, at the
 /// frame rate and codec of its current presets. Empty when the live offers nothing, which the
@@ -15,6 +15,14 @@ pub fn templates_for(info: &LiveInfo) -> Vec<Preset> {
     let mut templates = template_presets(size.0, size.1, current.fps, current.codec);
     templates.extend(quality_presets(size.0, size.1, current.fps, current.codec));
     templates
+}
+
+/// What the stream card lists: every template, less the ones this machine could not encode.
+pub fn templates_offered(info: &LiveInfo, full_chroma: bool) -> Vec<Preset> {
+    templates_for(info)
+        .into_iter()
+        .filter(|preset| full_chroma || preset.quality() == VideoQuality::Standard)
+        .collect()
 }
 
 /// Adds the template when absent, removes it when present. The last preset stays, so a live
@@ -172,6 +180,14 @@ mod tests {
                 .iter()
                 .all(|p| p.codec == Codec::H264)
         );
+    }
+
+    #[test]
+    fn a_machine_that_cannot_encode_full_chroma_is_not_offered_it() {
+        let info = live();
+        let ids = |offered: Vec<Preset>| offered.iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!(ids(templates_offered(&info, true)), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(ids(templates_offered(&info, false)), [1, 2, 3, 4]);
     }
 
     #[test]

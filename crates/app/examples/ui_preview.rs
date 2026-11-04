@@ -159,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut info = snapshot.members[0].lives[0].clone();
         info.title = "Monitor 1".into();
         snapshot.own_lives.push(OwnLiveView {
+            full_chroma: true,
             presets: info
                 .presets
                 .iter()
