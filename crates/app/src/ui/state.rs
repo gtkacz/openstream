@@ -458,6 +458,20 @@ mod tests {
     }
 
     #[test]
+    fn ended_watches_leave_the_drawer_but_reconnecting_watches_remain() {
+        let publisher = SecretKey::from_bytes(&[1; 32]).public();
+        let mut snapshot = snapshot_with(Vec::new());
+        let mut ended = watch(publisher, 1);
+        ended.state = WatchState::Ended;
+        let mut reconnecting = watch(publisher, 2);
+        reconnecting.state = WatchState::Reconnecting;
+        snapshot.watches = vec![ended, reconnecting];
+        let visible = visible_watches(&snapshot, &HashSet::new());
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].live_id, 2);
+    }
+
+    #[test]
     fn visible_watches_skip_popped_keys_and_keep_the_order() {
         let a = SecretKey::from_bytes(&[1u8; 32]).public();
         let b = SecretKey::from_bytes(&[2u8; 32]).public();
