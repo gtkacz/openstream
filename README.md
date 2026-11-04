@@ -118,7 +118,7 @@ keeps applications apart, each row also has a send volume, which changes what th
 room hears without touching your own speakers: always on Linux, only for ticked
 applications on Windows, and not on macOS, where ScreenCaptureKit hands over one
 finished mix. The room rail tells viewers what you share: "all applications", or
-the identities of the ones you ticked. The tile
+the names of the ones you ticked. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
 that member in the room rail, and the dock has a "Mute all" for
 every publisher at once. On Linux, capture links to the selected applications'

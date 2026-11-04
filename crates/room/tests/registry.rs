@@ -689,6 +689,40 @@ fn presence_names_a_selection_but_never_what_happens_to_be_playing() {
 }
 
 #[test]
+fn presence_uses_the_name_an_application_was_listed_under() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::Only(BTreeSet::from([
+            SyntheticTone::tone_key(),
+            AppKey::new("closed-application"),
+        ])),
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let names = |registry: &LiveRegistry| match registry.audio_mix() {
+        AudioMix::Only { names, .. } => names,
+        AudioMix::All => panic!("a selection is named"),
+    };
+    assert_eq!(names(&registry), ["closed-application", "tone"]);
+
+    let listed = registry.sources().unwrap();
+    let label = &listed
+        .iter()
+        .find(|source| source.key == SyntheticTone::tone_key())
+        .unwrap()
+        .label;
+    assert_ne!(
+        label, "tone",
+        "the test needs a label that differs from the key"
+    );
+    assert_eq!(names(&registry), ["closed-application", label.as_str()]);
+}
+
+#[test]
 fn an_overlong_application_name_is_cut_to_what_presence_accepts() {
     let registry = LiveRegistry::new(
         Arc::new(FakeCodecs),

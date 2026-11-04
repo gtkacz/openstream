@@ -214,6 +214,8 @@ struct RunningAudio {
 struct AudioState {
     enabled: bool,
     selection: AudioSelection,
+    /// The names applications last listed under, for telling the room what the selection carries.
+    labels: BTreeMap<AppKey, String>,
     running: Option<RunningAudio>,
     last_error: Option<String>,
 }
@@ -259,6 +261,7 @@ impl LiveRegistry {
                 audio: AudioState {
                     enabled: true,
                     selection,
+                    labels: BTreeMap::new(),
                     running: None,
                     last_error: None,
                 },
@@ -489,21 +492,36 @@ impl LiveRegistry {
         self.audio_capture.send_volume_support()
     }
 
-    /// What the platform reports as playing audio now. Takes no registry lock: the backend's own
-    /// deadline is what bounds it.
+    /// What the platform reports as playing audio now. Lists with no registry lock held: the
+    /// backend's own deadline is what bounds it.
     pub fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
-        self.audio_capture.sources()
+        let sources = self.audio_capture.sources()?;
+        let labels = &mut lock(&self.inner).audio.labels;
+        for source in &sources {
+            labels.insert(source.key.clone(), source.label.clone());
+        }
+        Ok(sources)
     }
 
-    /// What presence tells the room this participant's audio carries.
+    /// What presence tells the room this participant's audio carries. An application not listed
+    /// yet this run, because it is closed, goes by its identity. A label is whatever the application
+    /// calls itself, so it is cut to size like any other name.
     pub fn audio_mix(&self) -> AudioMix {
-        match &lock(&self.inner).audio.selection {
+        let inner = lock(&self.inner);
+        match &inner.audio.selection {
             AudioSelection::All => AudioMix::All,
             AudioSelection::Only(keys) => AudioMix::Only {
                 names: keys
                     .iter()
                     .take(MAX_AUDIO_MIX_NAMES)
-                    .map(|key| key.as_str().chars().take(MAX_AUDIO_MIX_NAME_LEN).collect())
+                    .map(|key| {
+                        let name = inner
+                            .audio
+                            .labels
+                            .get(key)
+                            .map_or(key.as_str(), String::as_str);
+                        name.chars().take(MAX_AUDIO_MIX_NAME_LEN).collect()
+                    })
                     .collect(),
                 others: keys.len().saturating_sub(MAX_AUDIO_MIX_NAMES) as u32,
             },
@@ -763,11 +781,18 @@ impl LiveRegistry {
         let encoder = self.encoders.open_audio().map_err(|e| e.to_string())?;
         let publisher = AudioPublisher::start(encoder);
         match self.audio_capture.start(selection, publisher.sink()) {
-            Ok(session) => Ok(RunningAudio {
-                session,
-                publisher,
-                idle_since: None,
-            }),
+            Ok(session) => {
+                // So the room gets names without the picker having been opened this run. A failed
+                // listing only leaves it with identities.
+                if let Err(error) = self.sources() {
+                    tracing::debug!(%error, "could not list applications for their names");
+                }
+                Ok(RunningAudio {
+                    session,
+                    publisher,
+                    idle_since: None,
+                })
+            }
             Err(error) => {
                 publisher.stop();
                 Err(error.to_string())
