@@ -14,6 +14,7 @@ pub mod participant;
 pub mod popouts;
 pub mod presets;
 pub mod publish;
+pub mod reduced_motion;
 pub mod relaunch;
 pub mod render;
 pub mod repaint;

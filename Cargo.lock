@@ -486,6 +486,7 @@ dependencies = [
 name = "brp"
 version = "1.3.0"
 dependencies = [
+ "ashpd",
  "brp-audio",
  "brp-capture",
  "brp-codec",

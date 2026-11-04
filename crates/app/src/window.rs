@@ -26,6 +26,7 @@ use crate::dirty::DirtyStreams;
 use crate::icon::with_app_icon;
 use crate::launch::{self, Intent, Launch};
 use crate::popouts::PopOuts;
+use crate::reduced_motion;
 use crate::relaunch::Relaunch;
 use crate::render::GpuContext;
 use crate::render::grid;
@@ -66,6 +67,8 @@ pub enum AppEvent {
     UpdateProgress { received: u64, total: Option<u64> },
     /// The download and swap finished: relaunch, or the error to show.
     UpdateReady(Result<(), String>),
+    /// The system's answer on whether it wants less motion.
+    MotionPreference { less: bool },
 }
 
 /// What the window shows: the start screen, or a room.
@@ -724,6 +727,11 @@ impl ApplicationHandler<AppEvent> for App {
         self.tiles = Some(TileRenderer::new(&gpu.device, gpu.format));
         self.gpu = Some(gpu);
         self.main = Some(main);
+        let proxy = self.proxy.clone();
+        self.runtime.spawn(async move {
+            let less = reduced_motion::prefers_less_motion().await;
+            let _ = proxy.send_event(AppEvent::MotionPreference { less });
+        });
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
@@ -788,6 +796,11 @@ impl ApplicationHandler<AppEvent> for App {
             // address change and advances age labels even when nothing is watched.
             AppEvent::RoomChanged | AppEvent::Tick => self.refresh_room(),
             AppEvent::NewFrame => {}
+            AppEvent::MotionPreference { less } => {
+                if let Some(main) = &self.main {
+                    wall::allow_motion(main.ui.ctx(), !less);
+                }
+            }
         }
         self.request_redraw_all();
     }

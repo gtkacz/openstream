@@ -42,5 +42,8 @@ image.workspace = true
 [build-dependencies]
 embed-resource.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { workspace = true, features = ["settings"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
