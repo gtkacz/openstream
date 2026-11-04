@@ -18,7 +18,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::error::AudioError;
-use crate::process_tree::{CapturePlan, ProcessInfo, ProcessMap, capture_plan};
+use crate::process_tree::{self, CapturePlan, ProcessInfo, ProcessMap, capture_plan};
 use crate::selection::{AppKey, AudioSource};
 
 #[derive(Debug)]
@@ -90,6 +90,18 @@ pub(super) fn selected_roots(
         .collect();
     let processes = process_snapshot()?;
     Ok(capture_plan(&sessions, process_id, &selected, &processes))
+}
+
+/// Whether another OpenStream window has an audio session right now.
+pub(super) fn another_window_audible(process_id: u32) -> Result<bool, AudioError> {
+    let own_key = current_executable_key()?;
+    let sessions: Vec<(u32, AppKey)> = enumerate_sessions()?
+        .into_iter()
+        .map(|session| (session.pid, session.key))
+        .collect();
+    Ok(process_tree::another_window_audible(
+        &sessions, process_id, &own_key,
+    ))
 }
 
 fn enumerate_sessions() -> Result<Vec<SessionProcess>, AudioError> {

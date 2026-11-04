@@ -91,6 +91,18 @@ fn in_tree(pid: u32, root: u32, processes: &ProcessMap) -> bool {
     false
 }
 
+/// Whether another OpenStream window has an audio session. Windows exclude mode leaves out one process
+/// tree, and a window opened by a link is not in this one's, so its room would be heard in this room.
+pub(crate) fn another_window_audible(
+    sessions: &[(u32, AppKey)],
+    own_process: u32,
+    own_key: &AppKey,
+) -> bool {
+    sessions
+        .iter()
+        .any(|(pid, key)| key == own_key && *pid != own_process)
+}
+
 /// What the user is told about the applications a plan holds back.
 pub(crate) fn held_back_notice(held_back: &BTreeSet<AppKey>) -> Option<String> {
     if held_back.is_empty() {
@@ -106,6 +118,26 @@ pub(crate) fn held_back_notice(held_back: &BTreeSet<AppKey>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_another_process_of_this_application_counts_as_another_window() {
+        let own = AppKey::new("brp.exe");
+        assert!(!another_window_audible(&[], 7, &own));
+        assert!(
+            !another_window_audible(&[session(7, "brp.exe")], 7, &own),
+            "this window's own playback is already excluded"
+        );
+        assert!(!another_window_audible(
+            &[session(8, "browser.exe")],
+            7,
+            &own
+        ));
+        assert!(another_window_audible(
+            &[session(7, "brp.exe"), session(8, "brp.exe")],
+            7,
+            &own
+        ));
+    }
 
     #[test]
     fn the_notice_names_what_was_held_back_and_says_nothing_otherwise() {
