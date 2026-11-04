@@ -597,7 +597,7 @@ pub fn live_dot(ui: &mut egui::Ui, live: bool) {
 }
 
 pub fn live_status(ui: &mut egui::Ui, text: &str, live: bool) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         live_dot(ui, live);
         ui.label(RichText::new(text).color(if live { LIVE } else { SECONDARY }));
