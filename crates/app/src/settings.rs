@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::DEFAULT_FPS;
 use crate::error::AppError;
+use crate::identity::write_private;
 
 /// Beside `identity.key` in the platform config directory.
 pub const SETTINGS_FILE: &str = "settings.toml";
@@ -169,7 +170,10 @@ impl Settings {
         // Unique per process: two instances saving at once must not share a temp sibling, or one
         // instance's rename could pick up the other's still-being-written file.
         let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
-        fs::write(&tmp, text)
+        // Owner-only, because the file holds tickets and a ticket is all it takes to join. A leftover
+        // from a crashed run with this process id is cleared first, or the write would refuse it.
+        let _ = fs::remove_file(&tmp);
+        write_private(&tmp, text.as_bytes())
             .map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))?;
         fs::rename(&tmp, path)
             .map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))?;
@@ -345,6 +349,22 @@ mod tests {
         assert_eq!(settings.relay, RelayChoice::Disabled);
         assert_eq!(settings.nickname, None);
         assert!(settings.recent_rooms.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_leaves_the_file_readable_only_by_its_owner_even_over_a_more_open_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_path("private");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "fps = 30\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        Settings::default().save(&path).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "it holds tickets, and a ticket is enough to join"
+        );
     }
 
     #[test]
