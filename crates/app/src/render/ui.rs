@@ -13,6 +13,13 @@ pub struct UiFrame {
     /// Zero when egui wants another frame at once, for animations and open popups.
     pub repaint_delay: std::time::Duration,
 }
+/// egui-winit answers "repaint" to the redraw event itself, which would make every frame schedule
+/// the next at the display's rate however idle the window is. A frame asks for its successor through
+/// its repaint delay instead.
+fn needs_another_frame(event: &WindowEvent, egui_says_repaint: bool) -> bool {
+    egui_says_repaint && !matches!(event, WindowEvent::RedrawRequested)
+}
+
 impl EguiLayer {
     pub fn new(window: &Window, device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let ctx = egui::Context::default();
@@ -40,7 +47,11 @@ impl EguiLayer {
         window: &Window,
         event: &WindowEvent,
     ) -> egui_winit::EventResponse {
-        self.state.on_window_event(window, event)
+        let response = self.state.on_window_event(window, event);
+        egui_winit::EventResponse {
+            repaint: needs_another_frame(event, response.repaint),
+            ..response
+        }
     }
     pub fn run(
         &mut self,
@@ -94,5 +105,21 @@ impl EguiLayer {
         for id in frame.textures_delta.free.drain() {
             self.renderer.free_texture(&id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drawing_a_frame_does_not_ask_for_the_next_one() {
+        assert!(!needs_another_frame(&WindowEvent::RedrawRequested, true));
+    }
+
+    #[test]
+    fn other_events_keep_eguis_answer() {
+        assert!(needs_another_frame(&WindowEvent::Focused(false), true));
+        assert!(!needs_another_frame(&WindowEvent::Focused(false), false));
     }
 }
