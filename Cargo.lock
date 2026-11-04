@@ -502,6 +502,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "embed-resource",
+ "image",
  "iroh",
  "iroh-tickets",
  "pollster",
@@ -2543,6 +2544,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

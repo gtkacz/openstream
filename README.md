@@ -362,3 +362,6 @@ and implemented by
 ## License
 
 Licensed under the [MIT License](LICENSE).
+
+The start screen's stills are third-party images and are not covered by this licence; see
+[`crates/app/assets/stills/README.md`](crates/app/assets/stills/README.md).

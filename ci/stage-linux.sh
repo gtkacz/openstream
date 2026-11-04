@@ -10,6 +10,7 @@ for lib in libavcodec.so.62 libavutil.so.60 libswscale.so.9 libswresample.so.6; 
   cp "$FFMPEG_DIR/lib/$lib" "$destination/"
 done
 cp "$FFMPEG_DIR/LICENSE.txt" "$destination/FFMPEG-LICENSE.txt"
+cp crates/app/assets/stills/README.md "$destination/STILLS-NOTICE.md"
 
 resolved="$(env -u LD_LIBRARY_PATH ldd "$destination/brp")"
 if grep -q 'not found' <<<"$resolved"; then
