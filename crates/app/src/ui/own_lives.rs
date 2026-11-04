@@ -7,10 +7,22 @@ use brp_proto::{Codec, SourceKind};
 use brp_room::{AudioCaptureState, OwnLiveView, RoomSnapshot};
 
 use super::applications::selection_summary;
+use super::motion;
 use super::state::UiState;
 use super::theme::{self, icons};
 use crate::commands::RoomCommand;
 use crate::presets;
+
+/// How the share buttons are laid out: in the dock's row, saying as much as the width allows, or
+/// stacked across a narrow sheet, where a row of them would run off the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareLayout {
+    Row {
+        share_labelled: bool,
+        tools_labelled: bool,
+    },
+    Stacked,
+}
 
 /// Share and stop buttons, pushing `Share`/`StopLive` commands.
 pub fn share_buttons(
@@ -18,37 +30,67 @@ pub fn share_buttons(
     snapshot: &RoomSnapshot,
     state: &UiState,
     commands: &mut Vec<RoomCommand>,
-    labelled: bool,
+    layout: ShareLayout,
 ) {
     let can_share = !state.share_pending
         && state.picker.is_none()
         && snapshot.own_lives.len() < MAX_LIVES_PER_PARTICIPANT;
-    if theme::primary_action(ui, icons::SHARE_MONITOR, "Share monitor", can_share).clicked() {
+    let button = |ui: &mut egui::Ui, glyph: &str, name: &str, tone: theme::Tone, enabled: bool| {
+        let labelled = match layout {
+            ShareLayout::Stacked => {
+                let size = egui::vec2(ui.available_width(), theme::CONTROL_HEIGHT);
+                return theme::wide_action(ui, glyph, name, tone, enabled, size);
+            }
+            // The main action keeps its words longest: it is the one a newcomer has to find.
+            ShareLayout::Row { share_labelled, .. } if tone == theme::Tone::Primary => {
+                share_labelled
+            }
+            ShareLayout::Row { tools_labelled, .. } => tools_labelled,
+        };
+        match (labelled, tone) {
+            (true, theme::Tone::Primary) => theme::primary_action(ui, glyph, name, enabled),
+            (true, _) => theme::action(ui, glyph, name, enabled),
+            (false, _) => theme::toned_icon_button(ui, tone, glyph, name, enabled),
+        }
+    };
+    if button(
+        ui,
+        icons::SHARE_MONITOR,
+        "Share monitor",
+        theme::Tone::Primary,
+        can_share,
+    )
+    .clicked()
+    {
         commands.push(RoomCommand::Share {
             kind: SourceKind::Monitor,
             source: None,
         });
     }
-    let tool = |ui: &mut egui::Ui, glyph: &str, name: &str, enabled: bool| {
-        if labelled {
-            theme::action(ui, glyph, name, enabled).clicked()
-        } else {
-            theme::icon_button(ui, glyph, name, enabled).clicked()
-        }
-    };
-    if tool(ui, icons::SHARE_WINDOW, "Share window", can_share) {
+    if button(
+        ui,
+        icons::SHARE_WINDOW,
+        "Share window",
+        theme::Tone::Neutral,
+        can_share,
+    )
+    .clicked()
+    {
         commands.push(RoomCommand::Share {
             kind: SourceKind::Window,
             source: None,
         });
     }
     // Always present, so starting a stream cannot shove the rest of the dock sideways.
-    if tool(
+    if button(
         ui,
         icons::STOP,
         "Stop sharing",
+        theme::Tone::Neutral,
         !snapshot.own_lives.is_empty(),
-    ) {
+    )
+    .clicked()
+    {
         commands.extend(
             snapshot
                 .own_lives
@@ -56,22 +98,20 @@ pub fn share_buttons(
                 .map(|live| RoomCommand::StopLive(live.info.id)),
         );
     }
-    if state.share_pending {
-        theme::spinner(ui, 16.0);
-        ui.weak("Starting your stream…");
-    }
 }
 
 /// The share-audio switch, the application chooser, and what the room hears right now. Without
-/// room for `show_status` that moves to the chooser's tooltip; a failure always shows.
+/// room for `show_status` that moves to the chooser's tooltip. A failure is the dock's to say.
 pub fn audio_controls(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
     commands: &mut Vec<RoomCommand>,
     show_status: bool,
+    labelled: bool,
 ) {
     let mut share_audio = snapshot.own_audio.enabled;
-    if theme::switch(ui, &mut share_audio, "Share audio").changed() {
+    let switch_text = if labelled { "Share audio" } else { "Audio" };
+    if theme::switch(ui, &mut share_audio, switch_text).changed() {
         commands.push(RoomCommand::SetAudio(share_audio));
     }
     let status = audio_status(snapshot);
@@ -80,17 +120,16 @@ pub fn audio_controls(
         (Some(status), false) => format!("{selection} · {status}"),
         _ => selection,
     };
-    if theme::text_button(ui, "Applications…", true)
-        .on_hover_text(tooltip)
-        .clicked()
-    {
+    let chooser = if labelled {
+        theme::text_button(ui, "Applications…", true).on_hover_text(tooltip)
+    } else {
+        theme::icon_button(ui, icons::APPLICATIONS, "Applications…", true).on_hover_text(tooltip)
+    };
+    if chooser.clicked() {
         commands.push(RoomCommand::ChooseApplications);
     }
     if let (true, Some(status)) = (show_status, &status) {
         ui.weak(status);
-    }
-    if let AudioCaptureState::Failed(error) = &snapshot.own_audio.state {
-        ui.colored_label(theme::ERROR, format!("Audio failed: {error}"));
     }
 }
 
@@ -122,15 +161,12 @@ pub fn share_sheet(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             theme::section_heading(ui, "Share");
-            ui.horizontal_wrapped(|ui| {
-                theme::uniform_controls(ui);
-                share_buttons(ui, snapshot, state, commands, true);
-            });
+            share_buttons(ui, snapshot, state, commands, ShareLayout::Stacked);
             ui.add_space(12.0);
             theme::section_heading(ui, "Audio");
             ui.horizontal_wrapped(|ui| {
                 theme::uniform_controls(ui);
-                audio_controls(ui, snapshot, commands, true);
+                audio_controls(ui, snapshot, commands, true, true);
             });
             ui.add_space(12.0);
             theme::section_heading(ui, "Upload");
@@ -147,6 +183,7 @@ pub fn live_card(
 ) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 4.0;
         live_rows(ui, live, state, commands);
     });
 }
@@ -180,14 +217,15 @@ fn live_rows(
         |ui| {
             // Placed first so a long title truncates against it instead of pushing it out.
             if failing {
-                ui.colored_label(theme::ERROR, "Needs attention");
+                ui.colored_label(theme::ERROR, egui::RichText::new("Needs attention").small());
             } else if streaming {
-                ui.colored_label(theme::LIVE, "Live");
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.colored_label(theme::LIVE, egui::RichText::new("Live").small());
+                theme::live_dot(ui, true);
             } else {
-                ui.weak("Ready");
+                ui.label(egui::RichText::new("Ready").small().color(theme::SECONDARY));
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                theme::live_dot(ui, streaming);
                 ui.add(
                     egui::Label::new(egui::RichText::new(&info.title).font(theme::medium(14.0)))
                         .truncate(),
@@ -204,6 +242,7 @@ fn live_rows(
         .small()
         .color(theme::SECONDARY),
     );
+    ui.add_space(4.0);
     let mut stop = false;
     let mut edits = Vec::new();
     theme::split_row(
@@ -273,72 +312,98 @@ fn live_rows(
     }) {
         ui.colored_label(theme::WARNING, "Software encoding · using the CPU");
     }
-    egui::CollapsingHeader::new("Quality & encoding")
-        .id_salt(("quality", info.id))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Templates");
-                // The last preset cannot be unticked: a live that offers nothing cannot be watched.
-                let last_one = info.presets.len() == 1;
-                for template in presets::templates_for(info) {
-                    let mut enabled = info.presets.iter().any(|p| p.id == template.id);
-                    let locked = enabled && last_one;
-                    let checkbox = egui::Checkbox::new(&mut enabled, template.name.as_str());
-                    if ui.add_enabled(!locked, checkbox).changed() {
+    let open = state.quality_open.contains(&info.id);
+    if theme::disclosure(ui, "Quality & encoding", open).clicked() {
+        if open {
+            state.quality_open.remove(&info.id);
+        } else {
+            state.quality_open.insert(info.id);
+        }
+    }
+    motion::unfold(ui, ("quality", info.id), open, |ui| {
+        quality_details(ui, live, state, commands);
+    });
+}
+
+fn quality_details(
+    ui: &mut egui::Ui,
+    live: &OwnLiveView,
+    state: &mut UiState,
+    commands: &mut Vec<RoomCommand>,
+) {
+    let info = &live.info;
+    ui.label(
+        egui::RichText::new("Templates")
+            .small()
+            .color(theme::SECONDARY),
+    );
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 16.0;
+        // The last preset cannot be unticked: a live that offers nothing cannot be watched.
+        let last_one = info.presets.len() == 1;
+        for template in presets::templates_for(info) {
+            let mut enabled = info.presets.iter().any(|p| p.id == template.id);
+            let locked = enabled && last_one;
+            // Not `add_enabled_ui`: its child scope would keep this row from wrapping.
+            let check = |ui: &mut egui::Ui| theme::check(ui, &mut enabled, template.name.as_str());
+            if ui.add_enabled(!locked, check).changed() {
+                commands.push(RoomCommand::SetPresets {
+                    live_id: info.id,
+                    presets: presets::toggle_template(info, template.id),
+                });
+            }
+        }
+    });
+    for view in &live.presets {
+        let preset = &view.preset;
+        let dimensions = format!("{} × {}", preset.width, preset.height);
+        ui.add_space(8.0);
+        theme::split_row(
+            ui,
+            theme::CONTROL_HEIGHT,
+            |ui| {
+                ui.label(preset.name.as_str());
+            },
+            |ui| {
+                let key = (info.id, preset.id);
+                let kbps = state
+                    .bitrate_edits
+                    .entry(key)
+                    .or_insert(preset.bitrate_kbps);
+                let response = theme::drag_value(
+                    ui,
+                    egui::DragValue::new(kbps)
+                        .range(MIN_BITRATE_KBPS..=MAX_BITRATE_KBPS)
+                        .speed(100.0)
+                        .suffix(" kbps"),
+                );
+                if !response.dragged() && !response.has_focus() {
+                    let value = *kbps;
+                    state.bitrate_edits.remove(&key);
+                    if value != preset.bitrate_kbps {
                         commands.push(RoomCommand::SetPresets {
                             live_id: info.id,
-                            presets: presets::toggle_template(info, template.id),
+                            presets: presets::with_bitrate(info, preset.id, value),
                         });
                     }
                 }
-            });
-
-            for view in &live.presets {
-                let preset = &view.preset;
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!(
-                        "{} · {} × {}",
-                        preset.name, preset.width, preset.height
-                    ));
-                    let key = (info.id, preset.id);
-                    let kbps = state
-                        .bitrate_edits
-                        .entry(key)
-                        .or_insert(preset.bitrate_kbps);
-                    let response = theme::drag_value(
-                        ui,
-                        egui::DragValue::new(kbps)
-                            .range(MIN_BITRATE_KBPS..=MAX_BITRATE_KBPS)
-                            .speed(100.0)
-                            .suffix(" kbps"),
-                    );
-                    if !response.dragged() && !response.has_focus() {
-                        let value = *kbps;
-                        state.bitrate_edits.remove(&key);
-                        if value != preset.bitrate_kbps {
-                            commands.push(RoomCommand::SetPresets {
-                                live_id: info.id,
-                                presets: presets::with_bitrate(info, preset.id, value),
-                            });
-                        }
-                    }
-                    match (&view.encoder, &view.last_error) {
-                        (Some(encoder), _) => {
-                            let plural = if encoder.subscribers == 1 { "" } else { "s" };
-                            let measured = state.preset_kbps(info.id, preset.id).unwrap_or(0);
-                            ui.label(theme::figure(format!(
-                                "{} · {measured} kbps · {} viewer{plural} · {} frames",
-                                encoder.name, encoder.subscribers, encoder.frames_encoded
-                            )))
-                        }
-                        (None, Some(error)) => {
-                            ui.colored_label(theme::ERROR, format!("failed: {error}"))
-                        }
-                        (None, None) => ui.weak("idle"),
-                    };
-                });
+            },
+        );
+        match (&view.encoder, &view.last_error) {
+            (Some(encoder), _) => {
+                let plural = if encoder.subscribers == 1 { "" } else { "s" };
+                let measured = state.preset_kbps(info.id, preset.id).unwrap_or(0);
+                // Two fixed lines, because wrapped as one they break next to a separator.
+                ui.label(theme::figure(format!("{dimensions} · {}", encoder.name)));
+                ui.label(theme::figure(format!(
+                    "{measured} kbps · {} viewer{plural} · {} frames",
+                    encoder.subscribers, encoder.frames_encoded
+                )))
             }
-        });
+            (None, Some(error)) => ui.colored_label(theme::ERROR, format!("failed: {error}")),
+            (None, None) => ui.label(theme::figure(format!("{dimensions} · idle"))),
+        };
+    }
 }
 
 fn codec_name(codec: Codec) -> &'static str {

@@ -106,6 +106,11 @@ pub fn arrive(ctx: &Context, id: Id, response: f32) -> f32 {
     drive(ctx, id, 1.0, 0.0, response, true)
 }
 
+/// Travels to `target` from wherever it has got to, for a position rather than an on/off state.
+pub fn glide(ctx: &Context, id: Id, target: f32, response: f32) -> f32 {
+    drive(ctx, id, target, target, response, false)
+}
+
 /// Goes down fast enough to land on the frame of the press, and comes back slowly enough to be seen.
 pub fn press(ctx: &Context, id: Id, down: bool) -> f32 {
     follow(ctx, id, down, if down { PRESS_DOWN } else { PRESS_UP })
@@ -152,9 +157,30 @@ pub fn reveal<R>(
     salt: impl std::hash::Hash + std::fmt::Debug + Copy,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    let id = ui.id().with(("reveal", salt));
-    let shown = arrive(ui.ctx(), id, SURFACE);
-    let measured_id = id.with("height");
+    let shown = arrive(ui.ctx(), ui.id().with(("reveal", salt)), SURFACE);
+    grow(ui, salt, shown, true, add)
+}
+
+/// Like [`reveal`], for something that opens and closes: its height and opacity follow `open` from
+/// wherever they have got to. Draws nothing once fully shut.
+pub fn unfold<R>(
+    ui: &mut Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug + Copy,
+    open: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let shown = follow(ui.ctx(), ui.id().with(("reveal", salt)), open, SURFACE);
+    (shown > 0.0).then(|| grow(ui, salt, shown, open, add))
+}
+
+fn grow<R>(
+    ui: &mut Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug + Copy,
+    shown: f32,
+    remeasure: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let measured_id = ui.id().with(("reveal", salt)).with("height");
     let measured = ui
         .ctx()
         .data(|data| data.get_temp::<f32>(measured_id))
@@ -173,7 +199,9 @@ pub fn reveal<R>(
         child.set_opacity(shown);
     }
     let output = add(&mut child);
-    let height = child.min_rect().height();
+    let content = child.min_rect().height();
+    // While shutting, what it holds may already be gone; the height it had is what has to ease away.
+    let height = if remeasure { content } else { measured };
     ui.ctx()
         .data_mut(|data| data.insert_temp(measured_id, height));
     ui.advance_cursor_after_rect(Rect::from_min_size(origin, vec2(width, height * shown)));

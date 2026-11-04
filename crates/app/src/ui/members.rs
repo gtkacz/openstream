@@ -16,7 +16,11 @@ use super::theme::{self, icons};
 use crate::commands::RoomCommand;
 use crate::link;
 
-const AVATAR_SIZE: f32 = 28.0;
+const AVATAR_SIZE: f32 = 32.0;
+/// Tall enough for a name over its detail, with air the list's own gaps can lean on.
+const PERSON_ROW_HEIGHT: f32 = 44.0;
+const PERSON_GAP: f32 = 12.0;
+const CARD_GAP: f32 = 4.0;
 
 /// Draws the rail and pushes `Watch`/`Unwatch` commands for switch and preset changes.
 pub fn draw(
@@ -64,15 +68,18 @@ pub fn contents(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            // Every gap in the list is spelled out, so the rhythm is the same for everyone in it.
+            ui.spacing_mut().item_spacing.y = 0.0;
             own_block(ui, snapshot, state, commands);
             if snapshot.members.is_empty() {
-                ui.add_space(12.0);
+                ui.add_space(8.0);
                 ui.weak("You’re the first here");
+                ui.add_space(4.0);
                 ui.weak("Copy an invite link to bring someone in");
             }
             for member in ordered_members(snapshot) {
                 motion::reveal(ui, member.id, |ui| {
-                    ui.add_space(16.0);
+                    ui.add_space(PERSON_GAP);
                     member_block(ui, snapshot, member, state, commands);
                 });
             }
@@ -85,21 +92,16 @@ fn own_block(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    ui.horizontal(|ui| {
-        avatar(ui, snapshot.me.as_bytes(), &snapshot.nickname);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.add(
-                egui::Label::new(egui::RichText::new(&snapshot.nickname).font(theme::medium(14.0)))
-                    .truncate(),
-            )
-            .on_hover_text(snapshot.me.fmt_short().to_string());
-            ui.label(egui::RichText::new("You").small().color(theme::SECONDARY));
-        });
-    });
+    person_row(
+        ui,
+        snapshot.me.as_bytes(),
+        &snapshot.nickname,
+        snapshot.me.fmt_short().to_string(),
+        None,
+    );
     for live in &snapshot.own_lives {
         motion::reveal(ui, ("own-live", live.info.id), |ui| {
-            ui.add_space(8.0);
+            ui.add_space(CARD_GAP);
             own_lives::live_card(ui, live, state, commands);
         });
     }
@@ -112,28 +114,19 @@ fn member_block(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    ui.horizontal(|ui| {
-        avatar(ui, member.id.as_bytes(), &member.nickname);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.add(
-                egui::Label::new(egui::RichText::new(&member.nickname).font(theme::medium(14.0)))
-                    .truncate(),
-            )
-            .on_hover_text(format!("{} · {}", member.nickname, member.id.fmt_short()));
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                path_glyph(ui, member.path);
-                ui.label(
-                    egui::RichText::new(path_badge(member.path))
-                        .small()
-                        .color(theme::SECONDARY),
-                );
-            });
-        });
-    });
+    person_row(
+        ui,
+        member.id.as_bytes(),
+        &member.nickname,
+        format!("{} · {}", member.nickname, member.id.fmt_short()),
+        Some(member.path),
+    );
     if member.has_audio {
-        ui.horizontal_wrapped(|ui| {
+        ui.add_space(CARD_GAP);
+        ui.horizontal(|ui| {
+            // The slider takes what the mute button leaves, so it ends on the cards' right edge.
+            let slider_width = (ui.available_width() - theme::CONTROL_HEIGHT - 8.0).max(0.0);
+            ui.spacing_mut().slider_width = slider_width;
             if let Some(gain) = super::volume_control(ui, ("member-volume", member.id), member.gain)
             {
                 commands.push(RoomCommand::SetVolume {
@@ -145,10 +138,69 @@ fn member_block(
     }
     for live in &member.lives {
         motion::reveal(ui, ("member-live", live.id), |ui| {
-            ui.add_space(8.0);
+            ui.add_space(CARD_GAP);
             live_row(ui, snapshot, member, live, state, commands);
         });
     }
+}
+
+/// Someone's line in the rail: their avatar, their name, and how they reach you, or `None` for you.
+/// Sized up front and painted at computed positions, because a vertical group inside a row starts at
+/// the row's top rather than its centre, which is what used to leave names hanging off their avatars.
+fn person_row(
+    ui: &mut egui::Ui,
+    id: &[u8],
+    nickname: &str,
+    details: String,
+    path: Option<PathKind>,
+) {
+    const TEXT_GAP: f32 = 10.0;
+    const GLYPH: egui::Vec2 = egui::vec2(20.0, 12.0);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), PERSON_ROW_HEIGHT),
+        egui::Sense::hover(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, nickname));
+    response.on_hover_text(details);
+    let painter = ui.painter();
+    avatar(
+        painter,
+        rect.left_center() + egui::vec2(AVATAR_SIZE / 2.0, 0.0),
+        id,
+        nickname,
+    );
+    let left = rect.left() + AVATAR_SIZE + TEXT_GAP;
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        nickname.to_string(),
+        theme::medium(14.0),
+        theme::TEXT,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - left).max(0.0));
+    let name = painter.layout_job(job);
+    let detail_text = path.map_or("You", path_badge);
+    let detail = painter.layout_no_wrap(
+        detail_text.to_string(),
+        egui::FontId::proportional(12.0),
+        theme::SECONDARY,
+    );
+    let top = rect.center().y - (name.size().y + detail.size().y) / 2.0;
+    let detail_top = top + name.size().y;
+    painter.galley(egui::pos2(left, top), name, theme::TEXT);
+    let detail_left = if let Some(path) = path {
+        let glyph = egui::Rect::from_min_size(
+            egui::pos2(left, detail_top + (detail.size().y - GLYPH.y) / 2.0),
+            GLYPH,
+        );
+        path_glyph(painter, glyph, path);
+        glyph.right() + 4.0
+    } else {
+        left
+    };
+    painter.galley(
+        egui::pos2(detail_left, detail_top),
+        detail,
+        theme::SECONDARY,
+    );
 }
 
 fn live_row(
@@ -179,20 +231,12 @@ fn live_row(
         .fill(theme::SURFACE.lerp_to_gamma(theme::RAISED, raised * 0.45))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 20.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    theme::live_dot(ui, true);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&live.title).font(theme::medium(14.0)),
-                        )
-                        .truncate(),
-                    )
-                    .on_hover_text(&live.title);
-                },
-            );
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.add(
+                egui::Label::new(egui::RichText::new(&live.title).font(theme::medium(14.0)))
+                    .truncate(),
+            )
+            .on_hover_text(&live.title);
             let detail = match watch.map(|w| &w.state) {
                 Some(WatchState::Connecting) => "Connecting…".to_string(),
                 Some(WatchState::Reconnecting) => "Reconnecting…".to_string(),
@@ -203,6 +247,7 @@ fn live_row(
                 ),
             };
             ui.label(egui::RichText::new(detail).small().color(theme::SECONDARY));
+            ui.add_space(4.0);
             let Some(mut preset_id) = offered_preset(live, wanted) else {
                 // The publisher advertises no presets at all; nothing to watch yet.
                 ui.add_enabled_ui(false, |ui| theme::switch(ui, &mut watched, "Watch"));
@@ -240,25 +285,23 @@ fn live_row(
 
 /// A person's initial on a dim tint of their own. The hue comes from their key, so a person keeps
 /// their colour across rooms and across every other member's window.
-fn avatar(ui: &mut egui::Ui, id: &[u8], nickname: &str) {
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(AVATAR_SIZE), egui::Sense::hover());
+fn avatar(painter: &egui::Painter, centre: egui::Pos2, id: &[u8], nickname: &str) {
     let hue = person_hue(id);
     let fill = egui::ecolor::HsvaGamma {
         h: hue,
         s: 0.45,
-        v: 0.32,
+        v: 0.38,
         a: 1.0,
     };
     let ink = egui::ecolor::HsvaGamma {
         h: hue,
-        s: 0.28,
-        v: 0.98,
+        s: 0.22,
+        v: 1.0,
         a: 1.0,
     };
-    ui.painter()
-        .rect_filled(rect, 6.0, egui::Color32::from(fill));
-    ui.painter().text(
-        rect.center(),
+    painter.circle_filled(centre, AVATAR_SIZE / 2.0, egui::Color32::from(fill));
+    painter.text(
+        centre,
         egui::Align2::CENTER_CENTER,
         initial(nickname),
         theme::semibold(14.0),
@@ -283,32 +326,46 @@ fn initial(nickname: &str) -> String {
 
 /// How this person's video reaches you: a straight line when peer to peer, a node in the middle
 /// when a relay carries it, dashes while the path is unknown.
-pub fn path_glyph(ui: &mut egui::Ui, path: PathKind) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 12.0), egui::Sense::hover());
-    let painter = ui.painter();
-    let (left, right) = (
-        rect.left_center() + egui::vec2(2.0, 0.0),
-        rect.right_center() - egui::vec2(2.0, 0.0),
-    );
+fn path_glyph(painter: &egui::Painter, rect: egui::Rect, path: PathKind) {
+    const DOT_RADIUS: f32 = 2.0;
     let ink = match path {
         PathKind::Direct | PathKind::Relayed => theme::SECONDARY,
         PathKind::Unknown => theme::MUTED,
     };
+    paint_path(
+        painter,
+        rect.left_center() + egui::vec2(DOT_RADIUS, 0.0),
+        rect.right_center() - egui::vec2(DOT_RADIUS, 0.0),
+        path,
+        DOT_RADIUS,
+        ink,
+    );
+}
+
+/// The connection between two points, in the same drawing at any size and angle.
+pub fn paint_path(
+    painter: &egui::Painter,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    path: PathKind,
+    dot_radius: f32,
+    ink: egui::Color32,
+) {
     let line = egui::Stroke::new(1.0, ink);
     match path {
         PathKind::Direct => {
-            painter.line_segment([left, right], line);
+            painter.line_segment([from, to], line);
         }
         PathKind::Relayed => {
-            painter.line_segment([left, right], line);
-            painter.circle(rect.center(), 2.5, theme::GROUND, line);
+            painter.line_segment([from, to], line);
+            painter.circle(from.lerp(to, 0.5), dot_radius * 1.25, theme::GROUND, line);
         }
         PathKind::Unknown => {
-            painter.extend(egui::Shape::dashed_line(&[left, right], line, 2.0, 2.0));
+            painter.extend(egui::Shape::dashed_line(&[from, to], line, 2.0, 2.0));
         }
     }
-    painter.circle_filled(left, 2.0, ink);
-    painter.circle_filled(right, 2.0, ink);
+    painter.circle_filled(from, dot_radius, ink);
+    painter.circle_filled(to, dot_radius, ink);
 }
 
 /// Human-readable label for a member's connection path.
@@ -374,7 +431,7 @@ pub fn preset_selector(
             ui.selectable_value(
                 selected,
                 preset.id,
-                format!("{} {}x{}", preset.name, preset.width, preset.height),
+                format!("{} · {} × {}", preset.name, preset.width, preset.height),
             );
         }
     });

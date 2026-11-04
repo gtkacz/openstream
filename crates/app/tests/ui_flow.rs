@@ -370,7 +370,8 @@ fn run_room(
 
 #[test]
 fn the_video_keeps_most_of_the_window_while_sharing_at_every_width() {
-    const LARGEST_DOCK: f32 = 128.0;
+    // One row of controls, its separator, and the gaps around the tile, at every width.
+    const LARGEST_DOCK: f32 = 74.0;
     for (width, height) in [
         (390.0, 844.0),
         (799.0, 600.0),
@@ -712,4 +713,348 @@ fn a_dropdown_still_highlights_the_row_under_the_pointer() {
             .any(|shape| matches!(&shape.shape, egui::Shape::Rect(r) if r.fill == hover_fill)),
         "the wrapper's transparent surfaces must not leak into the popup"
     );
+}
+
+/// Draws the room for long enough that anything arriving settles, starting at `first_frame`
+/// because egui's clock must only ever move forward.
+fn settled_room_from(
+    first_frame: u32,
+    ctx: &egui::Context,
+    size: (f32, f32),
+    snapshot: &brp_room::RoomSnapshot,
+    state: &mut brp_app::ui::state::UiState,
+) -> (brp_app::ui::UiOutput, Vec<egui::epaint::ClippedShape>) {
+    let mut last = None;
+    for frame in first_frame..first_frame + 60 {
+        last = Some(run_room(
+            ctx,
+            timed(window(size.0, size.1), frame),
+            snapshot,
+            state,
+        ));
+    }
+    last.expect("drawn")
+}
+
+fn settled_room(
+    ctx: &egui::Context,
+    size: (f32, f32),
+    snapshot: &brp_room::RoomSnapshot,
+    state: &mut brp_app::ui::state::UiState,
+) -> (brp_app::ui::UiOutput, Vec<egui::epaint::ClippedShape>) {
+    settled_room_from(0, ctx, size, snapshot, state)
+}
+
+fn text_rects(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<egui::Rect> {
+    shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(s) if s.galley.text() == text => {
+                Some(s.galley.rect.translate(s.pos.to_vec2()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_rail_keeps_its_width_whatever_its_contents_ask_for() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    // Quality details hold the rail's widest rows.
+    state.quality_open.insert(1);
+    let (output, shapes) = settled_room(&ctx, (1280.0, 900.0), &snapshot, &mut state);
+    let tile = output.tile_rects[0].1;
+    assert!(
+        tile.left() <= 296.5,
+        "the rail pushed the video to {} instead of leaving it at 296",
+        tile.left()
+    );
+    for label in ["Copy link", "Copy ticket", "Quality & encoding"] {
+        assert!(
+            text_rect(&shapes, label).right() <= 280.0,
+            "{label} overflows"
+        );
+    }
+}
+
+#[test]
+fn a_persons_name_and_detail_are_centred_on_their_avatar() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shapes) = settled_room(&ctx, (1280.0, 800.0), &snapshot, &mut state);
+    for (initial, name, detail) in [("A", "Alex", "You"), ("M", "Morgan", "Direct")] {
+        let avatar = text_rect(&shapes, initial);
+        let block = text_rect(&shapes, name).union(text_rect(&shapes, detail));
+        assert!(
+            (avatar.center().y - block.center().y).abs() <= 0.5,
+            "{name}: avatar at {} and text at {}",
+            avatar.center().y,
+            block.center().y
+        );
+    }
+}
+
+#[test]
+fn a_rail_card_keeps_its_title_detail_and_controls_on_one_left_edge() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shapes) = settled_room(&ctx, (1280.0, 800.0), &snapshot, &mut state);
+    let edge = text_rect(&shapes, "Monitor 1").left();
+    let detail = text_rects(&shapes, "2560 × 1440 · 60 fps")[0].left();
+    let disclosure = text_rect(&shapes, "Quality & encoding").left();
+    assert!(
+        (detail - edge).abs() < 0.5,
+        "detail at {detail}, title at {edge}"
+    );
+    assert!(
+        (disclosure - edge).abs() < 0.5,
+        "disclosure at {disclosure}, title at {edge}"
+    );
+}
+
+#[test]
+fn the_start_form_is_centred_on_the_same_axis_as_the_diagram() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut state = start::StartState::new("Alex".into());
+    let mut shapes = Vec::new();
+    for frame in 0..3 {
+        let mut output = ctx.run_ui(timed(window(1280.0, 800.0), frame), |ui| {
+            start::draw(ui, &mut state, &[], 0, &UpdateState::new(false));
+        });
+        shapes = std::mem::take(&mut output.shapes);
+        output.textures_delta.clear();
+    }
+    let title = text_rect(&shapes, "Share your screen");
+    let join_label = text_rect(&shapes, "Join room");
+    // The Join button is 40 tall around its label, so its bottom edge is 20 below the label's centre.
+    let form = (title.top() + join_label.center().y + 20.0) / 2.0;
+    let live = text_rect(&shapes, "Live");
+    let relayed = text_rect(&shapes, "Relayed");
+    assert!(live.top() < form && relayed.bottom() > form);
+    let body = (24.0 + 36.0 + 8.0 + 800.0 - 24.0) / 2.0;
+    assert!(
+        (form - body).abs() <= 1.0,
+        "form centred at {form}, body at {body}"
+    );
+}
+
+#[test]
+fn the_start_screen_shares_one_column_on_a_very_wide_window() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut state = start::StartState::new("Alex".into());
+    let mut output = ctx.run_ui(window(2560.0, 1440.0), |ui| {
+        start::draw(ui, &mut state, &[], 0, &UpdateState::new(false));
+    });
+    let shapes = std::mem::take(&mut output.shapes);
+    output.textures_delta.clear();
+    // 1200 wide, centred in 2560: the brand and the form both start at 680.
+    let title = text_rect(&shapes, "Share your screen");
+    assert!(
+        (title.left() - 680.0).abs() <= 1.0,
+        "form starts at {}",
+        title.left()
+    );
+}
+
+#[test]
+fn a_custom_frame_rate_keeps_its_value_until_one_is_typed() {
+    use brp_app::{settings::Settings, ui::settings};
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut dialog = settings::SettingsDialog::default();
+    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    let saved_fps = dialog.draft.fps;
+    let mut frame = 0;
+    let mut pass = |raw: egui::RawInput, dialog: &mut settings::SettingsDialog| {
+        frame += 1;
+        let mut output = ctx.run_ui(timed(raw, frame), |ui| {
+            settings::draw(ui.ctx(), dialog, false);
+        });
+        output.textures_delta.clear();
+        output.shapes
+    };
+    let mut shapes = Vec::new();
+    for _ in 0..30 {
+        shapes = pass(window(1280.0, 800.0), &mut dialog);
+    }
+    let custom = text_rect(&shapes, "Custom").center();
+    for pressed in [true, false] {
+        pass(
+            click_at(window(1280.0, 800.0), custom, pressed),
+            &mut dialog,
+        );
+    }
+    assert!(dialog.custom_fps);
+    assert_eq!(
+        dialog.draft.fps, saved_fps,
+        "choosing Custom changes nothing yet"
+    );
+    for _ in 0..30 {
+        shapes = pass(window(1280.0, 800.0), &mut dialog);
+    }
+    let thirty = text_rect(&shapes, "30 fps").center();
+    for pressed in [true, false] {
+        pass(
+            click_at(window(1280.0, 800.0), thirty, pressed),
+            &mut dialog,
+        );
+    }
+    assert_eq!(dialog.draft.fps, 30);
+    assert!(!dialog.custom_fps);
+}
+
+#[test]
+fn a_radio_row_and_a_check_row_take_a_click_anywhere_along_their_label() {
+    use brp_app::ui::theme;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let (mut choice, mut checked) = (1, false);
+    let mut frame = 0;
+    let mut pass = |raw: egui::RawInput, choice: &mut i32, checked: &mut bool| {
+        frame += 1;
+        let mut output = ctx.run_ui(timed(raw, frame), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                theme::radio(ui, choice, 1, "First choice");
+                theme::radio(ui, choice, 2, "Second choice");
+                theme::check(ui, checked, "An option");
+            });
+        });
+        output.textures_delta.clear();
+        output.shapes
+    };
+    let shapes = pass(window(400.0, 400.0), &mut choice, &mut checked);
+    for label in ["Second choice", "An option"] {
+        let at = text_rect(&shapes, label).center();
+        for pressed in [true, false] {
+            pass(
+                click_at(window(400.0, 400.0), at, pressed),
+                &mut choice,
+                &mut checked,
+            );
+        }
+    }
+    assert_eq!(choice, 2);
+    assert!(checked);
+}
+
+#[test]
+fn unfolded_quality_details_show_each_preset_and_fold_away_again() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shut) = settled_room(&ctx, (1280.0, 1000.0), &snapshot, &mut state);
+    assert!(text_rects(&shut, "Templates").is_empty());
+    let header = text_rect(&shut, "Quality & encoding").center();
+    for (frame, pressed) in [(60, true), (61, false)] {
+        let click = timed(click_at(window(1280.0, 1000.0), header, pressed), frame);
+        run_room(&ctx, click, &snapshot, &mut state);
+    }
+    assert!(state.quality_open.contains(&1));
+    let (_, open) = settled_room_from(62, &ctx, (1280.0, 1000.0), &snapshot, &mut state);
+    assert!(!text_rects(&open, "Templates").is_empty());
+}
+
+#[test]
+fn a_toolbar_too_wide_for_its_tile_does_not_keep_the_window_drawing_flat_out() {
+    use brp_app::ui::{
+        state::UiState,
+        tiles::{self, Placement},
+    };
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let watch = snapshot.watches[0].clone();
+    let key = (watch.publisher, watch.live_id);
+    // Far narrower than the buttons in its toolbar, with the pointer holding the toolbar up.
+    let tile = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(120.0, 120.0));
+    let mut state = UiState::new();
+    let mut delay = std::time::Duration::ZERO;
+    for frame in 0..120 {
+        let mut raw = timed(window(800.0, 600.0), frame);
+        // Once only: any pointer input asks for a frame of its own, which would hide what is tested.
+        if frame == 0 {
+            raw.events = vec![egui::Event::PointerMoved(tile.center())];
+        }
+        let mut output = ctx.run_ui(raw, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                tiles::tile_overlay(
+                    ui,
+                    &snapshot,
+                    &mut state,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &watch,
+                    key,
+                    tile,
+                    Placement::Grid,
+                );
+            });
+        });
+        output.textures_delta.clear();
+        delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+    }
+    assert!(!delay.is_zero(), "the window never got to sleep");
+}
+
+#[test]
+fn a_long_label_on_a_radio_or_check_stops_at_the_edge_with_an_ellipsis() {
+    use brp_app::ui::theme;
+    const LONG: &str = "An application with a name far too long for the row it has to sit in";
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let (mut choice, mut checked) = (0, false);
+    let mut output = ctx.run_ui(window(200.0, 200.0), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
+            theme::radio(ui, &mut choice, 1, LONG);
+            theme::check(ui, &mut checked, LONG);
+        });
+    });
+    output.textures_delta.clear();
+    let mut seen = 0;
+    for shape in &output.shapes {
+        if let egui::Shape::Text(text) = &shape.shape
+            && text.galley.text().starts_with("An application")
+        {
+            seen += 1;
+            let right = text.galley.rect.translate(text.pos.to_vec2()).right();
+            assert!(right <= 200.0, "the label runs out to {right}");
+            assert!(text.galley.elided, "a cut label has to say that it was cut");
+        }
+    }
+    assert_eq!(seen, 2);
+}
+
+#[test]
+fn checks_in_a_wrapped_row_move_to_the_next_line_rather_than_truncating() {
+    use brp_app::ui::theme;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let mut checked = false;
+    let mut output = ctx.run_ui(window(240.0, 200.0), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for label in ["First option", "Second option", "Third option"] {
+                    theme::check(ui, &mut checked, label);
+                }
+            });
+        });
+    });
+    let shapes = std::mem::take(&mut output.shapes);
+    output.textures_delta.clear();
+    let (first, third) = (
+        text_rect(&shapes, "First option"),
+        text_rect(&shapes, "Third option"),
+    );
+    assert!(third.top() > first.bottom(), "the row never wrapped");
+    assert!(third.right() <= 240.0);
 }

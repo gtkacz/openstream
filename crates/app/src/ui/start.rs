@@ -1,5 +1,8 @@
 //! The start screen: nickname and ticket entry with Create and Join, shown until a room is open.
 
+use brp_net::PathKind;
+
+use super::members;
 use super::theme::{self, icons};
 use super::update::{self, UpdateState};
 use crate::launch::Intent;
@@ -110,7 +113,11 @@ pub fn abbreviate_ticket(ticket: &str) -> String {
 
 /// Wide enough to set the room diagram beside the form instead of dropping it.
 const DIAGRAM_MIN_WINDOW_WIDTH: f32 = 960.0;
-const FORM_WIDTH: f32 = 420.0;
+const FORM_WIDTH: f32 = 380.0;
+const COLUMN_GAP: f32 = 64.0;
+/// The brand, the form, the diagram and the settings button all share this column, so on a very wide
+/// window they stay on two common edges instead of drifting to the corners of the screen.
+const CONTENT_WIDTH: f32 = 1200.0;
 
 /// Draws the start screen and returns the button clicked, if any. Clicking a recent room fills
 /// the ticket field and joins it.
@@ -130,33 +137,38 @@ pub fn draw(
                 .inner_margin(egui::Margin::same(24)),
         )
         .show(ui, |ui| {
-            theme::split_row(ui, theme::CONTROL_HEIGHT, theme::brand, |ui| {
-                if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
-                    action = Some(StartAction::OpenSettings);
+            let space = ui.max_rect();
+            let column = egui::Rect::from_center_size(
+                space.center(),
+                egui::vec2(space.width().min(CONTENT_WIDTH), space.height()),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
+                theme::split_row(ui, theme::CONTROL_HEIGHT, theme::brand, |ui| {
+                    if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
+                        action = Some(StartAction::OpenSettings);
+                    }
+                });
+                let body = ui.available_rect_before_wrap();
+                let with_diagram = ui.ctx().content_rect().width() >= DIAGRAM_MIN_WINDOW_WIDTH;
+                if with_diagram {
+                    let beside = egui::pos2(body.left() + FORM_WIDTH + COLUMN_GAP, body.top());
+                    room_diagram(ui, egui::Rect::from_min_max(beside, body.max));
                 }
-            });
-            let body = ui.available_rect_before_wrap();
-            let with_diagram = ui.ctx().content_rect().width() >= DIAGRAM_MIN_WINDOW_WIDTH;
-            if with_diagram {
-                let diagram = egui::Rect::from_min_max(
-                    egui::pos2(body.left() + FORM_WIDTH + 72.0, body.top() + 24.0),
-                    body.max,
-                );
-                room_diagram(ui, diagram);
-            }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let width = ui.available_width().min(FORM_WIDTH);
-                let inset = if with_diagram {
-                    0.0
-                } else {
-                    ((ui.available_width() - width) / 2.0).max(0.0)
-                };
-                ui.add_space((ui.available_height() * 0.1).clamp(24.0, 88.0));
-                ui.horizontal(|ui| {
-                    ui.add_space(inset);
-                    ui.vertical(|ui| {
-                        ui.set_width(width);
-                        form(ui, state, recent, now_unix, update_state, &mut action);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let width = ui.available_width().min(FORM_WIDTH);
+                    let inset = if with_diagram {
+                        0.0
+                    } else {
+                        ((ui.available_width() - width) / 2.0).max(0.0)
+                    };
+                    theme::vertically_centred(ui, "start-form", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(inset);
+                            ui.vertical(|ui| {
+                                ui.set_width(width);
+                                form(ui, state, recent, now_unix, update_state, &mut action);
+                            });
+                        });
                     });
                 });
             });
@@ -174,7 +186,7 @@ fn form(
 ) {
     ui.label(
         egui::RichText::new("Share your screen")
-            .font(theme::semibold(36.0))
+            .font(theme::semibold(30.0))
             .extra_letter_spacing(-0.5),
     );
     ui.label(
@@ -184,16 +196,15 @@ fn form(
     );
     ui.add_space(24.0);
     theme::section_heading(ui, "Your name");
-    ui.add_enabled(
-        !state.connecting,
-        egui::TextEdit::singleline(&mut state.nickname)
-            .hint_text("Nickname")
-            .margin(egui::vec2(12.0, 10.0))
-            .desired_width(f32::INFINITY),
-    );
-    ui.add_space(16.0);
+    ui.add_enabled_ui(!state.connecting, |ui| {
+        theme::field(
+            ui,
+            egui::TextEdit::singleline(&mut state.nickname).hint_text("Nickname"),
+            theme::FORM_HEIGHT,
+        );
+    });
     let has_ticket = !state.ticket.trim().is_empty();
-    let full_width = egui::vec2(ui.available_width(), 40.0);
+    let full_width = egui::vec2(ui.available_width(), theme::FORM_HEIGHT);
     // Pasting a ticket says what this person came to do, so Join takes the accent surface from
     // Create for as long as the field holds one. The two cross-fade.
     let (create_tone, join_tone) = if has_ticket {
@@ -213,15 +224,15 @@ fn form(
     {
         *action = Some(StartAction::Create);
     }
-    ui.add_space(20.0);
+    ui.add_space(24.0);
     theme::section_heading(ui, "Have an invite?");
-    ui.add_enabled(
-        !state.connecting,
-        egui::TextEdit::singleline(&mut state.ticket)
-            .hint_text("Paste a room link or ticket")
-            .margin(egui::vec2(12.0, 10.0))
-            .desired_width(f32::INFINITY),
-    );
+    ui.add_enabled_ui(!state.connecting, |ui| {
+        theme::field(
+            ui,
+            egui::TextEdit::singleline(&mut state.ticket).hint_text("Paste a room link or ticket"),
+            theme::FORM_HEIGHT,
+        );
+    });
     let can_join = !state.connecting && has_ticket;
     if theme::wide_action(
         ui,
@@ -250,151 +261,114 @@ fn form(
         ui.add_space(24.0);
         theme::section_heading(ui, "Recent rooms");
         for room in recent {
-            ui.horizontal(|ui| {
-                ui.label(theme::figure(abbreviate_ticket(&room.ticket)));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            theme::split_row(
+                ui,
+                theme::CONTROL_HEIGHT,
+                |ui| {
+                    ui.label(theme::ticket_text(abbreviate_ticket(&room.ticket)));
+                },
+                |ui| {
                     if theme::text_button(ui, "Join", !state.connecting).clicked() {
                         state.ticket = room.ticket.clone();
                         *action = Some(StartAction::Join);
                     }
                     ui.weak(relative_age(room.last_joined_unix, now_unix));
-                });
-            });
+                },
+            );
         }
     }
-    ui.add_space(16.0);
-    if update::draw(ui, update_state) {
-        *action = Some(StartAction::Update);
+    if update_state.available.is_some() {
+        ui.add_space(16.0);
+        if update::draw(ui, update_state) {
+            *action = Some(StartAction::Update);
+        }
     }
+}
+
+/// Where the diagram's three screens sit in `area`: the sharer across the full width, and two
+/// viewers beneath it that end on its edges, so the figure has one axis and two clean sides. It ends
+/// on the right of `area`, sharing an edge with the settings button above it.
+fn diagram_screens(area: egui::Rect) -> [egui::Rect; 3] {
+    const ASPECT: f32 = 9.0 / 16.0;
+    const LINK_HEIGHT: f32 = 72.0;
+    const VIEWER_GAP: f32 = 16.0;
+    const WIDEST: f32 = 600.0;
+    // Height = width * ASPECT + LINK_HEIGHT + (width - VIEWER_GAP) / 2 * ASPECT, solved for width.
+    let fits_height = (area.height() - LINK_HEIGHT + VIEWER_GAP / 2.0 * ASPECT) / (1.5 * ASPECT);
+    let width = area.width().min(fits_height).clamp(VIEWER_GAP, WIDEST);
+    let viewer = egui::vec2(
+        (width - VIEWER_GAP) / 2.0,
+        (width - VIEWER_GAP) / 2.0 * ASPECT,
+    );
+    let total_height = width * ASPECT + LINK_HEIGHT + viewer.y;
+    let left = area.right() - width;
+    let top = area.center().y - total_height / 2.0;
+    let sharer =
+        egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, width * ASPECT));
+    let viewers_top = sharer.bottom() + LINK_HEIGHT;
+    [
+        sharer,
+        egui::Rect::from_min_size(egui::pos2(left, viewers_top), viewer),
+        egui::Rect::from_min_size(egui::pos2(area.right() - viewer.x, viewers_top), viewer),
+    ]
 }
 
 /// What a room is, drawn with the product's own vocabulary: one person's screen arriving as the
 /// same picture on everyone else's, with no server in the middle, directly where it can and through
-/// a relay where it cannot. Fractions of the area, so it scales with the window.
+/// a relay where it cannot.
 fn room_diagram(ui: &egui::Ui, area: egui::Rect) {
-    const SCREENS: [(f32, f32, f32); 3] =
-        [(0.44, 0.31, 0.74), (0.80, 0.77, 0.40), (0.17, 0.80, 0.30)];
-    const ASPECT: f32 = 9.0 / 16.0;
-    let scale = area.width().min(area.height() * 1.1);
+    const DOT_RADIUS: f32 = 3.0;
+    const LINK_INSET: f32 = 10.0;
     let painter = ui.painter_at(area);
-    let point = |x: f32, y: f32| area.lerp_inside(egui::vec2(x, y));
-    let [sharer, direct_peer, relayed_peer] = SCREENS.map(|(x, y, _)| point(x, y));
-    let rule = egui::Stroke::new(1.0, theme::MUTED);
-    painter.line_segment([sharer, direct_peer], rule);
-    painter.line_segment([sharer, relayed_peer], rule);
-    painter.extend(egui::Shape::dashed_line(
-        &[direct_peer, relayed_peer],
-        rule,
-        4.0,
-        4.0,
-    ));
-    for (index, (x, y, width)) in SCREENS.into_iter().enumerate() {
-        let rect =
-            egui::Rect::from_center_size(point(x, y), egui::vec2(width, width * ASPECT) * scale);
-        shared_picture(&painter, rect);
-        // The same ring that rounds real tiles rounds these.
-        painter.rect_stroke(
-            rect,
-            10.0,
-            egui::Stroke::new(6.0, theme::GROUND),
-            egui::StrokeKind::Outside,
+    let [sharer, direct_peer, relayed_peer] = diagram_screens(area);
+    for (rect, path, name) in [
+        (direct_peer, PathKind::Direct, "Direct"),
+        (relayed_peer, PathKind::Relayed, "Relayed"),
+    ] {
+        let x = rect.center().x;
+        let (from, to) = (
+            egui::pos2(x, sharer.bottom() + LINK_INSET),
+            egui::pos2(x, rect.top() - LINK_INSET),
         );
-        let is_sharer = index == 0;
-        let (text, ink) = if is_sharer {
-            ("Live", theme::LIVE)
-        } else {
-            ("Watching", theme::TEXT)
-        };
-        let galley = painter.layout_no_wrap(text.to_string(), theme::medium(12.0), ink);
-        let chip = egui::Rect::from_min_size(
-            rect.min + egui::vec2(10.0, 10.0),
-            galley.size() + egui::vec2(28.0, 8.0),
-        );
-        painter.rect_filled(chip, 6.0, theme::SURFACE);
-        painter.circle_filled(
-            chip.left_center() + egui::vec2(11.0, 0.0),
-            3.0,
-            if is_sharer { theme::LIVE } else { theme::MUTED },
-        );
-        painter.galley(chip.min + egui::vec2(20.0, 4.0), galley, ink);
-    }
-    let tag = |at: egui::Pos2, text: &str| {
-        let galley = painter.layout_no_wrap(
-            text.to_string(),
+        members::paint_path(&painter, from, to, path, DOT_RADIUS, theme::SECONDARY);
+        painter.text(
+            egui::pos2(x + 14.0, (from.y + to.y) / 2.0),
+            egui::Align2::LEFT_CENTER,
+            name,
             egui::FontId::proportional(12.0),
             theme::SECONDARY,
         );
-        let backing = egui::Rect::from_center_size(at, galley.size() + egui::vec2(12.0, 6.0));
-        painter.rect_filled(backing, 4.0, theme::GROUND);
-        painter.galley(at - galley.size() / 2.0, galley, theme::SECONDARY);
-    };
-    // Further along than halfway on the sharer's links: its large screen covers their first half.
-    tag(sharer + (direct_peer - sharer) * 0.62, "Direct");
-    tag(sharer + (relayed_peer - sharer) * 0.62, "Direct");
-    tag(direct_peer + (relayed_peer - direct_peer) * 0.5, "Relayed");
+    }
+    for (rect, text, ink, dot) in [
+        (sharer, "Live", theme::LIVE, theme::LIVE),
+        (direct_peer, "Watching", theme::TEXT, theme::MUTED),
+        (relayed_peer, "Watching", theme::TEXT, theme::MUTED),
+    ] {
+        shared_picture(&painter, rect);
+        let galley = painter.layout_no_wrap(text.to_string(), theme::medium(12.0), ink);
+        let chip = egui::Rect::from_min_size(
+            rect.min + egui::Vec2::splat(10.0),
+            galley.size() + egui::vec2(28.0, 8.0),
+        );
+        painter.rect_filled(chip, theme::RADIUS_CHIP, theme::SURFACE);
+        painter.circle_filled(chip.left_center() + egui::vec2(11.0, 0.0), 3.0, dot);
+        painter.galley(chip.min + egui::vec2(20.0, 4.0), galley, ink);
+    }
 }
 
-/// The picture being shared: a low sun going down over a swell, in flat fills from the accent's
-/// family. Drawn once per screen, so every peer visibly holds the same frame.
+/// The picture being shared: OpenStream's own mark, the same frame on every screen, so each peer
+/// visibly holds what the sharer sends.
 fn shared_picture(painter: &egui::Painter, rect: egui::Rect) {
-    const SKY: egui::Color32 = egui::Color32::from_rgb(12, 44, 68);
-    const FAR: egui::Color32 = egui::Color32::from_rgb(9, 31, 50);
-    const NEAR: egui::Color32 = egui::Color32::from_rgb(6, 19, 33);
-    const SUN_CENTER: (f32, f32) = (0.63, 0.56);
-    const SUN_RADIUS: f32 = 0.36;
-    /// Slices taken out of the sun's lower half: top of each as a fraction of the height, then its
-    /// thickness.
-    const SUN_BANDS: [(f32, f32); 3] = [(0.50, 0.02), (0.56, 0.03), (0.63, 0.045)];
-    const FAR_SWELL: [(f32, f32); 7] = [
-        (0.0, 0.70),
-        (0.16, 0.62),
-        (0.32, 0.70),
-        (0.50, 0.63),
-        (0.68, 0.71),
-        (0.86, 0.62),
-        (1.0, 0.68),
-    ];
-    const NEAR_SWELL: [(f32, f32); 6] = [
-        (0.0, 0.84),
-        (0.20, 0.77),
-        (0.42, 0.85),
-        (0.64, 0.78),
-        (0.82, 0.86),
-        (1.0, 0.79),
-    ];
-    let at = |x: f32, y: f32| rect.lerp_inside(egui::vec2(x, y));
-    painter.rect_filled(rect, 0.0, SKY);
-    painter.circle_filled(
-        at(SUN_CENTER.0, SUN_CENTER.1),
-        rect.height() * SUN_RADIUS,
-        theme::LIVE,
+    const PICTURE: egui::Color32 = egui::Color32::from_rgb(12, 44, 68);
+    const MARK_TO_HEIGHT: f32 = 0.36;
+    painter.rect_filled(rect, theme::RADIUS_CARD, PICTURE);
+    crate::icon::paint_mark_at(
+        painter,
+        egui::Rect::from_center_size(
+            rect.center(),
+            egui::Vec2::splat(rect.height() * MARK_TO_HEIGHT),
+        ),
     );
-    for (top, thickness) in SUN_BANDS {
-        painter.rect_filled(
-            egui::Rect::from_min_max(at(0.0, top), at(1.0, top + thickness)),
-            0.0,
-            SKY,
-        );
-    }
-    for (ridge, fill) in [(&FAR_SWELL[..], FAR), (&NEAR_SWELL[..], NEAR)] {
-        // A swell as one polygon is concave and epaint only fills convex shapes, so each span
-        // is its own quad down to the bottom edge. Each runs a point under the next, because two
-        // feathered edges meeting exactly would leave a visible seam.
-        for span in ridge.windows(2) {
-            let ((x0, y0), (x1, y1)) = (span[0], span[1]);
-            let overlap = egui::vec2(1.0, 0.0);
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    at(x0, y0),
-                    at(x1, y1) + overlap,
-                    at(x1, 1.0) + overlap,
-                    at(x0, 1.0),
-                ],
-                fill,
-                egui::Stroke::NONE,
-            ));
-        }
-    }
 }
 
 #[cfg(test)]
@@ -410,6 +384,53 @@ mod tests {
         let id = SecretKey::from_bytes(&[7u8; 32]).public();
         let addr = EndpointAddr::new(id).with_ip_addr(SocketAddr::from(([192, 168, 1, 10], 4433)));
         RoomTicket::new([1u8; 32], vec![addr])
+    }
+
+    #[test]
+    fn the_diagram_keeps_one_axis_and_two_clean_sides_at_every_window_size() {
+        for (width, height) in [
+            (468.0, 516.0),
+            (788.0, 716.0),
+            (1200.0, 1000.0),
+            (500.0, 300.0),
+        ] {
+            let area =
+                egui::Rect::from_min_size(egui::pos2(444.0, 60.0), egui::vec2(width, height));
+            let [sharer, left, right] = diagram_screens(area);
+            assert!(
+                (left.left() - sharer.left()).abs() < 0.01
+                    && (right.right() - sharer.right()).abs() < 0.01,
+                "viewers must end on the sharer's edges at {width} by {height}"
+            );
+            assert_eq!(left.size(), right.size());
+            assert_eq!(left.top(), right.top());
+            assert!(
+                (sharer.right() - area.right()).abs() < 0.01,
+                "ends on the column's edge"
+            );
+            assert!(
+                ((sharer.top() + left.bottom()) / 2.0 - area.center().y).abs() < 0.01,
+                "centred on the area's height"
+            );
+            assert!(
+                sharer.top() >= area.top() - 0.01 && left.bottom() <= area.bottom() + 0.01,
+                "{width} by {height} overflows: {sharer:?} {left:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_diagram_with_no_room_collapses_instead_of_inverting() {
+        for (width, height) in [(10.0, 500.0), (500.0, 40.0), (0.0, 0.0)] {
+            let area =
+                egui::Rect::from_min_size(egui::pos2(444.0, 60.0), egui::vec2(width, height));
+            for screen in diagram_screens(area) {
+                assert!(
+                    screen.width() >= 0.0 && screen.height() >= 0.0,
+                    "{width} by {height} gave {screen:?}"
+                );
+            }
+        }
     }
 
     #[test]

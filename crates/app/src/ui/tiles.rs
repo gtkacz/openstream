@@ -24,13 +24,19 @@ pub enum Placement {
 }
 
 /// The gap around each tile, as the inset of the area and of each cell from its grid neighbours.
-const AREA_INSET: f32 = 5.0;
-const CELL_INSET: f32 = 3.0;
-const TILE_RADIUS: u8 = 8;
+/// Equal, so the gap to the window's edge is the same as the gap between tiles.
+const AREA_INSET: f32 = 4.0;
+const CELL_INSET: f32 = 4.0;
+const TILE_RADIUS: u8 = theme::RADIUS_CARD;
+/// Wide enough to cover a square viewport's corners under `TILE_RADIUS`, which reach 0.42 of the
+/// radius past the curve, and narrow enough not to touch the next tile.
+const TILE_RING: f32 = 6.0;
 /// Below this tile width the toolbar drops its labels, keeping its names as tooltips.
 const LABELLED_TOOLBAR_WIDTH: f32 = 640.0;
 const TOOLBAR_HEIGHT: f32 = 48.0;
+const BAR_PADDING: f32 = 6.0;
 const TOOLBAR_MARGIN: f32 = 12.0;
+const EMPTY_GAP: f32 = 4.0;
 
 /// Draws the tile grid without the popped-out lives, returning where the video renderer should
 /// place each drawn live's frame, in egui points.
@@ -80,7 +86,7 @@ pub fn draw(
                 ui.painter().rect_stroke(
                     rect,
                     TILE_RADIUS,
-                    egui::Stroke::new(CELL_INSET + 1.0, theme::CANVAS),
+                    egui::Stroke::new(TILE_RING, theme::CANVAS),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -107,26 +113,32 @@ fn empty_canvas(ui: &mut egui::Ui, snapshot: &RoomSnapshot, popped: &HashSet<Til
         )
     };
     let shown = motion::arrive(ui.ctx(), ui.id().with("empty-canvas"), motion::SURFACE);
-    let center = ui.max_rect().center() + motion::rise(shown, 6.0);
-    ui.painter().text(
-        center - egui::vec2(0.0, 14.0),
-        egui::Align2::CENTER_CENTER,
-        title,
-        theme::semibold(20.0),
+    let painter = ui.painter();
+    let title = painter.layout_no_wrap(
+        title.to_string(),
+        theme::semibold(18.0),
         theme::TEXT.gamma_multiply(shown),
     );
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(egui::Rect::from_center_size(
-            center + egui::vec2(0.0, 28.0),
-            egui::vec2((ui.available_width() - 32.0).clamp(32.0, 360.0), 56.0),
-        )),
-        |ui| {
-            ui.set_opacity(shown);
-            ui.vertical_centered(|ui| {
-                ui.weak(hint);
-            });
-        },
+    let mut hint_job = egui::text::LayoutJob::single_section(
+        hint.to_string(),
+        egui::TextFormat::simple(
+            egui::FontId::proportional(14.0),
+            theme::SECONDARY.gamma_multiply(shown),
+        ),
     );
+    hint_job.wrap.max_width = (ui.available_width() - 32.0).clamp(32.0, 360.0);
+    hint_job.halign = egui::Align::Center;
+    let hint = painter.layout_job(hint_job);
+    // The pair is centred as one block, whichever way the hint wrapped.
+    let center = ui.max_rect().center() + motion::rise(shown, 6.0);
+    let top = center.y - (title.size().y + EMPTY_GAP + hint.size().y) / 2.0;
+    let hint_top = top + title.size().y + EMPTY_GAP;
+    painter.galley(
+        egui::pos2(center.x - title.size().x / 2.0, top),
+        title,
+        theme::TEXT,
+    );
+    painter.galley(egui::pos2(center.x, hint_top), hint, theme::SECONDARY);
 }
 
 /// The name that stays on the video, so a grid of screens can always be told apart.
@@ -148,7 +160,7 @@ fn name_chip(ui: &egui::Ui, rect: egui::Rect, title: &str, live: f32, opacity: f
     .intersect(rect);
     let mut painter = ui.painter_at(rect);
     painter.multiply_opacity(opacity);
-    painter.rect_filled(chip, 6.0, theme::SURFACE);
+    painter.rect_filled(chip, theme::RADIUS_CHIP, theme::SURFACE);
     painter.circle_filled(
         chip.left_center() + egui::vec2(PADDING.x + 3.0, 0.0),
         3.0,
@@ -162,10 +174,22 @@ fn name_chip(ui: &egui::Ui, rect: egui::Rect, title: &str, live: f32, opacity: f
 }
 
 /// What is happening instead of video: the stream's name, why it is not showing, and a spinner
-/// while something is still in flight. On its own surface, because a reconnecting tile can still
-/// be holding its last frame underneath, in any colour. When video arrives it fades off the picture
-/// still saying what it last said, rather than vanishing on the frame the state changed.
-fn tile_state(ui: &mut egui::Ui, id: egui::Id, rect: egui::Rect, title: &str, state: WatchState) {
+/// while something is still in flight. A wash covers the whole tile: it dims the last frame a
+/// reconnecting tile can still be holding, in any colour, and with no frame yet it shows where the
+/// tile is, so the words read as centred in something rather than adrift on the black canvas. When
+/// video arrives it fades off the picture still saying what it last said, rather than vanishing on
+/// the frame the state changed.
+fn tile_state(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    radius: u8,
+    title: &str,
+    state: WatchState,
+) {
+    const WASH: f32 = 0.85;
+    const SPINNER: f32 = 20.0;
+    const SPINNER_GAP: f32 = 12.0;
     let shown = motion::appear(ui.ctx(), id, state != WatchState::Live, motion::TRAVEL);
     if shown <= 0.0 {
         return;
@@ -184,37 +208,45 @@ fn tile_state(ui: &mut egui::Ui, id: egui::Id, rect: egui::Rect, title: &str, st
         WatchState::Reconnecting => ("Reconnecting", theme::WARNING, true),
         WatchState::Ended => ("Stream ended", theme::SECONDARY, false),
     };
-    let center = rect.center();
-    let height = if in_flight { 108.0 } else { 72.0 };
-    let card = egui::Rect::from_center_size(center, egui::vec2(rect.width().min(240.0), height))
-        .intersect(rect);
     let mut painter = ui.painter_at(rect);
     painter.multiply_opacity(shown);
-    painter.rect_filled(card, 10.0, theme::SURFACE);
-    if in_flight {
-        theme::spinner_at(
-            ui,
-            egui::Rect::from_center_size(center - egui::vec2(0.0, 28.0), egui::Vec2::splat(20.0)),
-            shown,
-        );
-    }
-    let text_top = if in_flight {
-        center.y + 6.0
-    } else {
-        center.y - 12.0
-    };
-    painter.text(
-        egui::pos2(center.x, text_top),
-        egui::Align2::CENTER_CENTER,
-        title,
+    painter.rect_filled(rect, radius, theme::SURFACE.gamma_multiply(WASH));
+    let mut title_job = egui::text::LayoutJob::simple_singleline(
+        title.to_string(),
         theme::medium(16.0),
         theme::TEXT,
     );
-    painter.text(
-        egui::pos2(center.x, text_top + 22.0),
-        egui::Align2::CENTER_CENTER,
+    title_job.wrap =
+        egui::text::TextWrapping::truncate_at_width((rect.width() - 2.0 * TOOLBAR_MARGIN).max(0.0));
+    let title = painter.layout_job(title_job);
+    let status = painter.layout_no_wrap(status.to_string(), egui::FontId::proportional(13.0), ink);
+    let spinner_space = if in_flight {
+        SPINNER + SPINNER_GAP
+    } else {
+        0.0
+    };
+    let center = rect.center();
+    let top = center.y - (spinner_space + title.size().y + status.size().y) / 2.0;
+    if in_flight {
+        theme::spinner_at(
+            ui,
+            egui::Rect::from_min_size(
+                egui::pos2(center.x - SPINNER / 2.0, top),
+                egui::Vec2::splat(SPINNER),
+            ),
+            shown,
+        );
+    }
+    let title_top = top + spinner_space;
+    let status_top = title_top + title.size().y;
+    painter.galley(
+        egui::pos2(center.x - title.size().x / 2.0, title_top),
+        title,
+        theme::TEXT,
+    );
+    painter.galley(
+        egui::pos2(center.x - status.size().x / 2.0, status_top),
         status,
-        egui::FontId::proportional(13.0),
         ink,
     );
 }
@@ -249,6 +281,10 @@ pub fn tile_overlay(
         ui,
         ui.id().with(("tile-state", key)),
         rect,
+        match placement {
+            Placement::Grid => TILE_RADIUS,
+            Placement::PopOut { .. } => 0,
+        },
         &title,
         watch.state,
     );
@@ -263,14 +299,14 @@ pub fn tile_overlay(
                 "decoded {}  keyframe requests {}  preset {preset}",
                 watch.frames_decoded, watch.keyframe_requests
             ),
-            egui::FontId::monospace(12.0),
+            egui::FontId::proportional(12.0),
             theme::TEXT,
         );
         let at = rect.left_top() + egui::vec2(TOOLBAR_MARGIN, TOOLBAR_MARGIN + 32.0);
         let painter = ui.painter_at(rect);
         painter.rect_filled(
             egui::Rect::from_min_size(at, galley.size()).expand(4.0),
-            4.0,
+            theme::RADIUS_CHIP,
             theme::SURFACE,
         );
         painter.galley(at, galley, theme::TEXT);
@@ -322,13 +358,18 @@ pub fn tile_overlay(
         ),
         egui::vec2(width, TOOLBAR_HEIGHT.min((rect.height() - 24.0).max(0.0))),
     );
-    ui.painter_at(rect)
-        .rect_filled(bar, 10.0, theme::SURFACE.gamma_multiply(opacity));
+    // Concentric with the controls inside it, which sit `BAR_PADDING` in from its edge.
+    let bar_radius = theme::RADIUS_CONTROL + BAR_PADDING as u8;
+    let mut shadow = ui.visuals().popup_shadow;
+    shadow.color = shadow.color.gamma_multiply(opacity);
+    let bar_painter = ui.painter_at(rect);
+    bar_painter.add(shadow.as_shape(bar, bar_radius));
+    bar_painter.rect_filled(bar, bar_radius, theme::SURFACE.gamma_multiply(opacity));
     let labelled = rect.width() >= LABELLED_TOOLBAR_WIDTH;
     ui.scope_builder(
         egui::UiBuilder::new()
             .id_salt(("stream-controls", key))
-            .max_rect(bar.shrink(6.0))
+            .max_rect(bar.shrink(BAR_PADDING))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(rect));
@@ -426,8 +467,10 @@ pub fn tile_overlay(
                 });
             // Nothing else wakes this window when the measure changes without input, such as after
             // a preset rename, and the bar would sit at the old width until something did.
-            let content_width = output.content_size.x + 12.0;
-            if content_width != width {
+            let content_width = output.content_size.x + 2.0 * BAR_PADDING;
+            // Against the clamped value: a toolbar wider than its tile would otherwise never match,
+            // and keep the window drawing for as long as the toolbar shows.
+            if content_width.min(available) != width {
                 ui.ctx().request_repaint();
             }
             ui.ctx()

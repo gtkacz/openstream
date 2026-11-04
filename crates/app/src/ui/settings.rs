@@ -3,7 +3,13 @@
 
 use brp_audio::OutputDevice;
 
+use super::{motion, theme};
 use crate::settings::{RelayChoice, Settings, normalised_nickname};
+
+const ROW_GAP: f32 = 12.0;
+/// The frame rates offered as one click each, and the choice to type any other.
+const FPS_CHOICES: [(Option<u32>, &str); 3] =
+    [(Some(30), "30 fps"), (Some(60), "60 fps"), (None, "Custom")];
 
 /// Dialog state: whether it is open, the draft being edited, the devices listed when it opened,
 /// and the last validation or save error.
@@ -18,6 +24,9 @@ pub struct SettingsDialog {
     pub devices: Vec<OutputDevice>,
     pub devices_error: Option<String>,
     pub error: String,
+    /// The frame rate is being typed rather than picked. Held apart from the value because 60 can be
+    /// a typed number too, and choosing Custom must not change it.
+    pub custom_fps: bool,
 }
 
 impl SettingsDialog {
@@ -36,6 +45,9 @@ impl SettingsDialog {
             }
         }
         self.error.clear();
+        self.custom_fps = !FPS_CHOICES
+            .iter()
+            .any(|(fps, _)| *fps == Some(settings.fps));
         self.open = true;
     }
 }
@@ -87,115 +99,133 @@ pub fn device_label(selected: Option<&str>, devices: &[OutputDevice]) -> String 
 pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -> Option<Settings> {
     let mut saved = None;
     let visible = dialog.open;
-    let (_, dismissed) = super::theme::dialog(ctx, "settings", "Settings", visible, |ui| {
+    let (_, dismissed) = theme::dialog(ctx, "settings", "Settings", visible, |ui| {
         egui::ScrollArea::vertical()
             .max_height((ctx.content_rect().height() - 200.0).clamp(120.0, 560.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                super::theme::section_heading(ui, "Your name");
-                ui.add(
-                    egui::TextEdit::singleline(&mut dialog.nickname_text)
-                        .margin(egui::vec2(12.0, 10.0))
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(16.0);
-                super::theme::section_heading(ui, "Connection");
-                let mut kind = RelayKind::of(&dialog.draft.relay);
-                let before = kind;
-                ui.radio_value(&mut kind, RelayKind::Default, "Public relays");
-                ui.radio_value(&mut kind, RelayKind::Custom, "Custom relay URL");
-                ui.radio_value(&mut kind, RelayKind::Disabled, "No relay (LAN only)");
-                if kind != before {
-                    dialog.draft.relay = switch_relay(&dialog.draft.relay, kind);
-                }
-                if let RelayChoice::Custom(url) = &mut dialog.draft.relay {
-                    ui.add(
-                        egui::TextEdit::singleline(url)
-                            .hint_text("https://relay.example.com/")
-                            .margin(egui::vec2(12.0, 10.0))
-                            .desired_width(f32::INFINITY),
-                    );
-                }
-                ui.add_space(16.0);
-                super::theme::section_heading(ui, "Frame rate ceiling");
-                ui.horizontal_wrapped(|ui| {
-                    super::theme::uniform_controls(ui);
-                    super::theme::drag_value(
+                theme::form_row(ui, "Your name", |ui| {
+                    theme::field(
                         ui,
-                        egui::DragValue::new(&mut dialog.draft.fps)
-                            .range(1..=u32::MAX)
-                            .suffix(" fps"),
+                        egui::TextEdit::singleline(&mut dialog.nickname_text),
+                        theme::CONTROL_HEIGHT,
                     );
-                    for fps in [30, 60] {
-                        let selected = dialog.draft.fps == fps;
-                        let option = super::theme::tactile(
+                });
+                ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Connection", |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let mut kind = RelayKind::of(&dialog.draft.relay);
+                    let before = kind;
+                    theme::radio(ui, &mut kind, RelayKind::Default, "Public relays");
+                    theme::radio(ui, &mut kind, RelayKind::Custom, "Custom relay URL");
+                    theme::radio(ui, &mut kind, RelayKind::Disabled, "No relay (LAN only)");
+                    if kind != before {
+                        dialog.draft.relay = switch_relay(&dialog.draft.relay, kind);
+                    }
+                    if let RelayChoice::Custom(url) = &mut dialog.draft.relay {
+                        ui.add_space(4.0);
+                        theme::field(
                             ui,
-                            super::theme::Tone::Neutral,
-                            selected,
-                            true,
-                            |ui| ui.add(egui::Button::new(format!("{fps} fps")).selected(selected)),
+                            egui::TextEdit::singleline(url).hint_text("https://relay.example.com/"),
+                            theme::CONTROL_HEIGHT,
                         );
-                        if option.clicked() {
-                            dialog.draft.fps = fps;
-                        }
                     }
                 });
-                ui.add_space(16.0);
-                super::theme::section_heading(ui, "Audio output");
-                let label =
-                    device_label(dialog.draft.audio.output_device.as_deref(), &dialog.devices);
-                let width = ui.available_width();
-                super::theme::dropdown(ui, "settings-output-device", label, Some(width), |ui| {
-                    ui.selectable_value(
-                        &mut dialog.draft.audio.output_device,
-                        None,
-                        "System default",
+                ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Frame rate ceiling", |ui| {
+                    let selected = (!dialog.custom_fps).then_some(dialog.draft.fps);
+                    let choice = theme::segmented(
+                        ui,
+                        "settings-fps",
+                        &FPS_CHOICES,
+                        selected,
+                        ui.available_width() / 3.0,
                     );
-                    for device in &dialog.devices {
+                    match choice {
+                        Some(Some(fps)) => {
+                            dialog.draft.fps = fps;
+                            dialog.custom_fps = false;
+                        }
+                        Some(None) => dialog.custom_fps = true,
+                        None => {}
+                    }
+                    motion::unfold(ui, "settings-custom-fps", dialog.custom_fps, |ui| {
+                        ui.add_space(4.0);
+                        theme::drag_value(
+                            ui,
+                            egui::DragValue::new(&mut dialog.draft.fps)
+                                .range(1..=u32::MAX)
+                                .suffix(" fps"),
+                        );
+                    });
+                });
+                ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Audio output", |ui| {
+                    let label =
+                        device_label(dialog.draft.audio.output_device.as_deref(), &dialog.devices);
+                    let width = ui.available_width();
+                    theme::dropdown(ui, "settings-output-device", label, Some(width), |ui| {
                         ui.selectable_value(
                             &mut dialog.draft.audio.output_device,
-                            Some(device.id.clone()),
-                            &device.name,
+                            None,
+                            "System default",
+                        );
+                        for device in &dialog.devices {
+                            ui.selectable_value(
+                                &mut dialog.draft.audio.output_device,
+                                Some(device.id.clone()),
+                                &device.name,
+                            );
+                        }
+                    });
+                    if let Some(error) = &dialog.devices_error {
+                        ui.colored_label(
+                            theme::ERROR,
+                            format!("Could not list output devices: {error}"),
                         );
                     }
                 });
-                ui.add_space(16.0);
-                super::theme::section_heading(ui, "Updates");
-                super::theme::switch(
-                    ui,
-                    &mut dialog.draft.check_updates,
-                    "Check for updates at launch",
-                );
-                ui.weak("Takes effect the next time OpenStream starts");
-                if let Some(error) = &dialog.devices_error {
-                    ui.colored_label(
-                        super::theme::ERROR,
-                        format!("Could not list output devices: {error}"),
+                ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Updates", |ui| {
+                    theme::switch(
+                        ui,
+                        &mut dialog.draft.check_updates,
+                        "Check for updates at launch",
                     );
-                }
+                    ui.label(
+                        egui::RichText::new("Takes effect the next time OpenStream starts")
+                            .small()
+                            .color(theme::SECONDARY),
+                    );
+                });
                 if room_open {
+                    ui.add_space(ROW_GAP);
                     ui.weak("Changes apply to the next room you open");
                 }
                 if !dialog.error.is_empty() {
-                    ui.colored_label(super::theme::ERROR, &dialog.error);
+                    ui.add_space(ROW_GAP);
+                    ui.colored_label(theme::ERROR, &dialog.error);
                 }
             });
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if super::theme::primary_button(ui, "Save changes", true).clicked() {
-                dialog.draft.nickname = normalised_nickname(&dialog.nickname_text);
-                match dialog.draft.validate() {
-                    Ok(()) => {
-                        saved = Some(dialog.draft.clone());
-                        dialog.open = false;
+        theme::dialog_footer(
+            ui,
+            |_| {},
+            |ui| {
+                if theme::primary_button(ui, "Save changes", true).clicked() {
+                    dialog.draft.nickname = normalised_nickname(&dialog.nickname_text);
+                    match dialog.draft.validate() {
+                        Ok(()) => {
+                            saved = Some(dialog.draft.clone());
+                            dialog.open = false;
+                        }
+                        Err(error) => dialog.error = error,
                     }
-                    Err(error) => dialog.error = error,
                 }
-            }
-            if super::theme::text_button(ui, "Cancel", true).clicked() {
-                dialog.open = false;
-            }
-        });
+                if theme::text_button(ui, "Cancel", true).clicked() {
+                    dialog.open = false;
+                }
+            },
+        );
     })?;
     // The title bar's close button and Esc behave like Cancel.
     dialog.open &= !dismissed;
@@ -233,6 +263,20 @@ mod tests {
             device_label(Some("host:gone"), &devices),
             "host:gone (not present)"
         );
+    }
+
+    #[test]
+    fn a_saved_frame_rate_outside_the_choices_opens_as_custom() {
+        let mut dialog = SettingsDialog::default();
+        let mut settings = Settings {
+            fps: 144,
+            ..Settings::default()
+        };
+        dialog.open_with(&settings, Ok(Vec::new()));
+        assert!(dialog.custom_fps);
+        settings.fps = 30;
+        dialog.open_with(&settings, Ok(Vec::new()));
+        assert!(!dialog.custom_fps);
     }
 
     #[test]

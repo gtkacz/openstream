@@ -12,18 +12,24 @@ pub fn dimensions(count: usize) -> (usize, usize) {
     (cols, count.div_ceil(cols))
 }
 
-/// One rect per tile in row-major order, each sized to one grid cell of `area`. When the last row
-/// is not full, its remaining cells stay empty.
+/// One rect per tile in row-major order, each sized to one grid cell of `area`. A last row that is
+/// not full sits centred, so the grid keeps one axis instead of leaving a hole at its corner.
 pub fn layout(area: Rect, count: usize) -> Vec<Rect> {
     let (cols, rows) = dimensions(count);
     if cols == 0 {
         return Vec::new();
     }
     let cell = Vec2::new(area.width() / cols as f32, area.height() / rows as f32);
+    let empty_cells = cols * rows - count;
     (0..count)
         .map(|index| {
             let (col, row) = (index % cols, index / cols);
-            let offset = Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
+            let centring = if row + 1 == rows {
+                empty_cells as f32 * cell.x / 2.0
+            } else {
+                0.0
+            };
+            let offset = Vec2::new(col as f32 * cell.x + centring, row as f32 * cell.y);
             Rect::from_min_size(area.min + offset, cell)
         })
         .collect()
@@ -81,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn three_tiles_fill_a_two_by_two_grid_row_major() {
+    fn three_tiles_fill_two_cells_and_centre_the_third_beneath_them() {
         let area = Rect::from_min_size(pos2(100.0, 50.0), vec2(200.0, 100.0));
         let rects = layout(area, 3);
         assert_eq!(rects.len(), 3);
@@ -95,8 +101,23 @@ mod tests {
         );
         assert_eq!(
             rects[2],
-            Rect::from_min_size(pos2(100.0, 100.0), vec2(100.0, 50.0))
+            Rect::from_min_size(pos2(150.0, 100.0), vec2(100.0, 50.0))
         );
+    }
+
+    #[test]
+    fn a_partly_filled_last_row_stays_on_the_axis_of_the_area_at_every_count() {
+        let area = Rect::from_min_size(pos2(10.0, 20.0), vec2(900.0, 600.0));
+        for count in 1..=9 {
+            let rects = layout(area, count);
+            let (columns, _) = dimensions(count);
+            let last_row = &rects[(count - 1) / columns * columns..];
+            let (left, right) = (last_row[0].left(), last_row[last_row.len() - 1].right());
+            assert!(
+                ((left + right) / 2.0 - area.center().x).abs() < 0.01,
+                "{count} tiles: last row spans {left} to {right}"
+            );
+        }
     }
 
     #[test]

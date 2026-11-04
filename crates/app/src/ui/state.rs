@@ -51,6 +51,8 @@ pub struct UiState {
     pub preset_choice: HashMap<TileKey, u32>,
     /// Tiles with the stats overlay open.
     pub stats_visible: HashSet<TileKey>,
+    /// This participant's lives with their quality details unfolded.
+    pub quality_open: HashSet<u32>,
     /// Bitrate being edited per (live id, preset id), committed when the widget is released.
     pub bitrate_edits: HashMap<(u32, u32), u32>,
     /// Frame rate being edited per live id, committed when the widget is released.

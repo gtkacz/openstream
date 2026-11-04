@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use brp_audio::{AppKey, AudioSelection, AudioSource};
 
 use super::state::UiState;
+use super::theme;
 use crate::settings::{AudioApplications, AudioMode};
 
 /// A row in the picker: an identity, what to call it, and whether the platform reports it playing
@@ -115,6 +116,9 @@ pub fn selection_summary(selection: &AudioSelection) -> String {
 }
 
 const MAX_LIST_HEIGHT: f32 = 400.0;
+const ROW_HEIGHT: f32 = 32.0;
+/// A radio's width and the gap after it.
+const RADIO_LABEL_INSET: f32 = 24.0;
 
 /// What one pass of the picker produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,49 +142,63 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
     let mut picker = ctx.data(|data| data.get_temp::<ApplicationPicker>(leaving_id))?;
     let rows = picker.rows();
     let (mut done, mut cancelled, mut refresh) = (false, false, false);
-    let (_, dismissed) = super::theme::dialog(
+    let (_, dismissed) = theme::dialog(
         ctx,
         "application-picker",
         "Applications the room hears",
         open,
         |ui| {
-            ui.radio_value(
+            ui.spacing_mut().interact_size.y = ROW_HEIGHT;
+            ui.spacing_mut().item_spacing.y = 0.0;
+            theme::radio(
+                ui,
                 &mut picker.only,
                 false,
                 "All applications (except OpenStream)",
             );
-            ui.radio_value(&mut picker.only, true, "Only the applications I select");
-            if rows.is_empty() {
-                ui.weak("No applications are playing audio");
-            }
+            theme::radio(ui, &mut picker.only, true, "Only the applications I select");
             let only = picker.only;
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 280.0).clamp(120.0, MAX_LIST_HEIGHT))
-                .show(ui, |ui| {
-                    for row in &rows {
-                        let mut chosen = picker.is_chosen(&row.key);
-                        let label = if row.playing {
-                            row.label.clone()
-                        } else {
-                            format!("{} (not playing)", row.label)
-                        };
-                        // Under "all" the list stays visible but disabled: what was chosen is
-                        // still there and a flip back loses nothing.
-                        let response =
-                            ui.add_enabled(only, egui::Checkbox::new(&mut chosen, label));
-                        if response.changed() {
-                            picker.toggle(&row.key, chosen);
-                        }
+            ui.horizontal(|ui| {
+                // Starts on the radio labels' edge, since this list belongs to the radio above it.
+                ui.add_space(RADIO_LABEL_INSET);
+                ui.vertical(|ui| {
+                    if rows.is_empty() {
+                        ui.add_space(4.0);
+                        ui.weak("No applications are playing audio");
                     }
+                    egui::ScrollArea::vertical()
+                        .max_height(
+                            (ctx.content_rect().height() - 280.0).clamp(120.0, MAX_LIST_HEIGHT),
+                        )
+                        .show(ui, |ui| {
+                            for row in &rows {
+                                let mut chosen = picker.is_chosen(&row.key);
+                                let label = if row.playing {
+                                    row.label.clone()
+                                } else {
+                                    format!("{} (not playing)", row.label)
+                                };
+                                // Under "all" the list stays visible but disabled: what was chosen
+                                // is still there and a flip back loses nothing.
+                                let check =
+                                    |ui: &mut egui::Ui| theme::check(ui, &mut chosen, &label);
+                                if ui.add_enabled(only, check).changed() {
+                                    picker.toggle(&row.key, chosen);
+                                }
+                            }
+                        });
                 });
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                super::theme::uniform_controls(ui);
-                done = super::theme::primary_button(ui, "Done", true).clicked();
-                cancelled = super::theme::text_button(ui, "Cancel", true).clicked();
-                refresh = super::theme::action(ui, super::theme::icons::REFRESH, "Refresh", true)
-                    .clicked();
             });
+            theme::dialog_footer(
+                ui,
+                |ui| {
+                    refresh = theme::action(ui, theme::icons::REFRESH, "Refresh", true).clicked();
+                },
+                |ui| {
+                    done = theme::primary_button(ui, "Done", true).clicked();
+                    cancelled = theme::text_button(ui, "Cancel", true).clicked();
+                },
+            );
         },
     )?;
     if !open {

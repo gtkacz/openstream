@@ -2,13 +2,16 @@
 //! whatever notice or error needs saying. In a compact window it also opens the Room and Share
 //! sheets, which hold what the rail holds in a wide one.
 
-use brp_room::RoomSnapshot;
+use brp_room::{AudioCaptureState, RoomSnapshot};
 
+use super::motion;
 use super::own_lives;
 use super::state::{CompactSheet, UiState};
 use super::theme::{self, icons};
 use super::update::{self, UpdateState};
 use crate::commands::RoomCommand;
+
+const GROUP_GAP: f32 = 8.0;
 
 /// Draws the dock. The master mute toggle emits `SetMasterMute`; the Settings button sets
 /// `open_settings`; the Update button sets `update_clicked`.
@@ -35,7 +38,7 @@ pub fn draw(
             if compact {
                 compact_row(ui, snapshot, state, commands, open_settings);
             } else {
-                wide_rows(ui, snapshot, state, commands, open_settings);
+                wide_row(ui, snapshot, state, commands, open_settings);
             }
         });
 }
@@ -59,10 +62,6 @@ fn compact_row(
                 icons::SHARE_MONITOR,
                 "Share",
             );
-            // The Share sheet that says this may be closed, and the portal takes a moment to open.
-            if state.share_pending {
-                theme::spinner(ui, 16.0);
-            }
         },
         |ui| {
             settings_button(ui, open_settings);
@@ -71,50 +70,66 @@ fn compact_row(
     );
 }
 
-/// One row when everything fits, otherwise the audio controls drop to a second row. The widths are
-/// the labelled controls measured with Chakra Petch, with the Stop sharing button showing.
-fn wide_rows(
+/// What the dock can afford to say at this width. It sheds words rather than taking a second row,
+/// because that height would come out of the video. The least useful go first, and the main action's
+/// label last. The widths are the controls measured in IBM Plex Sans, with Stop sharing showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DockFit {
+    audio_status: bool,
+    tools_labelled: bool,
+    audio_labelled: bool,
+    upload: bool,
+    share_labelled: bool,
+}
+
+impl DockFit {
+    fn for_width(width: f32) -> Self {
+        Self {
+            audio_status: width >= 1120.0,
+            tools_labelled: width >= 960.0,
+            audio_labelled: width >= 700.0,
+            upload: width >= 580.0,
+            share_labelled: width >= 470.0,
+        }
+    }
+}
+
+fn wide_row(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
     state: &UiState,
     commands: &mut Vec<RoomCommand>,
     open_settings: &mut bool,
 ) {
-    const ONE_ROW_WIDTH: f32 = 1200.0;
-    const ONE_ROW_WITHOUT_STATUS_WIDTH: f32 = 960.0;
-    const LABELLED_ROW_WIDTH: f32 = 640.0;
-    let width = ui.available_width();
-    let one_row = width >= ONE_ROW_WITHOUT_STATUS_WIDTH;
-    let labelled = width >= LABELLED_ROW_WIDTH;
-    let show_audio_status = width >= ONE_ROW_WIDTH || !one_row;
+    let fit = DockFit::for_width(ui.available_width());
     let mut mute_commands = Vec::new();
     theme::split_row(
         ui,
         theme::CONTROL_HEIGHT,
         |ui| {
-            own_lives::share_buttons(ui, snapshot, state, commands, labelled);
-            if one_row {
-                ui.add_space(8.0);
-                own_lives::audio_controls(ui, snapshot, commands, show_audio_status);
-            }
+            own_lives::share_buttons(
+                ui,
+                snapshot,
+                state,
+                commands,
+                own_lives::ShareLayout::Row {
+                    share_labelled: fit.share_labelled,
+                    tools_labelled: fit.tools_labelled,
+                },
+            );
+            ui.add_space(GROUP_GAP);
+            own_lives::audio_controls(ui, snapshot, commands, fit.audio_status, fit.audio_labelled);
         },
         |ui| {
             settings_button(ui, open_settings);
-            master_mute(ui, snapshot, &mut mute_commands, labelled);
-            if one_row {
+            master_mute(ui, snapshot, &mut mute_commands, fit.tools_labelled);
+            if fit.upload {
+                ui.add_space(GROUP_GAP);
                 upload(ui, state);
             }
         },
     );
     commands.extend(mute_commands);
-    if !one_row {
-        theme::split_row(
-            ui,
-            theme::CONTROL_HEIGHT,
-            |ui| own_lives::audio_controls(ui, snapshot, commands, show_audio_status),
-            |ui| upload(ui, state),
-        );
-    }
 }
 
 fn settings_button(ui: &mut egui::Ui, open_settings: &mut bool) {
@@ -123,6 +138,8 @@ fn settings_button(ui: &mut egui::Ui, open_settings: &mut bool) {
     }
 }
 
+/// Whatever needs saying right now, on a line above the controls. It opens and shuts on a spring, so
+/// the video above it gives up and takes back that height smoothly.
 fn notices(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
@@ -130,24 +147,36 @@ fn notices(
     update_state: &UpdateState,
     update_clicked: &mut bool,
 ) {
+    let audio_error = match &snapshot.own_audio.state {
+        AudioCaptureState::Failed(error) => Some(error),
+        _ => None,
+    };
     let has_notice = !state.status.is_empty()
+        || state.share_pending
         || update_state.available.is_some()
-        || snapshot.audio_output_error.is_some();
-    if !has_notice {
-        return;
-    }
-    ui.horizontal_wrapped(|ui| {
-        if !state.status.is_empty() {
-            ui.weak(state.status.as_str());
-        }
-        if update::draw(ui, update_state) {
-            *update_clicked = true;
-        }
-        if let Some(error) = &snapshot.audio_output_error {
-            ui.colored_label(theme::ERROR, format!("No audio output: {error}"));
-        }
+        || snapshot.audio_output_error.is_some()
+        || audio_error.is_some();
+    motion::unfold(ui, "dock-notices", has_notice, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if state.share_pending {
+                theme::spinner(ui, 16.0);
+                ui.weak("Starting your stream…");
+            }
+            if !state.status.is_empty() {
+                ui.weak(state.status.as_str());
+            }
+            if update::draw(ui, update_state) {
+                *update_clicked = true;
+            }
+            if let Some(error) = &snapshot.audio_output_error {
+                ui.colored_label(theme::ERROR, format!("No audio output: {error}"));
+            }
+            if let Some(error) = audio_error {
+                ui.colored_label(theme::ERROR, format!("Audio failed: {error}"));
+            }
+        });
+        ui.add_space(4.0);
     });
-    ui.add_space(4.0);
 }
 
 fn master_mute(
@@ -169,9 +198,10 @@ fn master_mute(
 }
 
 fn upload(ui: &mut egui::Ui, state: &UiState) {
+    ui.spacing_mut().item_spacing.x = 4.0;
     ui.label(theme::figure(format!("{} kbps", state.upload_kbps)))
         .on_hover_text("What you are sending to the room");
-    ui.label(theme::icon(icons::UPLOAD).color(theme::MUTED));
+    ui.label(theme::icon(icons::UPLOAD).color(theme::SECONDARY));
 }
 
 /// Clicking the open sheet's button closes it; clicking the other's switches straight to it.
@@ -186,5 +216,110 @@ fn sheet_button(
     if theme::toggle(ui, &mut selected, glyph, text).changed() {
         state.sheet = sheet;
         state.sheet_open = selected;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brp_audio::AudioSelection;
+    use brp_room::OwnAudioView;
+
+    use super::*;
+
+    fn room() -> RoomSnapshot {
+        RoomSnapshot {
+            me: iroh::SecretKey::from_bytes(&[1; 32]).public(),
+            nickname: "Alex".into(),
+            version: 1,
+            members: Vec::new(),
+            own_lives: Vec::new(),
+            watches: Vec::new(),
+            own_audio: OwnAudioView {
+                enabled: true,
+                state: AudioCaptureState::Capturing,
+                selection: AudioSelection::All,
+                subscribers: 12,
+                packets_encoded: 0,
+            },
+            audio_output_error: None,
+            master_mute: false,
+        }
+    }
+
+    /// Run at the width the dock itself gets, which also covers a rail dragged to its widest.
+    fn dock_text(width: f32) -> Vec<(String, egui::Rect)> {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let snapshot = room();
+        let mut state = UiState::new();
+        state.upload_kbps = 123_456;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 200.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        wide_row(ui, &snapshot, &state, &mut Vec::new(), &mut false);
+                    });
+            },
+        );
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_string(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_dock_stays_on_one_row_with_nothing_touching_at_every_width() {
+        for width in (396..=1800).step_by(4) {
+            let width = width as f32;
+            let text = dock_text(width);
+            let tops: Vec<f32> = text.iter().map(|(_, rect)| rect.center().y).collect();
+            let (lowest, highest) = tops.iter().fold((f32::MAX, f32::MIN), |(low, high), y| {
+                (low.min(*y), high.max(*y))
+            });
+            assert!(
+                highest - lowest < 4.0,
+                "at {width} it took a second row: {text:?}"
+            );
+            for (name, rect) in &text {
+                assert!(
+                    rect.left() >= 0.0 && rect.right() <= width,
+                    "at {width} {name:?} leaves the dock: {rect:?}"
+                );
+            }
+            for (index, (name, rect)) in text.iter().enumerate() {
+                for (other, other_rect) in &text[index + 1..] {
+                    assert!(
+                        !rect.intersects(*other_rect),
+                        "at {width} {name:?} overlaps {other:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_main_action_keeps_its_words_longest() {
+        for width in (396..=1800).step_by(4) {
+            let fit = DockFit::for_width(width as f32);
+            assert!(fit.share_labelled || !fit.tools_labelled);
+            assert!(fit.tools_labelled || !fit.audio_status);
+            assert!(fit.audio_labelled || !fit.tools_labelled);
+        }
     }
 }

@@ -1,7 +1,9 @@
 //! Render the actual native UI without opening a window or connecting to peers.
 //! cargo run -p brp --example ui_preview -- /tmp/openstream start 1280 800
 //! A fifth argument captures that many 60 Hz frames in, to see motion part way through.
-//! Screens: start, room, watching, grid, sheet, empty, settings, picker, applications.
+//! A sixth sets the display scale; the width and height stay in physical pixels.
+//! Screens: start, recent, focus, room, quality, menu, watching, grid, sheet, sharesheet, empty,
+//! settings, custom, picker, applications.
 use std::{collections::HashSet, error::Error, io::Write};
 
 use brp_app::ui::{self, start::StartState, state::UiState, update::UpdateState};
@@ -21,8 +23,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let width: u32 = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(1280);
     let height: u32 = args.get(4).map(|s| s.parse()).transpose()?.unwrap_or(800);
     let frames: u32 = args.get(5).map(|s| s.parse()).transpose()?.unwrap_or(60);
+    let scale: f32 = args.get(6).map(|s| s.parse()).transpose()?.unwrap_or(1.0);
     let ctx = egui::Context::default();
     ui::theme::install(&ctx);
+    ctx.set_zoom_factor(scale);
     let mut start = StartState::new("Alex".into());
     let mut state = UiState::new();
     if screen == "picker" {
@@ -48,6 +52,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let mut settings = ui::settings::SettingsDialog::default();
     settings.open_with(&brp_app::settings::Settings::default(), Ok(Vec::new()));
+    if screen == "custom" {
+        settings.draft.relay =
+            brp_app::settings::RelayChoice::Custom("https://relay.example.com/".into());
+    }
     let mut snapshot = RoomSnapshot {
         me: SecretKey::from_bytes(&[1; 32]).public(),
         nickname: "Alex".into(),
@@ -65,10 +73,35 @@ fn main() -> Result<(), Box<dyn Error>> {
         audio_output_error: None,
         master_mute: false,
     };
-    if screen == "sheet" {
+    if matches!(screen, "sheet" | "sharesheet") {
         state.sheet_open = true;
     }
-    if matches!(screen, "room" | "watching" | "grid" | "sheet") {
+    if screen == "sharesheet" {
+        state.sheet = ui::state::CompactSheet::Share;
+    }
+    // Screens that are a click away: this text is clicked part way through the warm-up.
+    let click_on = match screen {
+        "menu" => Some("Source"),
+        "focus" => Some("Alex"),
+        "custom" => Some("Custom"),
+        _ => None,
+    };
+    let mut click_at = None;
+    if screen == "quality" {
+        state.quality_open.insert(1);
+    }
+    let recent = if screen == "recent" {
+        vec![brp_app::settings::RecentRoom {
+            ticket: "brproomticketexamplevaluethatrunslong".into(),
+            last_joined_unix: 0,
+        }]
+    } else {
+        Vec::new()
+    };
+    if matches!(
+        screen,
+        "room" | "quality" | "menu" | "watching" | "grid" | "sheet" | "sharesheet"
+    ) {
         snapshot.members.push(MemberView {
             id: SecretKey::from_bytes(&[2; 32]).public(),
             nickname: "Morgan".into(),
@@ -114,7 +147,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         snapshot.members.extend(others);
     }
-    if matches!(screen, "room" | "sheet") {
+    if screen == "quality" {
+        snapshot.members[0].has_audio = true;
+    }
+    if matches!(screen, "room" | "quality" | "menu" | "sheet" | "sharesheet") {
         let mut info = snapshot.members[0].lives[0].clone();
         info.title = "Monitor 1".into();
         snapshot.own_lives.push(OwnLiveView {
@@ -180,23 +216,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         let input = egui::RawInput {
             events: if matches!(screen, "watching" | "grid") {
                 vec![egui::Event::PointerMoved(egui::pos2(
-                    width as f32 * 0.7,
-                    height as f32 * 0.3,
+                    width as f32 * 0.7 / scale,
+                    height as f32 * 0.3 / scale,
                 ))]
+            } else if let Some(pos) = click_at.filter(|_| frame == 20 || frame == 21) {
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: frame == 20,
+                        modifiers: Default::default(),
+                    },
+                ]
             } else {
                 Vec::new()
             },
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(width as f32, height as f32),
+                egui::vec2(width as f32, height as f32) / scale,
             )),
             time: Some(f64::from(frame) / 60.0),
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            if screen == "start" || screen == "settings" {
-                ui::start::draw(ui, &mut start, &[], 0, &UpdateState::new(false));
-                if screen == "settings" {
+            if matches!(screen, "start" | "recent" | "focus" | "settings" | "custom") {
+                ui::start::draw(ui, &mut start, &recent, 7200, &UpdateState::new(false));
+                if matches!(screen, "settings" | "custom") {
                     ui::settings::draw(ui.ctx(), &mut settings, false);
                 }
             } else {
@@ -232,6 +278,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ui::applications::draw(ui.ctx(), &mut state);
             }
         });
+        // Tracked until just before the click, since a dialog rises into place over its first frames.
+        if let Some(label) = click_on.filter(|_| frame < 20) {
+            click_at = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+                }
+                _ => None,
+            });
+        }
         for (id, deltas) in output.textures_delta.set.drain() {
             for delta in deltas {
                 renderer.update_texture(&device, &queue, id, &delta);

@@ -70,6 +70,12 @@ const MARK_COLOR: egui::Color32 = egui::Color32::from_rgb(0x5C, 0xC8, 0xFF);
 /// Paints the icon's mark, without its tile, into a square of `size` points.
 pub fn paint_mark(ui: &mut egui::Ui, size: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
+    paint_mark_at(ui.painter(), rect);
+}
+
+/// Paints the mark into `rect`, which should be square.
+pub fn paint_mark_at(painter: &egui::Painter, rect: egui::Rect) {
+    let size = rect.width();
     let row_height = size / f32::from(MARK_ROWS);
     for &(row, start, end) in &MARK_BARS {
         // Bars hug the top of their row: centred, one straddles two pixels and the gaps vanish.
@@ -78,8 +84,7 @@ pub fn paint_mark(ui: &mut egui::Ui, size: f32) {
             egui::pos2(rect.left() + start * size, top),
             egui::pos2(rect.left() + end * size, top + row_height * MARK_BAR_TO_ROW),
         );
-        ui.painter()
-            .rect_filled(bar, bar.height() / 2.0, MARK_COLOR);
+        painter.rect_filled(bar, bar.height() / 2.0, MARK_COLOR);
     }
 }
 
