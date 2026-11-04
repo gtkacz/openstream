@@ -301,7 +301,7 @@ end_to_end() {
     record FAIL link-idle-window "viewers before=$before after=$(viewer_count)"
     ok=1
   fi
-  checkpoint watch 600
+  checkpoint watch 1800
   if grep -q 'decoder opened.*hardware="\?videotoolbox' "$VIEWER_LOG" 2>/dev/null; then
     record PASS viewer-decode "$(grep -o 'decoder opened.*' "$VIEWER_LOG" | head -1)"
   else

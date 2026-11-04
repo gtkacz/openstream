@@ -47,6 +47,21 @@ use crate::visibility::Visibility;
 /// Initial inner size of the main window and of every pop-out, in physical pixels.
 pub const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1280, 720);
 
+/// The initial inner size on `os` (a `std::env::consts::OS` value). macOS sizes windows in
+/// points and every Mac display is Retina, where [`DEFAULT_WINDOW_SIZE`] in pixels would be a
+/// quarter of the intended area; elsewhere the pixel size is kept as it always was.
+pub fn default_window_size(os: &str) -> winit::dpi::Size {
+    if os == "macos" {
+        winit::dpi::LogicalSize::new(
+            f64::from(DEFAULT_WINDOW_SIZE.width),
+            f64::from(DEFAULT_WINDOW_SIZE.height),
+        )
+        .into()
+    } else {
+        DEFAULT_WINDOW_SIZE.into()
+    }
+}
+
 /// Wakes the winit event loop for a reason that does not arrive as a `WindowEvent`. Sent through
 /// the `EventLoopProxy` from other threads (the room's background tasks, the open and share tasks).
 pub enum AppEvent {
@@ -683,7 +698,7 @@ impl App {
             Window::default_attributes()
                 .with_title(format!("OpenStream · {title}"))
                 .with_theme(Some(winit::window::Theme::Dark))
-                .with_inner_size(DEFAULT_WINDOW_SIZE)
+                .with_inner_size(default_window_size(std::env::consts::OS))
                 .with_visible(false),
         );
         let window = match event_loop.create_window(attributes) {
@@ -743,7 +758,7 @@ impl ApplicationHandler<AppEvent> for App {
             Window::default_attributes()
                 .with_title("OpenStream")
                 .with_theme(Some(winit::window::Theme::Dark))
-                .with_inner_size(DEFAULT_WINDOW_SIZE),
+                .with_inner_size(default_window_size(std::env::consts::OS)),
         )) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -1027,6 +1042,24 @@ fn affected_windows<Id: Copy + Eq + Hash>(
 mod tests {
     use super::*;
     use iroh::SecretKey;
+
+    #[test]
+    fn a_mac_opens_the_window_at_its_size_in_points_and_others_in_pixels() {
+        use winit::dpi::{LogicalSize, Size};
+        // Every Mac display is Retina: 1280 × 720 pixels there is a 640 × 360 point window,
+        // too small for the room rail, which then folds the members' streams out of sight.
+        assert_eq!(
+            default_window_size("macos"),
+            Size::Logical(LogicalSize::new(1280.0, 720.0))
+        );
+        for os in ["linux", "windows"] {
+            assert_eq!(
+                default_window_size(os),
+                Size::Physical(PhysicalSize::new(1280, 720)),
+                "{os}"
+            );
+        }
+    }
 
     #[test]
     fn a_finite_delay_becomes_a_deadline_and_no_request_becomes_none() {
