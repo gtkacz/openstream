@@ -85,6 +85,7 @@ impl PresenceLoop {
             ts_unix_ms: unix_ms(),
             nickname: self.nickname.clone(),
             lives: self.registry.live_infos(),
+            audio_mix: Some(self.registry.audio_mix()),
         };
         let bytes = match Signed::sign(&self.secret, &presence).and_then(|signed| encode(&signed)) {
             Ok(bytes) => bytes,

@@ -311,6 +311,7 @@ fn busy_room() -> brp_room::RoomSnapshot {
             seen_ago_ms: 0,
             path: brp_net::PathKind::Direct,
             has_audio: false,
+            audio_mix: None,
             gain: 1.0,
         }],
         own_lives: vec![OwnLiveView {

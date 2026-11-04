@@ -112,7 +112,8 @@ live back in the grid. A live is decoded once wherever it is shown.
 The dock also has a "Share audio" switch, on by default, beside an
 "Applications…" button. The button opens a dialog listing what is
 playing, with two radio buttons — all applications except OpenStream, or only the
-ones you tick — applied on Done and remembered in `settings.toml`. The tile
+ones you tick — applied on Done and remembered in `settings.toml`. The room rail tells viewers what you share: "all applications", or
+the identities of the ones you ticked. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
 that member in the room rail, and the dock has a "Mute all" for
 every publisher at once. On Linux, capture links to the selected applications'

@@ -2,7 +2,7 @@
 
 use brp_audio::AudioSelection;
 use brp_net::PathKind;
-use brp_proto::{LiveInfo, Preset};
+use brp_proto::{AudioMix, LiveInfo, Preset};
 use iroh::PublicKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +55,8 @@ pub struct MemberView {
     pub seen_ago_ms: u64,
     pub path: PathKind,
     pub has_audio: bool,
+    /// `None` for a peer on a release that does not say.
+    pub audio_mix: Option<AudioMix>,
     pub gain: f32,
 }
 

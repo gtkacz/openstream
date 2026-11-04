@@ -11,8 +11,11 @@ use brp_capture::{CaptureFrame, CaptureSession, SourceInfo};
 use brp_codec::{CodecError, FrameConverter, InputImage, RawFrame};
 use brp_net::{AudioSubscription, LiveSource, SubscribeRejected, Subscription};
 use brp_pipeline::{AudioPublisher, LatestSlot, Pacer, Publisher, SlotWait};
-use brp_proto::constants::{IDLE_KEYFRAME_RETRY, MAX_LIVES_PER_PARTICIPANT, MAX_PRESETS_PER_LIVE};
-use brp_proto::{ChromaLayout, LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
+use brp_proto::constants::{
+    IDLE_KEYFRAME_RETRY, MAX_AUDIO_MIX_NAME_LEN, MAX_AUDIO_MIX_NAMES, MAX_LIVES_PER_PARTICIPANT,
+    MAX_PRESETS_PER_LIVE,
+};
+use brp_proto::{AudioMix, ChromaLayout, LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
 
 use crate::codecs::EncoderFactory;
 use crate::error::RoomError;
@@ -474,6 +477,21 @@ impl LiveRegistry {
     /// deadline is what bounds it.
     pub fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
         self.audio_capture.sources()
+    }
+
+    /// What presence tells the room this participant's audio carries.
+    pub fn audio_mix(&self) -> AudioMix {
+        match &lock(&self.inner).audio.selection {
+            AudioSelection::All => AudioMix::All,
+            AudioSelection::Only(keys) => AudioMix::Only {
+                names: keys
+                    .iter()
+                    .take(MAX_AUDIO_MIX_NAMES)
+                    .map(|key| key.as_str().chars().take(MAX_AUDIO_MIX_NAME_LEN).collect())
+                    .collect(),
+                others: keys.len().saturating_sub(MAX_AUDIO_MIX_NAMES) as u32,
+            },
+        }
     }
 
     pub fn audio_enabled(&self) -> bool {

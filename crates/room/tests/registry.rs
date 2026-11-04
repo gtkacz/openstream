@@ -12,11 +12,12 @@ use brp_codec::fake::FakeDecoder;
 use brp_codec::{AudioEncoder, CodecError, FrameConverter, RawFrame, VideoDecoder, VideoEncoder};
 use brp_net::{LiveSource, SubscribeRejected};
 use brp_proto::constants::{
-    CHROMA_444_PRESET_ID, LOSSLESS_PRESET_ID, MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID,
+    CHROMA_444_PRESET_ID, LOSSLESS_PRESET_ID, MAX_AUDIO_MIX_NAME_LEN, MAX_AUDIO_MIX_NAMES,
+    MAX_LIVES_PER_PARTICIPANT, PROTOCOL_VERSION, SOURCE_PRESET_ID,
 };
 use brp_proto::{
-    ChromaLayout, Codec, CodecParams, EncodedFrame, PixelFormat, Preset, SourceKind,
-    quality_presets, template_presets,
+    AudioMix, ChromaLayout, Codec, CodecParams, EncodedFrame, PixelFormat, Presence, Preset,
+    SourceKind, quality_presets, template_presets,
 };
 use brp_room::AudioCaptureState;
 use brp_room::codecs::EncoderFactory;
@@ -660,6 +661,55 @@ async fn a_full_chroma_preset_does_not_share_a_converter_with_its_half_chroma_tw
         2,
         "4:4:4 and lossless share one converter; 4:2:0 cannot use it"
     );
+}
+
+#[test]
+fn presence_names_a_selection_but_never_what_happens_to_be_playing() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    assert_eq!(registry.audio_mix(), AudioMix::All);
+
+    let many: BTreeSet<AppKey> = (0..MAX_AUDIO_MIX_NAMES + 2)
+        .map(|index| AppKey::new(&format!("app{index}")))
+        .collect();
+    registry.set_audio_applications(AudioSelection::Only(many));
+    let AudioMix::Only { names, others } = registry.audio_mix() else {
+        panic!("a selection is named");
+    };
+    assert_eq!(names.len(), MAX_AUDIO_MIX_NAMES);
+    assert_eq!(others, 2);
+}
+
+#[test]
+fn an_overlong_application_name_is_cut_to_what_presence_accepts() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let long = "x".repeat(MAX_AUDIO_MIX_NAME_LEN + 10);
+    registry.set_audio_applications(AudioSelection::Only(BTreeSet::from([AppKey::new(&long)])));
+    let presence = Presence {
+        version: PROTOCOL_VERSION,
+        ts_unix_ms: 1,
+        nickname: "gt".into(),
+        lives: vec![],
+        audio_mix: Some(registry.audio_mix()),
+    };
+    assert!(presence.validate().is_ok());
 }
 
 #[tokio::test]

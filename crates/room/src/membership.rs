@@ -59,7 +59,8 @@ impl Membership {
             Some(existing) if presence.ts_unix_ms <= existing.presence.ts_unix_ms => Applied::Stale,
             Some(existing) => {
                 let changed = existing.presence.nickname != presence.nickname
-                    || existing.presence.lives != presence.lives;
+                    || existing.presence.lives != presence.lives
+                    || existing.presence.audio_mix != presence.audio_mix;
                 existing.presence = presence;
                 existing.last_seen = now;
                 if changed {
@@ -119,7 +120,20 @@ mod tests {
             ts_unix_ms: ts,
             nickname: nickname.into(),
             lives: vec![],
+            audio_mix: None,
         }
+    }
+
+    #[test]
+    fn a_changed_audio_mix_counts_as_an_update() {
+        let mut membership = Membership::new(Duration::from_secs(20));
+        let now = Instant::now();
+        membership.apply(key(1), presence(1, "gt"), now);
+        let changed = Presence {
+            audio_mix: Some(brp_proto::AudioMix::All),
+            ..presence(2, "gt")
+        };
+        assert_eq!(membership.apply(key(1), changed, now), Applied::Updated);
     }
 
     fn key(seed: u8) -> PublicKey {

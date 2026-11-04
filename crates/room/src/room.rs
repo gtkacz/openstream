@@ -313,6 +313,7 @@ impl Room {
                 nickname: m.presence.nickname.clone(),
                 has_audio: m.has_audio(),
                 lives: m.presence.lives.clone(),
+                audio_mix: m.presence.audio_mix.clone(),
                 seen_ago_ms: now.duration_since(m.last_seen).as_millis() as u64,
                 path: self.watcher.path_kind(&m.id),
                 gain: self.mixer.gain(m.id.as_bytes()),

@@ -404,6 +404,7 @@ mod tests {
             seen_ago_ms: 0,
             path: PathKind::Unknown,
             has_audio: false,
+            audio_mix: None,
             gain: 1.0,
         }
     }

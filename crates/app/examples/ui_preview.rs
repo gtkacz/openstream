@@ -118,6 +118,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             seen_ago_ms: 0,
             path: PathKind::Unknown,
             has_audio: false,
+            audio_mix: Some(brp_proto::AudioMix::Only {
+                names: vec!["firefox".into(), "spotify".into()],
+                others: 0,
+            }),
             gain: 1.0,
         });
     }

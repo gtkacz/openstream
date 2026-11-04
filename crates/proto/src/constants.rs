@@ -78,6 +78,9 @@ pub const AUDIO_CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bounds one picker click. The enumeration runs on the window thread through the command-drain
 /// path, so borrowing capture's five seconds would freeze the UI on a sick daemon.
 pub const AUDIO_SOURCE_LIST_TIMEOUT: Duration = Duration::from_secs(1);
+/// Bounds what a presence spends naming mixed applications, against gossip's 4 KB message cap.
+pub const MAX_AUDIO_MIX_NAMES: usize = 8;
+pub const MAX_AUDIO_MIX_NAME_LEN: usize = 64;
 /// How often the Windows backend reconciles selected executable identities against live audio
 /// sessions. Session notifications are not reliable enough to make capture depend on them.
 pub const AUDIO_SESSION_POLL_INTERVAL: Duration = Duration::from_secs(1);

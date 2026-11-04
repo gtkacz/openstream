@@ -18,6 +18,6 @@ pub use messages::{
     VideoQuality, ViewerMessage, decode, encode,
 };
 pub use pixel::{ChromaLayout, PixelFormat};
-pub use presence::{LiveInfo, Presence, Signed};
+pub use presence::{AudioMix, LiveInfo, Presence, Signed};
 pub use templates::{quality_presets, template_presets};
 pub use ticket::RoomTicket;
