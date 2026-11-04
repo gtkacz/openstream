@@ -1,7 +1,9 @@
 //! The contracts between the platform backends and the pipeline.
 
+use std::collections::BTreeMap;
+
 use crate::error::AudioError;
-use crate::selection::{AudioSelection, AudioSource};
+use crate::selection::{AppKey, AudioSelection, AudioSource, SendVolumeSupport};
 
 /// Interleaved stereo float at 48 kHz, any length. Backends deliver what the platform hands them;
 /// the pipeline cuts frames.
@@ -26,6 +28,15 @@ pub trait AudioCapture: Send + Sync {
         selection: AudioSelection,
         sink: AudioSink,
     ) -> Result<Box<dyn AudioCaptureSession>, AudioError>;
+
+    /// When [`Self::set_send_volumes`] does anything.
+    fn send_volume_support(&self) -> SendVolumeSupport {
+        SendVolumeSupport::Never
+    }
+
+    /// Replaces how loud each application reaches the room, in percent, including for sessions
+    /// already running.
+    fn set_send_volumes(&self, _volumes: BTreeMap<AppKey, u8>) {}
 }
 
 pub trait AudioCaptureSession: Send {

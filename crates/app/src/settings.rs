@@ -1,6 +1,7 @@
 //! What persists across launches besides the identity key: one TOML file in the platform config
 //! directory, read once at startup and written whole after a room opens or the dialog saves.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -80,8 +81,9 @@ pub struct AudioSettings {
     pub applications: AudioApplications,
 }
 
-/// Serialised as `[audio.applications] mode = "all" | "only"` with `names`. Both fields are always
-/// written: flipping to every application for a film and back must not lose the set. This
+/// Serialised as `[audio.applications] mode = "all" | "only"` with `names` and, under
+/// `[audio.applications.volumes]`, the percent of any application not at full volume. `mode` and
+/// `names` are always written: flipping to every application for a film and back must not lose the set. This
 /// deliberately differs from [`RelayChoice`]'s adjacently-tagged shape, whose variants carry
 /// genuinely different data.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +91,7 @@ pub struct AudioSettings {
 pub struct AudioApplications {
     pub mode: AudioMode,
     pub names: Vec<String>,
+    pub volumes: BTreeMap<String, u8>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +103,15 @@ pub enum AudioMode {
 }
 
 impl AudioApplications {
+    /// How loud each application reaches the room. Names go through [`AppKey`] as in
+    /// [`Self::to_selection`].
+    pub fn to_volumes(&self) -> BTreeMap<AppKey, u8> {
+        self.volumes
+            .iter()
+            .map(|(name, percent)| (AppKey::new(name), *percent))
+            .collect()
+    }
+
     /// What the room captures with. Names go through [`AppKey`], so a hand-edited file with odd
     /// casing still matches on Windows; mirrors [`RelayChoice::to_relay_setting`].
     pub fn to_selection(&self) -> AudioSelection {
@@ -270,6 +282,7 @@ mod tests {
                 applications: AudioApplications {
                     mode: AudioMode::Only,
                     names: vec!["firefox".into(), "game.exe".into()],
+                    ..Default::default()
                 },
             },
             recent_rooms: vec![RecentRoom {
@@ -496,6 +509,7 @@ mod tests {
         let only = AudioApplications {
             mode: AudioMode::Only,
             names: vec!["firefox".into(), "game.exe".into()],
+            ..Default::default()
         };
         assert_eq!(
             only.to_selection(),
@@ -507,6 +521,7 @@ mod tests {
         let kept = AudioApplications {
             mode: AudioMode::All,
             names: vec!["firefox".into()],
+            ..Default::default()
         };
         assert_eq!(
             kept.to_selection(),
@@ -521,6 +536,7 @@ mod tests {
         let odd = AudioApplications {
             mode: AudioMode::Only,
             names: vec![r"C:\Games\GAME.EXE".into()],
+            ..Default::default()
         };
         assert_eq!(
             odd.to_selection(),

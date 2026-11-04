@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 label: "Firefox".into(),
             }],
             &brp_app::settings::AudioApplications::default(),
+            brp_audio::SendVolumeSupport::Always,
         );
     }
     let mut settings = ui::settings::SettingsDialog::default();

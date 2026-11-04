@@ -6,7 +6,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use brp_audio::{AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSource};
+use brp_audio::{
+    AppKey, AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSource,
+    SendVolumeSupport,
+};
 use brp_capture::{CaptureFrame, CaptureSession, SourceInfo};
 use brp_codec::{CodecError, FrameConverter, InputImage, RawFrame};
 use brp_net::{AudioSubscription, LiveSource, SubscribeRejected, Subscription};
@@ -471,6 +474,16 @@ impl LiveRegistry {
             }
         }
         (self.on_change)();
+    }
+
+    /// How loud each application reaches the room, in percent. Applies to a running capture without
+    /// swapping it, so no one hears a gap.
+    pub fn set_audio_volumes(&self, volumes: BTreeMap<AppKey, u8>) {
+        self.audio_capture.set_send_volumes(volumes);
+    }
+
+    pub fn send_volume_support(&self) -> SendVolumeSupport {
+        self.audio_capture.send_volume_support()
     }
 
     /// What the platform reports as playing audio now. Takes no registry lock: the backend's own

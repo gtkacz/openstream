@@ -63,16 +63,20 @@ pub(super) fn list_sources(process_id: u32) -> Result<Vec<AudioSource>, AudioErr
     }
 }
 
+/// The root process of each selected application with a session, and which application it is.
 pub(super) fn selected_roots(
     process_id: u32,
     selected: &BTreeSet<AppKey>,
-) -> Result<BTreeSet<u32>, AudioError> {
+) -> Result<BTreeMap<u32, AppKey>, AudioError> {
     let sessions = enumerate_sessions(process_id)?;
     let processes = process_snapshot()?;
     Ok(sessions
         .iter()
         .filter(|session| selected.contains(&session.key))
-        .filter_map(|session| application_root(session.pid, &session.key, &processes))
+        .filter_map(|session| {
+            application_root(session.pid, &session.key, &processes)
+                .map(|root| (root, session.key.clone()))
+        })
         .collect())
 }
 

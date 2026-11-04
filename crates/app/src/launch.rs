@@ -1,9 +1,10 @@
 //! Opening a room from the window: the settings the command line provides, and the async open
 //! that the start screen and the `create`/`join` commands share.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use brp_audio::{AudioSelection, CpalOutput, PlatformAudioCapture};
+use brp_audio::{AppKey, AudioSelection, CpalOutput, PlatformAudioCapture};
 use brp_capture::PlatformCapture;
 use brp_net::RelaySetting;
 use brp_proto::RoomTicket;
@@ -39,6 +40,8 @@ pub struct Launch {
     pub audio_output: Option<String>,
     /// Which applications the room's audio carries.
     pub audio_applications: AudioSelection,
+    /// How loud each of them reaches the room, in percent.
+    pub audio_volumes: BTreeMap<AppKey, u8>,
 }
 
 impl Launch {
@@ -55,6 +58,7 @@ impl Launch {
             relay,
             audio_output: settings.audio.output_device.clone(),
             audio_applications: settings.audio.applications.to_selection(),
+            audio_volumes: settings.audio.applications.to_volumes(),
         })
     }
 }
@@ -118,6 +122,7 @@ pub async fn open_room(
             room
         }
     };
+    room.set_audio_volumes(launch.audio_volumes.clone());
     if launch.relay != RelaySetting::Disabled && !room.online(RELAY_ONLINE_TIMEOUT).await {
         tracing::warn!(
             "relay registration timed out; the ticket may only work on the local network"
@@ -132,7 +137,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::settings::{AudioApplications, AudioMode, AudioSettings, RelayChoice};
-    use brp_audio::AppKey;
 
     fn saved() -> Settings {
         Settings {
@@ -144,6 +148,7 @@ mod tests {
                 applications: AudioApplications {
                     mode: AudioMode::Only,
                     names: vec!["firefox".into(), "game.exe".into()],
+                    ..Default::default()
                 },
             },
             recent_rooms: Vec::new(),

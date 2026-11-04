@@ -537,22 +537,31 @@ impl App {
         }
 
         if let Some(outcome) = picked {
-            let (command, persist) = match outcome {
-                PickerOutcome::Refresh => (RoomCommand::ChooseApplications, false),
+            let (commands, persist) = match outcome {
+                PickerOutcome::Refresh => (vec![RoomCommand::ChooseApplications], false),
                 PickerOutcome::Applied(applications) => {
-                    let command = RoomCommand::SetAudioApplications(applications.to_selection());
+                    let mut commands =
+                        vec![RoomCommand::SetAudioVolumes(applications.to_volumes())];
+                    if applications_ui::swaps_capture(
+                        &self.store.settings.audio.applications,
+                        &applications,
+                    ) {
+                        commands.push(RoomCommand::SetAudioApplications(
+                            applications.to_selection(),
+                        ));
+                    }
                     self.store.settings.audio.applications = applications.clone();
                     // Neither window is modal: if the Settings dialog is still open with a draft
                     // taken before this Done, a later Save would otherwise overwrite this choice
                     // on disk with the pre-edit one.
                     self.settings_dialog.draft.audio.applications = applications;
-                    (command, true)
+                    (commands, true)
                 }
             };
             let stored = self.store.settings.audio.applications.clone();
             if let Phase::Room(view) = &mut self.phase {
                 view.apply(
-                    vec![command],
+                    commands,
                     &self.runtime,
                     &self.proxy,
                     &mut self.state,

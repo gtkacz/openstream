@@ -1,10 +1,14 @@
 //! Wires endpoint, gossip, media server, registry, and watcher together behind one handle.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brp_audio::{AudioCapture, AudioOutput, AudioOutputSession, AudioSelection, AudioSource};
+use brp_audio::{
+    AppKey, AudioCapture, AudioOutput, AudioOutputSession, AudioSelection, AudioSource,
+    SendVolumeSupport,
+};
 use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::Mixer;
@@ -399,6 +403,15 @@ impl Room {
 
     pub fn set_audio_applications(&self, selection: AudioSelection) {
         self.registry.set_audio_applications(selection);
+    }
+
+    /// How loud each application reaches the room, in percent.
+    pub fn set_audio_volumes(&self, volumes: BTreeMap<AppKey, u8>) {
+        self.registry.set_audio_volumes(volumes);
+    }
+
+    pub fn send_volume_support(&self) -> SendVolumeSupport {
+        self.registry.send_volume_support()
     }
 
     /// Lists what is playing audio now, for the application picker.

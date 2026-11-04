@@ -2,7 +2,8 @@
 //! platform reports as audible, and the choice itself. Platform-neutral and pure, so the picker's
 //! logic and both backends' predicates are testable on one runner.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, PoisonError, RwLock};
 
 /// The identity a selection is stored under: an executable basename, normalised lowercase on
 /// Windows, or a bundle identifier, lowercase, on macOS. Never a pid — pids do not survive a restart, and one application often owns several
@@ -87,9 +88,65 @@ impl AudioSelection {
     }
 }
 
+/// How loud each application reaches the room, in percent; an application it does not name is at
+/// full volume. Shared with running sessions, so a change takes effect without swapping the session
+/// and gapping the room as a selection change does. The capture callback only holds the lock long
+/// enough to read a number, and already allocates per chunk, so a lock is not what threatens it.
+#[derive(Debug, Clone, Default)]
+pub struct SendVolumes(Arc<RwLock<BTreeMap<AppKey, u8>>>);
+
+impl SendVolumes {
+    pub fn set(&self, volumes: BTreeMap<AppKey, u8>) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = volumes;
+    }
+
+    /// The multiplier for audio owned by this identity. A stream with no identity cannot have been
+    /// given a volume, so it stays at full.
+    pub fn gain(&self, key: Option<&AppKey>) -> f32 {
+        let volumes = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        key.and_then(|key| volumes.get(key))
+            .map_or(1.0, |percent| f32::from((*percent).min(100)) / 100.0)
+    }
+}
+
+/// When a backend can tell one application's audio from another's before mixing it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SendVolumeSupport {
+    /// The platform hands over one finished mix.
+    #[default]
+    Never,
+    /// Only under [`AudioSelection::Only`]; [`AudioSelection::All`] is one finished mix.
+    OnlySelected,
+    Always,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_named_application_gets_its_volume_and_anything_else_stays_at_full() {
+        let volumes = SendVolumes::default();
+        volumes.set(BTreeMap::from([(AppKey::new("game"), 25)]));
+        assert_eq!(volumes.gain(Some(&AppKey::new("game"))), 0.25);
+        assert_eq!(volumes.gain(Some(&AppKey::new("firefox"))), 1.0);
+        assert_eq!(volumes.gain(None), 1.0);
+    }
+
+    #[test]
+    fn a_volume_above_full_from_a_hand_edited_file_is_read_as_full() {
+        let volumes = SendVolumes::default();
+        volumes.set(BTreeMap::from([(AppKey::new("game"), 250)]));
+        assert_eq!(volumes.gain(Some(&AppKey::new("game"))), 1.0);
+    }
+
+    #[test]
+    fn a_session_holding_a_clone_sees_a_later_change() {
+        let volumes = SendVolumes::default();
+        let session = volumes.clone();
+        volumes.set(BTreeMap::from([(AppKey::new("game"), 0)]));
+        assert_eq!(session.gain(Some(&AppKey::new("game"))), 0.0);
+    }
 
     #[test]
     fn a_key_is_the_basename_of_whatever_it_is_given() {

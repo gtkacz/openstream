@@ -1,9 +1,11 @@
 //! Linux capture: a PipeWire stream linked to every application's playback node except brp's own,
-//! so what we play from other participants never comes back to them.
+//! so what we play from other participants never comes back to them. Each application gets its own
+//! pair of the stream's ports, so its volume can be applied before the pairs are mixed to stereo.
 
 pub mod graph;
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -11,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use brp_proto::constants::{
-    AUDIO_CAPTURE_START_TIMEOUT, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AUDIO_SOURCE_LIST_TIMEOUT,
+    AUDIO_CAPTURE_START_TIMEOUT, AUDIO_SAMPLE_RATE, AUDIO_SOURCE_LIST_TIMEOUT,
 };
 use brp_proto::monotonic_us;
 use pipewire as pw;
@@ -19,22 +21,28 @@ use pw::spa::param::ParamType;
 use pw::spa::param::audio::{AudioFormat, AudioInfoRaw};
 use pw::spa::pod::serialize::PodSerializer;
 use pw::spa::pod::{Object, Pod, Value};
-use pw::spa::sys::{SPA_AUDIO_CHANNEL_FL, SPA_AUDIO_CHANNEL_FR, SPA_AUDIO_MAX_CHANNELS};
+use pw::spa::sys::{SPA_AUDIO_CHANNEL_START_Aux, SPA_AUDIO_MAX_CHANNELS};
 use pw::spa::utils::{Direction, SpaTypes};
 use pw::types::ObjectType;
 
-use self::graph::{Client, Graph, Input, LinkPlan, Node, NodeVerdict, OWN_STREAM_NAME, Port};
+use self::graph::{
+    APP_SLOTS, Client, Graph, Input, LinkPlan, Node, NodeVerdict, OWN_STREAM_NAME, Port, mix_slots,
+};
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
 use crate::error::AudioError;
-use crate::selection::{AppKey, AudioSelection, AudioSource};
+use crate::selection::{AppKey, AudioSelection, AudioSource, SendVolumeSupport, SendVolumes};
 
 pub struct PipeWireCapture {
     process_id: u32,
+    volumes: SendVolumes,
 }
 
 impl PipeWireCapture {
     pub fn new(process_id: u32) -> Self {
-        Self { process_id }
+        Self {
+            process_id,
+            volumes: SendVolumes::default(),
+        }
     }
 }
 
@@ -83,10 +91,18 @@ impl AudioCapture for PipeWireCapture {
         let error = Arc::new(Mutex::new(None));
         let error_slot = error.clone();
         let process_id = self.process_id;
+        let volumes = self.volumes.clone();
         let thread = thread::Builder::new()
             .name("brp-audio-pw".into())
             .spawn(move || {
-                if let Err(e) = run(process_id, selection, sink, quit_rx, ready_tx.clone()) {
+                if let Err(e) = run(
+                    process_id,
+                    selection,
+                    volumes,
+                    sink,
+                    quit_rx,
+                    ready_tx.clone(),
+                ) {
                     let message = e.to_string();
                     let _ = ready_tx.send(Err(e));
                     *error_slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(message);
@@ -118,6 +134,14 @@ impl AudioCapture for PipeWireCapture {
             thread: Some(thread),
         }))
     }
+
+    fn send_volume_support(&self) -> SendVolumeSupport {
+        SendVolumeSupport::Always
+    }
+
+    fn set_send_volumes(&self, volumes: BTreeMap<AppKey, u8>) {
+        self.volumes.set(volumes);
+    }
 }
 
 impl AudioCaptureSession for Session {
@@ -147,21 +171,46 @@ struct State {
     /// so it is learned from the registry instead, via `Graph`'s `NodeVerdict::Own`.
     stream_node: RefCell<Option<u32>>,
     inputs: RefCell<Inputs>,
+    /// Which application feeds each of our stereo pairs, read by the process callback.
+    owners: Arc<Mutex<Vec<Option<AppKey>>>>,
     /// Links we created, kept alive by holding the proxies.
     links: RefCell<Vec<pw::link::Link>>,
 }
 
 #[derive(Default)]
 struct Inputs {
-    left: Option<u32>,
-    right: Option<u32>,
+    /// Our input port ids by channel index: slot `s` is channels `2s` (left) and `2s + 1` (right).
+    ports: BTreeMap<usize, u32>,
     /// Plans that arrived before our own ports existed.
     deferred: Vec<LinkPlan>,
+}
+
+impl Inputs {
+    fn complete(&self) -> bool {
+        self.ports.len() == APP_SLOTS * 2
+    }
+}
+
+/// What the process callback owns.
+struct Capture {
+    sink: AudioSink,
+    owners: Arc<Mutex<Vec<Option<AppKey>>>>,
+    volumes: SendVolumes,
+}
+
+impl Capture {
+    fn gains(&self) -> Vec<f32> {
+        lock(&self.owners)
+            .iter()
+            .map(|owner| self.volumes.gain(owner.as_ref()))
+            .collect()
+    }
 }
 
 fn run(
     process_id: u32,
     selection: AudioSelection,
+    volumes: SendVolumes,
     sink: AudioSink,
     quit: pw::channel::Receiver<()>,
     ready: mpsc::Sender<Result<(), AudioError>>,
@@ -186,9 +235,14 @@ fn run(
         },
     )
     .map_err(pw_error)?;
+    let owners = Arc::new(Mutex::new(vec![None; APP_SLOTS]));
     let _listener = stream
-        .add_local_listener_with_user_data(sink)
-        .process(|stream, sink| {
+        .add_local_listener_with_user_data(Capture {
+            sink,
+            owners: owners.clone(),
+            volumes,
+        })
+        .process(|stream, capture| {
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };
@@ -207,8 +261,9 @@ fn run(
                 .iter()
                 .map(|b| f32::from_le_bytes(*b))
                 .collect();
+            let samples = mix_slots(&samples, &capture.gains());
             if !samples.is_empty() {
-                sink(AudioChunk {
+                (capture.sink)(AudioChunk {
                     samples,
                     capture_ts_us: monotonic_us(),
                 });
@@ -238,6 +293,7 @@ fn run(
         graph: RefCell::new(Graph::new(process_id, own_binary(), selection)),
         stream_node: RefCell::new(None),
         inputs: RefCell::new(Inputs::default()),
+        owners,
         links: RefCell::new(Vec::new()),
     });
     let on_global = state.clone();
@@ -419,6 +475,9 @@ impl State {
                 let node = node_of(id, props);
                 let name = node.name.clone();
                 let verdict = self.graph.borrow_mut().add_node(node);
+                // Built, and the old list freed, outside the lock the data thread also takes.
+                let owners = self.graph.borrow().slot_owners();
+                let _previous = std::mem::replace(&mut *lock(&self.owners), owners);
                 match verdict {
                     NodeVerdict::Own => {
                         *self.stream_node.borrow_mut() = Some(id);
@@ -473,24 +532,25 @@ impl State {
         }
     }
 
-    /// True once our own node and both of its input ports are known, which is what every link
-    /// plan waits for.
+    /// True once our own node and all of its input ports are known, which is what every link plan
+    /// waits for.
     fn linkable(&self) -> bool {
-        let inputs = self.inputs.borrow();
-        self.stream_node.borrow().is_some() && inputs.left.is_some() && inputs.right.is_some()
+        self.stream_node.borrow().is_some() && self.inputs.borrow().complete()
     }
 
     fn own_port(&self, id: u32, direction_out: bool, channel: &str) {
         if direction_out {
             return;
         }
+        let Some(index) = channel
+            .strip_prefix("AUX")
+            .and_then(|index| index.parse::<usize>().ok())
+        else {
+            return;
+        };
         let mut inputs = self.inputs.borrow_mut();
-        match channel {
-            "FL" => inputs.left = Some(id),
-            "FR" => inputs.right = Some(id),
-            _ => return,
-        }
-        if inputs.left.is_some() && inputs.right.is_some() {
+        inputs.ports.insert(index, id);
+        if inputs.complete() {
             let deferred = std::mem::take(&mut inputs.deferred);
             drop(inputs);
             for plan in deferred {
@@ -507,7 +567,10 @@ impl State {
     fn link(&self, plan: LinkPlan) {
         let (left, right) = {
             let inputs = self.inputs.borrow();
-            (inputs.left, inputs.right)
+            (
+                inputs.ports.get(&(plan.slot * 2)).copied(),
+                inputs.ports.get(&(plan.slot * 2 + 1)).copied(),
+            )
         };
         let stream_node = *self.stream_node.borrow();
         let (Some(left), Some(right), Some(stream_node)) = (left, right, stream_node) else {
@@ -545,10 +608,11 @@ fn format_pod() -> Vec<u8> {
     let mut info = AudioInfoRaw::new();
     info.set_format(AudioFormat::F32LE);
     info.set_rate(AUDIO_SAMPLE_RATE);
-    info.set_channels(u32::from(AUDIO_CHANNELS));
+    info.set_channels((APP_SLOTS * 2) as u32);
     let mut position = [0u32; SPA_AUDIO_MAX_CHANNELS as usize];
-    position[0] = SPA_AUDIO_CHANNEL_FL;
-    position[1] = SPA_AUDIO_CHANNEL_FR;
+    for (index, channel) in position.iter_mut().take(APP_SLOTS * 2).enumerate() {
+        *channel = SPA_AUDIO_CHANNEL_START_Aux + index as u32;
+    }
     info.set_position(position);
     let obj = Object {
         type_: SpaTypes::ObjectParamFormat.as_raw(),
@@ -559,6 +623,12 @@ fn format_pod() -> Vec<u8> {
         .expect("the audio format is a valid SPA object")
         .0
         .into_inner()
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn pw_error(error: pw::Error) -> AudioError {

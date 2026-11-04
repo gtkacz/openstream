@@ -7,6 +7,17 @@ use crate::selection::{AppKey, AudioSelection, AudioSource};
 
 const APP_OUTPUT_CLASS: &str = "Stream/Output/Audio";
 
+/// Stereo pairs our capture stream takes. PipeWire sums whatever is linked to one port, so telling
+/// applications apart needs a port pair per application. The stream's format is fixed when it
+/// connects, hence a fixed number, and 16 pairs fit `SPA_AUDIO_MAX_CHANNELS` with room to spare.
+pub const APP_SLOTS: usize = 16;
+
+/// Where audio goes that cannot have a volume of its own: streams with no identity, and any
+/// application beyond what the slots hold. Never assigned to an identity, so always at full.
+/// shortcut: an application past the 15th keeps full volume until it restarts, whatever its slider
+/// says; tell the picker which rows have no slot if anyone runs into that.
+const SHARED_SLOT: usize = 0;
+
 /// The `node.name` our own capture stream registers under.
 pub const OWN_STREAM_NAME: &str = "brp-audio-capture";
 
@@ -51,6 +62,8 @@ pub enum Input {
 pub struct LinkPlan {
     pub port: u32,
     pub node: u32,
+    /// Which of our stereo pairs the port feeds.
+    pub slot: usize,
     pub input: Input,
 }
 
@@ -87,6 +100,8 @@ pub struct Graph {
     nodes: BTreeMap<u32, Node>,
     /// Every output port seen, by id; ports can arrive before their node.
     ports: BTreeMap<u32, Port>,
+    /// The stereo pair each application with a live node feeds.
+    slots: BTreeMap<AppKey, usize>,
 }
 
 impl Graph {
@@ -98,6 +113,7 @@ impl Graph {
             clients: BTreeMap::new(),
             nodes: BTreeMap::new(),
             ports: BTreeMap::new(),
+            slots: BTreeMap::new(),
         }
     }
 
@@ -131,7 +147,50 @@ impl Graph {
             return NodeVerdict::NotSelected;
         }
         self.nodes.insert(node.id, node);
+        if let Some(key) = key {
+            self.assign_slot(key);
+        }
         NodeVerdict::Linked
+    }
+
+    /// Gives an application a stereo pair of its own, reclaiming those of applications that have
+    /// gone, or leaves it on the shared pair when every other one is taken.
+    fn assign_slot(&mut self, key: AppKey) {
+        if self.slots.contains_key(&key) {
+            return;
+        }
+        let live: Vec<AppKey> = self
+            .nodes
+            .keys()
+            .filter_map(|node| self.key_of(*node))
+            .collect();
+        self.slots.retain(|key, _| live.contains(key));
+        let free = (0..APP_SLOTS)
+            .filter(|slot| *slot != SHARED_SLOT)
+            .find(|slot| !self.slots.values().any(|taken| taken == slot));
+        match free {
+            Some(slot) => {
+                self.slots.insert(key, slot);
+            }
+            None => tracing::warn!(
+                key = key.as_str(),
+                "more applications than capture slots; this one stays at full volume"
+            ),
+        }
+    }
+
+    fn key_of(&self, node: u32) -> Option<AppKey> {
+        let client = self.nodes.get(&node)?.client?;
+        self.clients.get(&client)?.key.clone()
+    }
+
+    /// Which application feeds each stereo pair, for turning volumes into per-pair gains.
+    pub fn slot_owners(&self) -> Vec<Option<AppKey>> {
+        let mut owners = vec![None; APP_SLOTS];
+        for (key, slot) in &self.slots {
+            owners[*slot] = Some(key.clone());
+        }
+        owners
     }
 
     /// The applications behind the tracked nodes, collapsed by identity: what `sources()` reports.
@@ -205,12 +264,35 @@ impl Graph {
             "MONO" => Input::Both,
             _ => return None,
         };
+        let slot = self
+            .key_of(port.node)
+            .and_then(|key| self.slots.get(&key).copied())
+            .unwrap_or(SHARED_SLOT);
         Some(LinkPlan {
             port: port.id,
             node: port.node,
+            slot,
             input,
         })
     }
+}
+
+/// Mixes interleaved frames of [`APP_SLOTS`] stereo pairs down to stereo, each pair at its own gain.
+/// A trailing partial frame is dropped.
+pub fn mix_slots(samples: &[f32], gains: &[f32]) -> Vec<f32> {
+    samples
+        .as_chunks::<{ APP_SLOTS * 2 }>()
+        .0
+        .iter()
+        .flat_map(|frame| {
+            let (mut left, mut right) = (0.0, 0.0);
+            for (pair, gain) in frame.as_chunks::<2>().0.iter().zip(gains) {
+                left += pair[0] * gain;
+                right += pair[1] * gain;
+            }
+            [left, right]
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -264,6 +346,86 @@ mod tests {
     }
 
     #[test]
+    fn each_application_feeds_its_own_stereo_pair_and_all_its_streams_share_it() {
+        let mut graph = graph(AudioSelection::All);
+        graph.add_client(50, app(1000, "firefox", "Firefox"));
+        graph.add_client(51, app(1001, "firefox", "Firefox"));
+        graph.add_client(52, app(1002, "spotify", "Spotify"));
+        for (id, client) in [(10, 50), (20, 51), (30, 52)] {
+            graph.add_node(node(id, Some(client)));
+        }
+        let slot = |graph: &mut Graph, id, node| graph.add_port(port(id, node, "FL")).unwrap().slot;
+        let (first, second, other) = (
+            slot(&mut graph, 11, 10),
+            slot(&mut graph, 21, 20),
+            slot(&mut graph, 31, 30),
+        );
+        assert_eq!(first, second, "two streams of one application");
+        assert_ne!(first, other);
+        assert_ne!(first, SHARED_SLOT);
+        let owners = graph.slot_owners();
+        assert_eq!(owners[first], Some(AppKey::new("firefox")));
+        assert_eq!(owners[other], Some(AppKey::new("spotify")));
+        assert_eq!(owners[SHARED_SLOT], None);
+    }
+
+    #[test]
+    fn a_stream_with_no_identity_goes_on_the_shared_pair() {
+        let mut graph = graph(AudioSelection::All);
+        graph.add_client(50, client(1000));
+        graph.add_node(node(10, Some(50)));
+        assert_eq!(
+            graph.add_port(port(11, 10, "FL")).unwrap().slot,
+            SHARED_SLOT
+        );
+    }
+
+    #[test]
+    fn applications_beyond_the_slots_share_one_pair_and_a_slot_is_reclaimed_when_one_leaves() {
+        let mut graph = graph(AudioSelection::All);
+        for index in 0..APP_SLOTS as u32 {
+            let (client_id, node_id) = (100 + index, 200 + index);
+            let binary = format!("app{index}");
+            graph.add_client(client_id, app(1000 + index, &binary, &binary));
+            graph.add_node(node(node_id, Some(client_id)));
+        }
+        let last = 200 + APP_SLOTS as u32 - 1;
+        assert_eq!(
+            graph.add_port(port(900, last, "FL")).unwrap().slot,
+            SHARED_SLOT,
+            "one more than the pairs left for applications"
+        );
+
+        graph.remove(200);
+        graph.add_client(300, app(5000, "late", "Late"));
+        graph.add_node(node(301, Some(300)));
+        assert_ne!(
+            graph.add_port(port(901, 301, "FL")).unwrap().slot,
+            SHARED_SLOT
+        );
+    }
+
+    #[test]
+    fn each_pair_mixes_in_at_its_own_gain() {
+        let mut frame = vec![0.0; APP_SLOTS * 2];
+        frame[0] = 0.1;
+        frame[1] = 0.2;
+        frame[2] = 0.4;
+        frame[3] = 0.8;
+        let mut gains = vec![1.0; APP_SLOTS];
+        gains[1] = 0.5;
+        let mixed = mix_slots(&frame, &gains);
+        assert_eq!(mixed.len(), 2);
+        assert!((mixed[0] - 0.3).abs() < 1e-6, "{mixed:?}");
+        assert!((mixed[1] - 0.6).abs() < 1e-6, "{mixed:?}");
+    }
+
+    #[test]
+    fn a_partial_frame_is_dropped() {
+        assert!(mix_slots(&[1.0; APP_SLOTS * 2 - 1], &[1.0; APP_SLOTS]).is_empty());
+    }
+
+    #[test]
     fn stereo_ports_of_foreign_apps_are_linked_by_channel() {
         let mut graph = graph(AudioSelection::All);
         graph.add_client(50, client(1000));
@@ -273,6 +435,7 @@ mod tests {
             Some(LinkPlan {
                 port: 11,
                 node: 10,
+                slot: SHARED_SLOT,
                 input: Input::Left
             })
         );
@@ -281,6 +444,7 @@ mod tests {
             Some(LinkPlan {
                 port: 12,
                 node: 10,
+                slot: SHARED_SLOT,
                 input: Input::Right
             })
         );
@@ -308,6 +472,7 @@ mod tests {
             Some(LinkPlan {
                 port: 11,
                 node: 10,
+                slot: SHARED_SLOT,
                 input: Input::Both
             })
         );
@@ -332,6 +497,7 @@ mod tests {
             vec![LinkPlan {
                 port: 11,
                 node: 10,
+                slot: SHARED_SLOT,
                 input: Input::Left
             }]
         );

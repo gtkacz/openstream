@@ -161,11 +161,15 @@ impl RoomView {
                     self.room.set_audio_applications(selection);
                     Ok(())
                 }
+                RoomCommand::SetAudioVolumes(volumes) => {
+                    self.room.set_audio_volumes(volumes);
+                    Ok(())
+                }
                 // Mirrors `Share { source: None }`: enumeration runs here on the command-drain
                 // path, so a platform listing failure reaches the user as a status line.
                 RoomCommand::ChooseApplications => match self.room.audio_sources() {
                     Ok(sources) => {
-                        state.open_applications(sources, stored);
+                        state.open_applications(sources, stored, self.room.send_volume_support());
                         Ok(())
                     }
                     Err(error) => Err(error),
