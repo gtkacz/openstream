@@ -68,6 +68,8 @@ checkpoint() {
   echo "CHECKPOINT $name: waiting up to ${seconds}s (touch $DIR/continue-$name to go on)"
   local waited=0
   while [ "$waited" -lt "$seconds" ] && [ ! -e "$DIR/continue-$name" ]; do
+    # The viewer logs under ~/Library; a copy here lets whoever is watching read it as it grows.
+    cp "$VIEWER_LOG" "$DIR/viewer-live.log" 2>/dev/null || true
     sleep 2
     waited=$((waited + 2))
   done
