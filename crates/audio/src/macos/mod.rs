@@ -19,10 +19,8 @@ use objc2_screen_capture_kit::{SCRunningApplication, SCShareableContent};
 use self::stream::{Audience, Running, Shared, shareable};
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioSink};
 use crate::error::AudioError;
-use crate::macos_model::{
-    AppIds, AppliedTarget, AudioProcess, audible_sources, excluded_pids, selected_pids,
-};
-use crate::selection::{AppKey, AudioSelection, AudioSource};
+use crate::macos_model::{AppIds, AppliedTarget, AudioProcess, audible_sources, target_pids};
+use crate::selection::{AudioSelection, AudioSource};
 
 pub struct ScreenCaptureAudio {
     process_id: u32,
@@ -60,7 +58,8 @@ impl AudioCapture for ScreenCaptureAudio {
         let own_pid = self.own_pid();
         let content = shareable(AUDIO_CAPTURE_START_TIMEOUT)?;
         let error = Arc::new(Mutex::new(None));
-        let audience = audience(&content.0, &selection, own_pid);
+        let (audience, initial) = audience(applications(&content.0), &selection, own_pid);
+        tracing::debug!(pids = ?initial, mode = ?selection, "audio filter names these processes");
         let running = stream::start(
             &content.0,
             &audience,
@@ -70,27 +69,16 @@ impl AudioCapture for ScreenCaptureAudio {
         )?;
         let running = Arc::new(Mutex::new(running));
         let stop = Arc::new(AtomicBool::new(false));
-        // Under `Only`, an application launched after the start must still be heard: the
-        // watcher re-reads the running applications and retargets the stream when they change.
-        let watcher = match selection {
-            AudioSelection::All => None,
-            AudioSelection::Only(selected) => {
-                // The stream started with the selection as it stood then, so the watcher begins
-                // from that set rather than re-applying it.
-                let ids: Vec<AppIds> = applications(&content.0)
-                    .into_iter()
-                    .map(|(ids, _)| ids)
-                    .collect();
-                let initial = selected_pids(&ids, &selected, own_pid);
-                Some(spawn_watcher(
-                    selected,
-                    initial,
-                    own_pid,
-                    running.clone(),
-                    stop.clone(),
-                )?)
-            }
-        };
+        // The filter names applications, and applications come and go: an `Only` application
+        // launched after the start must be heard, and an OpenStream window opened after it (a
+        // link clicked while sharing) must not. The watcher re-reads them and retargets.
+        let watcher = Some(spawn_watcher(
+            selection,
+            initial,
+            own_pid,
+            running.clone(),
+            stop.clone(),
+        )?);
         tracing::info!("macos audio capture started");
         Ok(Box::new(Session {
             running,
@@ -101,19 +89,20 @@ impl AudioCapture for ScreenCaptureAudio {
     }
 }
 
-/// The applications `selection` names among those running now, or everything but OpenStream.
-fn audience(content: &SCShareableContent, selection: &AudioSelection, own_pid: i32) -> Audience {
-    let apps = applications(content);
-    match selection {
-        AudioSelection::All => {
-            let ids: Vec<AppIds> = apps.iter().map(|(ids, _)| ids.clone()).collect();
-            Audience::AllExcept(pick(apps, &excluded_pids(&ids, own_pid)))
-        }
-        AudioSelection::Only(selected) => {
-            let ids: Vec<AppIds> = apps.iter().map(|(ids, _)| ids.clone()).collect();
-            Audience::Only(pick(apps, &selected_pids(&ids, selected, own_pid)))
-        }
-    }
+/// The filter for `selection` over the applications running now, and the pids it names.
+fn audience(
+    apps: Vec<(AppIds, Shared<SCRunningApplication>)>,
+    selection: &AudioSelection,
+    own_pid: i32,
+) -> (Audience, BTreeSet<i32>) {
+    let ids: Vec<AppIds> = apps.iter().map(|(ids, _)| ids.clone()).collect();
+    let pids = target_pids(&ids, selection, own_pid);
+    let chosen = pick(apps, &pids);
+    let audience = match selection {
+        AudioSelection::All => Audience::AllExcept(chosen),
+        AudioSelection::Only(_) => Audience::Only(chosen),
+    };
+    (audience, pids)
 }
 
 fn pick(
@@ -170,7 +159,7 @@ fn running_applications(timeout: std::time::Duration) -> Result<Vec<AudioProcess
 }
 
 fn spawn_watcher(
-    selected: BTreeSet<AppKey>,
+    selection: AudioSelection,
     initial: BTreeSet<i32>,
     own_pid: i32,
     running: Arc<Mutex<Running>>,
@@ -193,15 +182,12 @@ fn spawn_watcher(
                         continue;
                     }
                 };
-                let apps = applications(&content.0);
-                let ids: Vec<AppIds> = apps.iter().map(|(ids, _)| ids.clone()).collect();
-                let pids = selected_pids(&ids, &selected, own_pid);
+                let (audience, pids) = audience(applications(&content.0), &selection, own_pid);
                 if !target.wants(&pids) {
                     continue;
                 }
                 // One update at a time: the watcher is the only caller, and it waits for the
                 // answer before recording which filter is live.
-                let audience = Audience::Only(pick(apps, &pids));
                 let outcome = lock(&running).retarget(&audience);
                 match &outcome {
                     Ok(()) => tracing::debug!(?pids, "retargeted the audio stream"),

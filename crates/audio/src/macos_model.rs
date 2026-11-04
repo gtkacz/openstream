@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brp_proto::constants::{EXECUTABLE_NAME, MACOS_BUNDLE_ID};
 
-use crate::selection::{AppKey, AudioSource};
+use crate::selection::{AppKey, AudioSelection, AudioSource};
 
 /// Whether a process is OpenStream: this one, any other bundled OpenStream (a link opened while a
 /// room is open starts a second window, which plays the room's audio), or an unbundled build,
@@ -47,6 +47,20 @@ pub(crate) fn excluded_pids(running: &[AppIds], own_pid: i32) -> BTreeSet<i32> {
         .filter(|app| app.is_openstream(own_pid))
         .map(|app| app.pid)
         .collect()
+}
+
+/// The pids the stream's filter names for `selection`: the OpenStream processes an `All` capture
+/// leaves out, or the applications an `Only` capture takes. Re-read on every poll, since either
+/// set changes as applications start and quit.
+pub(crate) fn target_pids(
+    running: &[AppIds],
+    selection: &AudioSelection,
+    own_pid: i32,
+) -> BTreeSet<i32> {
+    match selection {
+        AudioSelection::All => excluded_pids(running, own_pid),
+        AudioSelection::Only(selected) => selected_pids(running, selected, own_pid),
+    }
 }
 
 /// Which set of pids the stream's filter last took. A set counts as applied only once
@@ -265,6 +279,29 @@ mod tests {
             app(13, "com.spotify.client", "Spotify"),
         ];
         assert_eq!(excluded_pids(&running, own), BTreeSet::from([own, 11, 12]));
+    }
+
+    #[test]
+    fn the_filter_follows_openstream_windows_that_open_after_the_start() {
+        let own = 10;
+        let before = vec![
+            app(own, OWN_BUNDLE, "OpenStream"),
+            app(13, "com.spotify.client", "Spotify"),
+        ];
+        let after = vec![
+            app(own, OWN_BUNDLE, "OpenStream"),
+            app(13, "com.spotify.client", "Spotify"),
+            app(20, OWN_BUNDLE, "OpenStream"),
+        ];
+        let all = AudioSelection::All;
+        assert_eq!(target_pids(&before, &all, own), BTreeSet::from([own]));
+        assert_eq!(
+            target_pids(&after, &all, own),
+            BTreeSet::from([own, 20]),
+            "a window opened later is excluded too"
+        );
+        let only = AudioSelection::Only(BTreeSet::from([AppKey::bundle("com.spotify.client")]));
+        assert_eq!(target_pids(&after, &only, own), BTreeSet::from([13]));
     }
 
     #[test]

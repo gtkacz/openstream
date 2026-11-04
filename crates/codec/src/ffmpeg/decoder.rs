@@ -19,6 +19,7 @@ pub struct FfmpegDecoder {
     ctx: CodecContext,
     _device: Option<BufferRef>,
     hw_pix_fmt: Option<ff::AVPixelFormat>,
+    hw_device: Option<&'static str>,
     packet: Packet,
     frame: Frame,
     sw_frame: Frame,
@@ -63,9 +64,11 @@ impl FfmpegDecoder {
         let mut ctx = CodecContext::alloc(codec)?;
         let mut device = None;
         let mut hw_pix_fmt = None;
+        let mut hw_device = None;
         if hw == HwDecode::Auto && params.codec != Codec::Av1 {
-            for &(device_type, _) in HW_DEVICE_ORDER.iter() {
+            for &(device_type, device_name) in HW_DEVICE_ORDER.iter() {
                 if let Some((candidate, format)) = try_hw_device(codec, device_type) {
+                    hw_device = Some(device_name);
                     unsafe {
                         (*ctx.0).hw_device_ctx = candidate.new_ref("av_buffer_ref")?;
                         (*ctx.0).opaque = format as isize as *mut c_void;
@@ -102,6 +105,7 @@ impl FfmpegDecoder {
             ctx,
             _device: device,
             hw_pix_fmt,
+            hw_device,
             packet: Packet::new()?,
             frame: Frame::new()?,
             sw_frame: Frame::new()?,
@@ -114,6 +118,10 @@ impl FfmpegDecoder {
     }
     pub fn is_hardware(&self) -> bool {
         self.hw_pix_fmt.is_some()
+    }
+    /// The hardware API decoding runs on (`videotoolbox`, `d3d11va`, ...), when it does.
+    pub fn hardware_device(&self) -> Option<&'static str> {
+        self.hw_device
     }
 }
 fn find_decoder(codec: Codec) -> Result<(*const ff::AVCodec, &'static str), CodecError> {

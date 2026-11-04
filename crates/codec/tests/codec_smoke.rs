@@ -132,3 +132,38 @@ fn every_available_encoder_round_trips_through_decoder() {
         );
     }
 }
+
+/// On a Mac, HEVC and H.264 must encode and decode on VideoToolbox, not fall through to software.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_encodes_and_decodes_hevc_and_h264_on_videotoolbox() {
+    use brp_codec::ffmpeg::{FfmpegDecoder, HwDecode};
+    if !gated() {
+        return;
+    }
+    for (codec, expected) in [
+        (Codec::Hevc, "hevc_videotoolbox"),
+        (Codec::H264, "h264_videotoolbox"),
+    ] {
+        let mut encoder = open_encoder(&cfg(codec)).expect("VideoToolbox encoder");
+        assert_eq!(encoder.name(), expected);
+        let mut decoder = FfmpegDecoder::open(&encoder.params(), HwDecode::Auto).expect("decoder");
+        assert_eq!(
+            decoder.hardware_device(),
+            Some("videotoolbox"),
+            "{codec:?} decodes in software"
+        );
+        let mut decoded = 0;
+        for index in 0..12_u64 {
+            for packet in encoder
+                .encode(&RawFrame::black(320, 240, index * 33_333), false)
+                .unwrap()
+            {
+                use brp_codec::VideoDecoder;
+                decoded += decoder.decode(&packet).unwrap().len();
+            }
+        }
+        eprintln!("{expected}: {decoded} frames decoded on videotoolbox");
+        assert!(decoded >= 8, "{expected} decoded only {decoded} frames");
+    }
+}

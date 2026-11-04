@@ -38,7 +38,10 @@ pub fn is_software_encoder(name: &str) -> bool {
 pub fn open_encoder(cfg: &EncoderConfig) -> Result<Box<dyn VideoEncoder>, CodecError> {
     for &(name, _) in PROBE_ORDER.iter().filter(|(_, codec)| *codec == cfg.codec) {
         match open_named(name, cfg) {
-            Ok(encoder) => return Ok(encoder),
+            Ok(encoder) => {
+                tracing::info!(encoder = name, codec = ?cfg.codec, "encoder opened");
+                return Ok(encoder);
+            }
             Err(error) => tracing::debug!(encoder = name, error = %error, "encoder unavailable"),
         }
     }
@@ -75,16 +78,21 @@ fn open_named(
 }
 
 pub fn open_decoder(params: &CodecParams) -> Result<Box<dyn VideoDecoder>, CodecError> {
-    match FfmpegDecoder::open(params, HwDecode::Auto) {
-        Ok(decoder) => Ok(Box::new(decoder)),
+    let decoder = match FfmpegDecoder::open(params, HwDecode::Auto) {
+        Ok(decoder) => decoder,
         Err(error) => {
             tracing::warn!(error = %error, "hardware decoder failed, falling back to software");
-            Ok(Box::new(
-                FfmpegDecoder::open(params, HwDecode::Software)
-                    .map_err(|_| CodecError::NoDecoder(params.codec))?,
-            ))
+            FfmpegDecoder::open(params, HwDecode::Software)
+                .map_err(|_| CodecError::NoDecoder(params.codec))?
         }
-    }
+    };
+    tracing::info!(
+        decoder = decoder.name(),
+        hardware = decoder.hardware_device().unwrap_or("none"),
+        codec = ?params.codec,
+        "decoder opened"
+    );
+    Ok(Box::new(decoder))
 }
 
 pub fn open_audio_encoder() -> Result<Box<dyn AudioEncoder>, CodecError> {
