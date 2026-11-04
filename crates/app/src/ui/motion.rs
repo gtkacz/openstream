@@ -160,11 +160,14 @@ pub fn reveal<R>(
         .data(|data| data.get_temp::<f32>(measured_id))
         .unwrap_or(0.0);
     let width = ui.available_width();
-    let origin = ui.cursor().min;
+    let origin = ui.next_widget_position();
+    // Scroll-area content is unbounded vertically. Give the child a finite viewport-sized
+    // layout region so nested scopes do not inherit an infinite cursor position.
+    let max_height = measured.max(ui.ctx().content_rect().height());
     let mut child = ui.new_child(
         UiBuilder::new()
             .id_salt(("reveal", salt))
-            .max_rect(Rect::from_min_size(origin, vec2(width, f32::INFINITY)))
+            .max_rect(Rect::from_min_size(origin, vec2(width, max_height)))
             .layout(*ui.layout()),
     );
     if shown < 1.0 {

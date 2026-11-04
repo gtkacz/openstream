@@ -605,7 +605,7 @@ pub fn live_status(ui: &mut egui::Ui, text: &str, live: bool) {
 }
 
 pub fn brand(ui: &mut egui::Ui) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    ui.horizontal(|ui| {
         crate::icon::paint_mark(ui, 26.0);
         ui.label(RichText::new("OpenStream").font(semibold(18.0)));
     });

@@ -26,6 +26,27 @@ pub fn draw(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
+    let failures: Vec<_> = snapshot
+        .own_lives
+        .iter()
+        .flat_map(|live| live.presets.iter())
+        .filter_map(|preset| {
+            preset
+                .last_error
+                .as_ref()
+                .map(|error| format!("{} failed: {error}", preset.preset.name))
+        })
+        .collect();
+    if !failures.is_empty() {
+        egui::Area::new(egui::Id::new("own-live-failures"))
+            .fixed_pos(egui::pos2(16.0, 52.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                for failure in failures {
+                    ui.colored_label(theme::ERROR, failure);
+                }
+            });
+    }
     egui::Panel::left("members")
         .default_size(288.0)
         .min_size(280.0)
@@ -47,14 +68,19 @@ pub fn contents(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    // Two equal columns, so the pair ends on the same edge as the cards below it.
-    ui.columns(2, |columns| {
-        copy_button(&mut columns[0], icons::LINK, "Copy link", || {
-            link::share_link(ticket)
-        });
-        copy_button(&mut columns[1], icons::TICKET, "Copy ticket", || {
-            ticket.to_string()
-        });
+    // Two equal columns, sized to their buttons so they don't consume the rail's full height.
+    let button_width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(button_width, theme::CONTROL_HEIGHT),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| copy_button(ui, icons::LINK, "Copy link", || link::share_link(ticket)),
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(button_width, theme::CONTROL_HEIGHT),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| copy_button(ui, icons::TICKET, "Copy ticket", || ticket.to_string()),
+        );
     });
     ui.add_space(12.0);
     // `snapshot.members` excludes this participant, so count it in.
