@@ -292,6 +292,15 @@ impl App {
             }
             .await
             .map_err(|error| error.to_string());
+            // The files are in place either way; a bundle that could not be re-sealed still
+            // launches, so the relaunch goes ahead and the reason is logged.
+            #[cfg(target_os = "macos")]
+            if outcome.is_ok()
+                && let Err(error) =
+                    crate::bundle::refresh_after_update(&install, &release.version.to_string())
+            {
+                tracing::warn!(%error, "the app bundle could not be refreshed after the update");
+            }
             let _ = done.send_event(AppEvent::UpdateReady(outcome));
         });
     }

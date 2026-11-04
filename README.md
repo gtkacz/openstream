@@ -219,11 +219,15 @@ Tagged releases publish `OpenStream-<version>-macos-aarch64.zip`, an Apple
 Silicon app bundle to drag into Applications, and
 `brp-<version>-macos-aarch64.tar.gz`, the same files as a flat directory, which
 is what an in-app update downloads and swaps into `OpenStream.app/Contents/MacOS`.
-The bundle claims `brp://` links through its `Info.plist` and re-registers with
-LaunchServices on every launch; a link clicked while a room is open starts a
-second window, as on the other platforms. The bundle is signed ad hoc, not
-notarised, so the first launch needs Control-click › Open, and macOS asks for the
-recording permission again after an update. Every push uploads
+After swapping the files, the update writes the new version into the bundle's
+`Info.plist` and signs the bundle again, so its seal matches what is inside. An
+Intel Mac can build and run OpenStream from source but is never offered an
+update, since no Intel archive is published. The bundle claims `brp://` links
+through its `Info.plist` and re-registers with LaunchServices on every launch; a
+link clicked while a room is open starts a second window, as on the other
+platforms, and no OpenStream window ever captures another's audio. The bundle is
+signed ad hoc, not notarised, so the first launch needs Control-click › Open, and
+macOS asks for the recording permission again after an update. Every push uploads
 `brp-macos-aarch64` from the `macos` CI job.
 
 CI builds FFmpeg 8.1.3 from source as LGPL shared libraries with VideoToolbox,

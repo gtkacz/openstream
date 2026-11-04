@@ -18,6 +18,8 @@ pub enum UpdateError {
     Checksum(String),
     #[error("archive rejected: {0}")]
     Archive(String),
+    #[error("no release is published for this platform; build from source to update")]
+    Unpublished,
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("install directory {} is not writable: {source}", .dir.display())]

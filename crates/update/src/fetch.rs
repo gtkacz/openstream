@@ -11,21 +11,26 @@ use crate::apply::Staged;
 use crate::archive::extract;
 use crate::error::UpdateError;
 use crate::install::Install;
-use crate::release::{Release, Version, asset_name, checksum_for, newer_release, release_dir_name};
-use crate::{CHECKSUMS_FILE, RELEASES_URL, STAGING_PREFIX, UPDATE_CHECK_TIMEOUT, USER_AGENT};
+use crate::release::{Release, Version, asset_name, checksum_for, offered, release_dir_name};
+use crate::{
+    CHECKSUMS_FILE, PLATFORM, RELEASES_URL, STAGING_PREFIX, UPDATE_CHECK_TIMEOUT, USER_AGENT,
+};
 
 /// Asks GitHub which release is the latest. `Some` only when it is newer than `current`.
 ///
 /// A HEAD request that follows redirects: the old repository name redirects to the new one, and
 /// the latest-release page redirects to the tag page, whose URL names the version. The tag page
-/// itself is never downloaded.
+/// itself is never downloaded. A build with no published platform asks nothing.
 pub async fn check(current: Version) -> Result<Option<Release>, UpdateError> {
+    if PLATFORM.is_none() {
+        return Ok(None);
+    }
     let response = client()?
         .head(format!("{RELEASES_URL}/latest"))
         .send()
         .await?
         .error_for_status()?;
-    newer_release(current, response.url().as_str())
+    offered(PLATFORM, current, response.url().as_str())
 }
 
 /// Downloads the platform archive for `release` into a staging directory inside `install.dir`,
@@ -56,6 +61,7 @@ async fn fetch_into(
     staging: &Path,
     progress: &mut (impl FnMut(u64, Option<u64>) + Send),
 ) -> Result<Staged, UpdateError> {
+    let platform = PLATFORM.ok_or(UpdateError::Unpublished)?;
     let client = client()?;
     let base = format!("{RELEASES_URL}/download/{}", release.tag);
     let sums = client
@@ -65,7 +71,7 @@ async fn fetch_into(
         .error_for_status()?
         .text()
         .await?;
-    let asset = asset_name(release.version);
+    let asset = asset_name(release.version, platform);
     let expected = checksum_for(&sums, &asset)?;
 
     let archive = staging.join(&asset);
@@ -92,7 +98,7 @@ async fn fetch_into(
         )));
     }
 
-    let top_level = release_dir_name(release.version);
+    let top_level = release_dir_name(release.version, platform);
     let files = tokio::task::spawn_blocking({
         let archive = archive.clone();
         let staging = staging.to_path_buf();

@@ -24,11 +24,26 @@ is_system() {
   esac
 }
 
-# The path a dependency entry names, resolved: @rpath names are looked up in the FFmpeg build.
+# Where a relative name (@rpath, @loader_path, @executable_path) is looked for: the FFmpeg
+# build, then Homebrew's linked libraries, where the codec libraries FFmpeg links live.
+search_dirs="$FFMPEG_DIR/lib"
+if command -v brew >/dev/null 2>&1; then
+  search_dirs="$search_dirs $(brew --prefix)/lib"
+fi
+
+# The file a dependency entry names: an absolute path as is, a relative one by its file name in
+# the search directories, or nothing when it is in none of them.
 resolve() {
   case "$1" in
-    @rpath/*) echo "$FFMPEG_DIR/lib/${1#@rpath/}" ;;
-    @loader_path/* | @executable_path/*) echo "" ;;
+    @rpath/* | @loader_path/* | @executable_path/*)
+      for dir in $search_dirs; do
+        if [ -e "$dir/$(basename "$1")" ]; then
+          echo "$dir/$(basename "$1")"
+          return
+        fi
+      done
+      echo ""
+      ;;
     *) echo "$1" ;;
   esac
 }
@@ -75,8 +90,11 @@ if ! otool -l "$destination/brp" | grep -A2 LC_RPATH | grep -q '@executable_path
 fi
 
 # install_name_tool invalidates signatures, and arm64 refuses unsigned code: sign again, ad hoc.
-for file in "$destination"/*.dylib "$destination/brp"; do
-  codesign --force --sign - "$file"
+# Every file, not only the code: inside a bundle, Contents/MacOS is sealed as nested code, so the
+# licences beside brp need signatures too or the bundle cannot be signed. The in-app update does
+# the same after it swaps the files (crates/app/src/bundle.rs).
+for file in "$destination"/*; do
+  [ -f "$file" ] && codesign --force --sign - "$file"
 done
 
 # Nothing may point outside the directory.
@@ -96,7 +114,8 @@ env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$destination/brp" --vers
 if [ -n "$bundle" ]; then
   rm -rf "$bundle"
   mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
-  cp -R "$destination"/. "$bundle/Contents/MacOS/"
+  # ditto keeps the signatures codesign stored in extended attributes on the non-code files.
+  ditto "$destination" "$bundle/Contents/MacOS"
   sed "s/@VERSION@/$version/g" ci/macos/Info.plist > "$bundle/Contents/Info.plist"
   plutil -lint "$bundle/Contents/Info.plist"
 
@@ -110,5 +129,5 @@ if [ -n "$bundle" ]; then
   iconutil -c icns -o "$bundle/Contents/Resources/openstream.icns" "$iconset"
 
   codesign --force --sign - "$bundle"
-  codesign --verify --strict "$bundle"
+  codesign --verify --strict --verbose=2 "$bundle"
 fi
