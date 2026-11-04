@@ -9,6 +9,9 @@ pub const MAX_CONTROL_BYTES: usize = 64 * 1024;
 pub const RECEIVE_QUEUE_FRAMES: usize = 8;
 pub const SENDER_BACKLOG_FRAMES: usize = 2;
 pub const FORCED_KEYFRAME_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// The longest a viewer that keeps falling behind waits between keyframe requests. Every viewer of
+/// a preset shares its keyframes, so one stuck viewer must not cost the others one every second.
+pub const STALLED_VIEWER_KEYFRAME_MAX_INTERVAL: Duration = Duration::from_secs(5);
 pub const REORDER_MAX_WAIT: Duration = Duration::from_millis(200);
 pub const RESUBSCRIBE_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 pub const RESUBSCRIBE_BACKOFF_MAX: Duration = Duration::from_secs(30);

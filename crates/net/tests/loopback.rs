@@ -469,3 +469,49 @@ async fn a_viewer_that_stops_reading_loses_frames_instead_of_holding_them_in_mem
     client.close();
     router.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_viewer_asking_for_keyframes_in_a_burst_reaches_the_publisher_once() {
+    let (tx, rx) = mpsc::channel(8);
+    let source = Arc::new(ScriptedSource {
+        params: params(),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::new()),
+        keyframe_requests: AtomicUsize::new(0),
+    });
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let router = Router::builder(server_ep.clone())
+        .accept(
+            MEDIA_ALPN,
+            MediaServer::new(source.clone(), Arc::new(AllowAll)),
+        )
+        .spawn();
+    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let client = MediaClient::connect(&client_ep, server_ep.addr())
+        .await
+        .unwrap();
+    let mut sub = client.subscribe(1, 1, false).await.unwrap();
+
+    for _ in 0..5 {
+        sub.control
+            .send(ViewerMessage::RequestKeyframe)
+            .await
+            .unwrap();
+    }
+    // Control messages are handled in order, so the stream ending means all five were seen.
+    sub.control.send(ViewerMessage::Unsubscribe).await.unwrap();
+    while tokio::time::timeout(Duration::from_secs(5), sub.events.recv())
+        .await
+        .expect("the stream ends")
+        .is_some()
+    {}
+    assert_eq!(source.keyframe_requests.load(Ordering::SeqCst), 1);
+
+    drop(tx);
+    client.close();
+    router.shutdown().await.unwrap();
+}

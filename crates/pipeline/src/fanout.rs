@@ -1,3 +1,4 @@
+use brp_net::KeyframeLimit;
 use brp_proto::{
     EncodedFrame,
     constants::{
@@ -48,6 +49,9 @@ impl KeyframeRequest {
 struct Sub {
     tx: Sender<Arc<EncodedFrame>>,
     waiting: bool,
+    /// Keeps asking while this viewer waits, since a waiting viewer is only tried on a keyframe and
+    /// would otherwise be stranded once a refused request left nothing coming.
+    keyframes: KeyframeLimit,
 }
 pub struct FanOut {
     subs: Vec<Sub>,
@@ -81,7 +85,13 @@ impl FanOut {
     }
     pub fn add(&mut self) -> Receiver<Arc<EncodedFrame>> {
         let (tx, rx) = mpsc::channel(self.backlog);
-        self.subs.push(Sub { tx, waiting: true });
+        let mut keyframes = KeyframeLimit::default();
+        keyframes.allow(Instant::now());
+        self.subs.push(Sub {
+            tx,
+            waiting: true,
+            keyframes,
+        });
         if self.gate_keyframes {
             self.keyframe.request();
         }
@@ -96,23 +106,28 @@ impl FanOut {
         self.subs.retain(|s| !s.tx.is_closed());
     }
     pub fn push(&mut self, f: Arc<EncodedFrame>) -> PushOutcome {
+        self.push_at(f, Instant::now())
+    }
+    fn push_at(&mut self, f: Arc<EncodedFrame>, now: Instant) -> PushOutcome {
         let mut o = PushOutcome::default();
         let mut req = false;
         let gate = self.gate_keyframes;
         self.subs.retain_mut(|s| {
             if gate && s.waiting && !f.keyframe {
                 o.skipped += 1;
+                req |= s.keyframes.allow(now);
                 return true;
             }
             match s.tx.try_send(f.clone()) {
                 Ok(()) => {
                     s.waiting = false;
+                    s.keyframes = KeyframeLimit::default();
                     o.delivered += 1;
                     true
                 }
                 Err(TrySendError::Full(_)) => {
                     s.waiting = true;
-                    req = true;
+                    req |= s.keyframes.allow(now);
                     o.skipped += 1;
                     true
                 }
@@ -215,6 +230,53 @@ mod tests {
             }
         );
         assert_eq!(rx.try_recv().unwrap().seq, 5);
+    }
+
+    /// Plays a publisher at ten frames a second, a keyframe whenever one is granted, and returns how
+    /// many keyframes it made in `seconds`.
+    fn keyframes_made(
+        fanout: &mut FanOut,
+        kf: &KeyframeRequest,
+        start: Instant,
+        seconds: u64,
+    ) -> u32 {
+        let mut made = 0;
+        for tenth in 0..seconds * 10 {
+            let now = start + Duration::from_millis(tenth * 100);
+            let keyframe = kf.take_if_allowed(now);
+            made += u32::from(keyframe);
+            fanout.push_at(frame(tenth, keyframe), now);
+        }
+        made
+    }
+
+    #[test]
+    fn a_stuck_viewer_costs_the_others_fewer_and_fewer_keyframes() {
+        let kf = KeyframeRequest::new();
+        let mut fanout = FanOut::new(kf.clone());
+        let _never_read = fanout.add();
+        let made = keyframes_made(&mut fanout, &kf, Instant::now(), 60);
+        assert!(
+            made <= 20,
+            "a stuck viewer asked for {made} keyframes in a minute, not far off one a second"
+        );
+        assert!(made >= 3, "a stuck viewer stopped asking after {made}");
+    }
+
+    #[test]
+    fn a_viewer_refused_while_full_still_recovers_once_it_catches_up() {
+        let kf = KeyframeRequest::new();
+        let mut fanout = FanOut::new(kf.clone());
+        let mut rx = fanout.add();
+        let start = Instant::now();
+        keyframes_made(&mut fanout, &kf, start, 30);
+        while rx.try_recv().is_ok() {}
+        let later = start + Duration::from_secs(30);
+        keyframes_made(&mut fanout, &kf, later, 8);
+        assert!(
+            rx.try_recv().is_ok_and(|frame| frame.keyframe),
+            "with nothing else asking, the viewer's own next request must bring it back"
+        );
     }
 
     #[test]
