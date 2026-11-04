@@ -30,7 +30,7 @@ pub fn run(
     handler::register_scheme_handler();
     let store = SettingsStore::load()?;
     let launch = Launch::from_settings(&store.settings, &args)?;
-    let secret = identity::load_or_create()?;
+    let (secret, identity_lock) = identity::load_or_create()?;
     let nickname = launch::default_nickname(&launch, &secret);
     let install = match Install::current() {
         Ok(install) => {
@@ -113,6 +113,8 @@ pub fn run(
         }
     }
     if let Some(relaunch) = shutdown.relaunch {
+        // Let go first, or the new process could find the identity still taken.
+        drop(identity_lock);
         relaunch.spawn();
     }
     outcome

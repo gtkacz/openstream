@@ -19,7 +19,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     } else {
         RelaySetting::Default
     };
-    let secret = identity::load_or_create()?;
+    let (secret, _identity_lock) = identity::load_or_create()?;
     let nickname = args
         .nickname
         .clone()

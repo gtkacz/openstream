@@ -278,7 +278,9 @@ same for `brp-audio`.
 On first run, `brp` creates a persistent iroh identity in the platform config
 directory (`brp/identity.key`). On Unix it is created with mode `0600`. The
 public key identifies the participant to the transport; the private key and
-tickets should be treated as sensitive, and neither is written to logs.
+tickets should be treated as sensitive, and neither is written to logs. A second
+window opened while the first runs uses a temporary identity of its own, because
+two processes on one key would compete for relayed traffic and count as one member.
 
 Possession of a ticket is the access mechanism. Membership travels as signed
 presence messages verified against the author identity, and the media server
