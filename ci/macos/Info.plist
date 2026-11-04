@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The bundle's Info.plist. stage-macos.sh replaces @VERSION@; crates/app/src/bundle.rs tests
+     that the identifiers here match the ones the app registers and handles. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>OpenStream</string>
+	<key>CFBundleExecutable</key>
+	<string>brp</string>
+	<key>CFBundleIconFile</key>
+	<string>openstream</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.gtkacz.openstream</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>OpenStream</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.github.gtkacz.openstream.join</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>brp</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.social-networking</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>OpenStream shares the screen, window and audio you choose with the people in your room.</string>
+</dict>
+</plist>

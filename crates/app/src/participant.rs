@@ -51,6 +51,8 @@ pub fn run(
         .build()
         .map_err(|e| AppError::Window(e.to_string()))?;
     let proxy = event_loop.create_proxy();
+    #[cfg(target_os = "macos")]
+    crate::macos_links::install(proxy.clone());
 
     // Encoder byte counters and last-seen ages move without any frame arriving, so a slow tick
     // keeps the dock honest when nothing is watched.

@@ -25,6 +25,7 @@ use crate::commands::{RoomCommand, WindowCommand};
 use crate::dirty::DirtyStreams;
 use crate::icon::with_app_icon;
 use crate::launch::{self, Intent, Launch};
+use crate::link::{LinkRoute, new_window_args, route_link};
 use crate::popouts::PopOuts;
 use crate::relaunch::Relaunch;
 use crate::render::GpuContext;
@@ -65,6 +66,8 @@ pub enum AppEvent {
     UpdateProgress { received: u64, total: Option<u64> },
     /// The download and swap finished: relaunch, or the error to show.
     UpdateReady(Result<(), String>),
+    /// The system handed the running app a join link (macOS delivers clicks this way).
+    OpenLink(String),
 }
 
 /// What the window shows: the start screen, or a room.
@@ -231,6 +234,34 @@ impl App {
             let _ = done.send_event(AppEvent::RoomOpened(outcome.clone()));
             outcome
         }));
+    }
+
+    /// Opens a join link the system handed this window: here when the start screen is idle,
+    /// otherwise in a new process so the room open here is left alone.
+    fn open_link(&mut self, link: &str) {
+        let on_start_screen = matches!(self.phase, Phase::Start);
+        match route_link(on_start_screen, self.pending_open.is_some()) {
+            LinkRoute::Here => match crate::link::parse_ticket(link) {
+                Ok(ticket) => {
+                    self.start.connecting = true;
+                    self.open(Intent::Join(ticket));
+                }
+                Err(error) => self
+                    .start
+                    .show_error(&crate::error::AppError::Ticket(error).to_string()),
+            },
+            LinkRoute::NewWindow => {
+                let spawned = std::env::current_exe().and_then(|exe| {
+                    std::process::Command::new(exe)
+                        .args(new_window_args(link))
+                        .spawn()
+                });
+                if let Err(error) = spawned {
+                    tracing::warn!(%error, "could not open the link in a new window");
+                    self.state.status = format!("could not open the link: {error}");
+                }
+            }
+        }
     }
 
     /// Downloads and swaps in the release the check found, reporting progress and the outcome
@@ -777,6 +808,7 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::UpdateReady(Err(message)) => {
                 self.update.failed(message);
             }
+            AppEvent::OpenLink(link) => self.open_link(&link),
             // A room-version bump and the statistics tick are the two relevant state changes:
             // the former reconciles watch membership promptly, the latter also catches a relay
             // address change and advances age labels even when nothing is watched.

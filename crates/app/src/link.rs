@@ -12,6 +12,31 @@ pub const JOIN_PAGE: &str = "https://gtkacz.github.io/openstream/join/";
 /// What the page hands the operating system, and so what the binary receives from a click.
 pub const SCHEME_JOIN_PREFIX: &str = "brp://join/";
 
+/// Where a link the system hands a running window should open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkRoute {
+    /// In this window, which is idle on its start screen.
+    Here,
+    /// In a new `brp join` process, leaving this window's room alone: what a click does on
+    /// Linux and Windows, where every link starts a process.
+    NewWindow,
+}
+
+/// Where a link should open given this window's state: here only when it shows the start screen
+/// with nothing opening.
+pub fn route_link(on_start_screen: bool, opening: bool) -> LinkRoute {
+    if on_start_screen && !opening {
+        LinkRoute::Here
+    } else {
+        LinkRoute::NewWindow
+    }
+}
+
+/// The command line of the process that opens `link` in a new window.
+pub fn new_window_args(link: &str) -> Vec<std::ffi::OsString> {
+    vec!["join".into(), link.into()]
+}
+
 /// The share link for a ticket: the join page with the ticket in the fragment, which browsers
 /// never send to the server.
 pub fn share_link(ticket: &str) -> String {
@@ -49,6 +74,29 @@ mod tests {
         let id = SecretKey::from_bytes(&[7u8; 32]).public();
         let addr = EndpointAddr::new(id).with_ip_addr(SocketAddr::from(([192, 168, 1, 10], 4433)));
         RoomTicket::new([1u8; 32], vec![addr])
+    }
+
+    #[test]
+    fn a_link_opens_here_only_on_an_idle_start_screen() {
+        assert_eq!(route_link(true, false), LinkRoute::Here);
+        assert_eq!(
+            route_link(true, true),
+            LinkRoute::NewWindow,
+            "a room is already opening in this window"
+        );
+        assert_eq!(
+            route_link(false, false),
+            LinkRoute::NewWindow,
+            "a room is already open in this window"
+        );
+    }
+
+    #[test]
+    fn a_new_window_joins_the_link_it_was_given() {
+        assert_eq!(
+            new_window_args("brp://join/abc"),
+            vec![std::ffi::OsString::from("join"), "brp://join/abc".into()]
+        );
     }
 
     #[test]

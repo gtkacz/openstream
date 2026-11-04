@@ -1,4 +1,5 @@
 //! brp: peer-to-peer screen sharing. Everything the `brp` binary wires together.
+pub mod bundle;
 pub mod cli;
 pub mod commands;
 pub mod console;
@@ -10,6 +11,8 @@ pub mod identity;
 pub mod launch;
 pub mod link;
 pub mod logging;
+#[cfg(target_os = "macos")]
+pub mod macos_links;
 pub mod participant;
 pub mod popouts;
 pub mod presets;
