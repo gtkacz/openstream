@@ -97,6 +97,13 @@ impl FfmpegDecoder {
             let c = &mut *ctx.0;
             c.flags |= ff::AV_CODEC_FLAG_LOW_DELAY as c_int;
             c.thread_type = ff::FF_THREAD_SLICE as c_int;
+            // FFmpeg defaults to one thread, which leaves the thread type above doing nothing. Slice
+            // threads rather than frame threads, which are several times faster but hold the newest
+            // frames back until later ones arrive: compositors send frames only on damage, so on a
+            // still screen the last update would stay stuck in the decoder.
+            if hw_pix_fmt.is_none() {
+                c.thread_count = 0;
+            }
             c.max_pixels = MAX_DECODED_PIXELS;
             if !params.extradata.is_empty() {
                 let size = params.extradata.len();
