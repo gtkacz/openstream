@@ -47,7 +47,7 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Report abusive, harassing, or otherwise unacceptable behavior through
-[GitHub's private vulnerability reporting flow](https://github.com/gtkacz/brp_sharing/security/advisories/new).
+[GitHub's private vulnerability reporting flow](https://github.com/gtkacz/openstream/security/advisories/new).
 All reports will be handled with discretion. Maintainers will respect the
 privacy and security of the reporter as much as possible.
 

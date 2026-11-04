@@ -10,7 +10,7 @@ release after a security fix is published.
 
 Please **do not** open a public issue for a suspected security vulnerability.
 Instead, submit a private report through [GitHub's private vulnerability
-reporting flow](https://github.com/gtkacz/brp_sharing/security/advisories/new).
+reporting flow](https://github.com/gtkacz/openstream/security/advisories/new).
 
 Include, where possible:
 
