@@ -33,7 +33,7 @@ use crate::render::grid;
 use crate::render::surface::WindowSurface;
 use crate::render::tiles::{TileKey, TilePlacement, TileRenderer};
 use crate::render::ui::UiFrame;
-use crate::repaint::RepaintSchedule;
+use crate::repaint::{NextFrame, RepaintSchedule, next_frame};
 use crate::room_view::RoomView;
 use crate::settings::{SettingsStore, normalised_nickname, now_unix};
 use crate::ui::applications::{self as applications_ui, PickerOutcome};
@@ -443,14 +443,12 @@ impl App {
             let gone = std::mem::take(&mut self.state.gone_tiles);
             tiles.retain(|key| !gone.contains(key));
         }
-        let repaint_delay = ui_frame.repaint_delay;
-        if repaint_delay.is_zero() {
-            if presented {
-                main.window.request_redraw();
+        match next_frame(presented, ui_frame.repaint_delay) {
+            NextFrame::Immediately => main.window.request_redraw(),
+            NextFrame::After(delay) => {
+                let id = main.window.id();
+                self.note_repaint(id, delay);
             }
-        } else {
-            let id = main.window.id();
-            self.note_repaint(id, repaint_delay);
         }
 
         let had_commands = !output.commands.is_empty();
@@ -569,14 +567,12 @@ impl App {
         });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
         let presented = present(gpu, tiles, surface, &mut ui_frame, &placements);
-        let repaint_delay = ui_frame.repaint_delay;
-        if repaint_delay.is_zero() {
-            if presented {
-                surface.window.request_redraw();
+        match next_frame(presented, ui_frame.repaint_delay) {
+            NextFrame::Immediately => surface.window.request_redraw(),
+            NextFrame::After(delay) => {
+                let id = surface.window.id();
+                self.note_repaint(id, delay);
             }
-        } else {
-            let id = surface.window.id();
-            self.note_repaint(id, repaint_delay);
         }
 
         let had_commands = !output.commands.is_empty();

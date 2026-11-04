@@ -4,7 +4,26 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const SKIPPED_FRAME_RETRY: Duration = Duration::from_millis(16);
+
+/// What a finished frame asks of the event loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextFrame {
+    Immediately,
+    After(Duration),
+}
+
+/// A skipped frame retries on a deadline: asking at once would spin until the surface recovers, and
+/// asking for nothing would freeze whatever was animating until the next input.
+pub fn next_frame(presented: bool, delay: Duration) -> NextFrame {
+    match (delay.is_zero(), presented) {
+        (false, _) => NextFrame::After(delay),
+        (true, true) => NextFrame::Immediately,
+        (true, false) => NextFrame::After(SKIPPED_FRAME_RETRY),
+    }
+}
 
 /// The earliest requested repaint of every window that has one pending, keyed by window id.
 #[derive(Debug)]
@@ -62,7 +81,28 @@ impl<Id: Copy + Eq + Hash> Default for RepaintSchedule<Id> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+
+    #[test]
+    fn a_presented_frame_that_wants_another_gets_it_at_once() {
+        assert_eq!(next_frame(true, Duration::ZERO), NextFrame::Immediately);
+    }
+
+    #[test]
+    fn a_skipped_frame_that_wants_another_retries_shortly_instead_of_stalling() {
+        assert_eq!(
+            next_frame(false, Duration::ZERO),
+            NextFrame::After(Duration::from_millis(16))
+        );
+    }
+
+    #[test]
+    fn a_requested_delay_stands_whether_or_not_the_frame_was_presented() {
+        for presented in [true, false] {
+            for delay in [Duration::from_millis(33), Duration::MAX] {
+                assert_eq!(next_frame(presented, delay), NextFrame::After(delay));
+            }
+        }
+    }
 
     #[test]
     fn only_windows_past_their_own_deadline_come_due() {
