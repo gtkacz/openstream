@@ -1,6 +1,10 @@
 name: release
 on:
-  push:
+  # Only what CI has passed reaches users: the app never downgrades, so a bad release can only be
+  # replaced by a newer one.
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -8,13 +12,23 @@ on:
         description: Existing workspace version to release (for example, 1.0.0)
         required: true
         type: string
+# Write access only where the jobs use it: the build jobs run every dependency's build script.
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: release-main
   cancel-in-progress: false
 jobs:
   prepare:
+    # A fork's pull request from its own `main` also matches `branches` above, so the event and the
+    # repository are checked too.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.bump.outputs.should_release }}
@@ -22,10 +36,13 @@ jobs:
       commit: ${{ steps.bump.outputs.commit }}
       tag: ${{ steps.bump.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
       - id: bump
         name: Prepare an automatic or explicitly requested release
         env:
@@ -60,6 +77,11 @@ jobs:
             echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             echo "tag=v$version" >> "$GITHUB_OUTPUT"
             echo "version=$version" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # CI passed for this commit, but a newer one may have landed since; its own run decides.
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [[ "$message" == fix:* || "$message" == 'chore(release):'* ]]; then
@@ -99,13 +121,16 @@ jobs:
           dnf install -y --setopt=install_weak_deps=False git gcc gcc-c++ clang clang-devel xz
           pkgconf-pkg-config pipewire-devel libxkbcommon-devel wayland-devel libX11-devel
           alsa-lib-devel
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.commit }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - uses: ./.github/actions/linux-ffmpeg
-      - run: cargo build --release -p brp
+      - run: cargo build --release --locked -p brp
         env:
           # $ORIGIN makes the binary load the FFmpeg libraries staged beside it. DT_RPATH rather
           # than RUNPATH because libswresample is reached only through libavcodec, and RUNPATH
@@ -121,7 +146,7 @@ jobs:
           # ustar and no copyfile metadata: bsdtar would otherwise add AppleDouble `._` members,
           # which the updater would copy into the install, and pax xattr headers.
           COPYFILE_DISABLE=1 tar --format ustar -C dist -czf "dist/$name.tar.gz" "$name"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux
           path: dist/*.tar.gz
@@ -130,13 +155,16 @@ jobs:
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.commit }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - uses: ./.github/actions/windows-ffmpeg
-      - run: cargo build --release -p brp
+      - run: cargo build --release --locked -p brp
       - name: Stage the zip
         shell: pwsh
         env:
@@ -146,7 +174,7 @@ jobs:
           $name = "brp-$env:VERSION-windows-x86_64"
           ./ci/stage-windows.ps1 -Destination "dist\$name"
           Compress-Archive -Path "dist\$name" -DestinationPath "dist\$name.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows
           path: dist/*.zip
@@ -155,13 +183,16 @@ jobs:
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.commit }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - uses: ./.github/actions/macos-ffmpeg
-      - run: cargo build --release -p brp
+      - run: cargo build --release --locked -p brp
         env:
           # @executable_path makes the binary load the libraries staged beside it, both in the
           # flat directory and in OpenStream.app/Contents/MacOS.
@@ -179,7 +210,7 @@ jobs:
           # which the updater would copy into the install, and pax xattr headers.
           COPYFILE_DISABLE=1 tar --format ustar -C dist -czf "dist/$name.tar.gz" "$name"
           ditto -c -k --keepParent dist/OpenStream.app "dist/OpenStream-$VERSION-macos-aarch64.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos
           path: |
@@ -188,12 +219,15 @@ jobs:
   publish:
     needs: [prepare, linux, windows, macos]
     if: needs.prepare.outputs.should_release == 'true'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.commit }}
-      - uses: actions/download-artifact@v4
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
@@ -205,7 +239,7 @@ jobs:
           git fetch --no-tags origin "+refs/tags/$tag:refs/tags/$tag"
           git tag -l --format='%(contents)' "$tag" > notes.md
           [ -s notes.md ] || { echo "no annotation on $tag; use git tag -a" >&2; exit 1; }
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           files: dist/*

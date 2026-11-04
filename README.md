@@ -203,12 +203,12 @@ on the GitHub Releases page, with a `SHA256SUMS` file.
 The FFmpeg build is BtbN's LGPL shared build, which keeps the project MIT and
 limits the software fallback to AV1 and VP9. To build on Windows yourself,
 install Visual Studio Build Tools with the C++ workload, LLVM (bindgen needs
-`libclang`), and the build CI pins, BtbN release `autobuild-2026-09-05-13-10`,
-asset `ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip`. Extract it and
-set:
+`libclang`), and the build CI pins, which this repository mirrors because BtbN
+deletes old builds: the `ffmpeg-n8.1.3-32-g760d10603e` release, asset
+`ffmpeg-n8.1.3-32-g760d10603e-win64-lgpl-shared-8.1.zip`. Extract it and set:
 
 ```powershell
-$env:FFMPEG_DIR = "C:\path\to\ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1"
+$env:FFMPEG_DIR = "C:\path\to\ffmpeg-n8.1.3-32-g760d10603e-win64-lgpl-shared-8.1"
 $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
 $env:PATH = "$env:FFMPEG_DIR\bin;$env:PATH"
 cargo build --release
@@ -403,7 +403,7 @@ written to logs.
 
 ### Releasing
 
-Every push to `main` whose subject does not start with `fix:` automatically bumps
+Every push to `main` that passes CI and whose subject does not start with `fix:` bumps
 the workspace minor version, commits and tags it, builds the Linux tarball and
 Windows zip, and publishes a GitHub Release with checksums. Commits starting with
 `fix:` do not release; the generated `chore(release): ...` commit is ignored by
