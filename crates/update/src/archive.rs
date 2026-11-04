@@ -65,10 +65,11 @@ pub fn extract_zip(
         if member.is_dir() {
             continue;
         }
+        let member_path = member.name().map_err(archive_error)?;
         if member.is_symlink() {
-            return Err(UpdateError::Archive(format!("{} is a link", member.name())));
+            return Err(UpdateError::Archive(format!("{member_path} is a link")));
         }
-        let normalised = member.name().replace('\\', "/");
+        let normalised = member_path.replace('\\', "/");
         let name = member_name(Path::new(&normalised), top_level)?;
         let mut out = File::create(into.join(&name))?;
         io::copy(&mut member, &mut out)?;
