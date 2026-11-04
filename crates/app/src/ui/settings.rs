@@ -132,6 +132,15 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     }
                 });
                 ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Invite links", |ui| {
+                    theme::switch(ui, &mut dialog.draft.auto_join_links, "Join without asking");
+                    ui.label(
+                        egui::RichText::new("Any link you open can then put you in a room")
+                            .small()
+                            .color(theme::SECONDARY),
+                    );
+                });
+                ui.add_space(ROW_GAP);
                 theme::form_row(ui, "Frame rate ceiling", |ui| {
                     let selected = (!dialog.custom_fps).then_some(dialog.draft.fps);
                     let choice = theme::segmented(

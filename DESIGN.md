@@ -50,6 +50,10 @@ the S. Files and how to regenerate them: [crates/app/assets/icon](crates/app/ass
 - **Start.** The brand, the form, and the Settings button share one column of at most 1200 points, so
   they stay on two common edges on a wide window. At 960 points and wider, a wall of still frames
   runs from the form's gap to the window's top, right, and bottom edges, passing under Settings.
+- **Invite.** A link that names a room replaces the form with one question, in the same place: the
+  name the room would see, Join as the accent with the keyboard on it, and Not now, which leads back
+  to the full form. It asks rather than saying "You're invited" because a stranger's web page can
+  send someone here too.
 - **Room.** The rail lists everyone, you first, with the streams they offer; your own streams carry
   their controls there, in the same shape as everyone else's. The dock holds what you do to the
   room: share, audio, upload, mute, Settings. Sharing no longer costs the video any height.

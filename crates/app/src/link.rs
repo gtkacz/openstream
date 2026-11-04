@@ -12,6 +12,12 @@ pub const JOIN_PAGE: &str = "https://gtkacz.github.io/openstream/join/";
 /// What the page hands the operating system, and so what the binary receives from a click.
 pub const SCHEME_JOIN_PREFIX: &str = "brp://join/";
 
+/// Whether `input` is the form only the operating system hands us, from a click anywhere, as opposed
+/// to a ticket or share link the person typed or pasted themselves.
+pub fn is_scheme_link(input: &str) -> bool {
+    input.trim().starts_with(SCHEME_JOIN_PREFIX)
+}
+
 /// Where a link the system hands a running window should open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkRoute {
@@ -74,6 +80,15 @@ mod tests {
         let id = SecretKey::from_bytes(&[7u8; 32]).public();
         let addr = EndpointAddr::new(id).with_ip_addr(SocketAddr::from(([192, 168, 1, 10], 4433)));
         RoomTicket::new([1u8; 32], vec![addr])
+    }
+
+    #[test]
+    fn only_a_scheme_link_counts_as_coming_from_outside() {
+        let text = ticket().to_string();
+        assert!(is_scheme_link(&format!("brp://join/{text}")));
+        assert!(is_scheme_link(&format!("  brp://join/{text}\n")));
+        assert!(!is_scheme_link(&text));
+        assert!(!is_scheme_link(&share_link(&text)));
     }
 
     #[test]

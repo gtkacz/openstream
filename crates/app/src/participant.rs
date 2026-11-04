@@ -5,6 +5,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use brp_proto::RoomTicket;
 use brp_proto::constants::STATS_LOG_INTERVAL;
 use brp_update::{Install, Version};
 use tokio::runtime::Runtime;
@@ -20,15 +21,20 @@ use crate::window::{App, AppEvent};
 
 /// Runs the window to completion. `intent` from the command line opens the room immediately;
 /// `None` shows the start screen, with `start_error` on it when the command line had a ticket
-/// that did not parse.
+/// that did not parse. `invite` is a room a link named, which asks first unless Settings says not to.
 pub fn run(
     runtime: &Runtime,
     intent: Option<Intent>,
+    invite: Option<RoomTicket>,
     start_error: Option<String>,
     args: WindowArgs,
 ) -> Result<(), AppError> {
     handler::register_scheme_handler();
     let store = SettingsStore::load()?;
+    let (intent, invite) = match invite {
+        Some(ticket) if store.settings.auto_join_links => (Some(Intent::Join(ticket)), None),
+        invite => (intent, invite),
+    };
     let launch = Launch::from_settings(&store.settings, &args)?;
     let (secret, identity_lock) = identity::load_or_create()?;
     let nickname = launch::default_nickname(&launch, &secret);
@@ -80,6 +86,7 @@ pub fn run(
         secret,
         nickname,
         intent,
+        invite,
         start_error,
         store,
         install,

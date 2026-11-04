@@ -34,6 +34,9 @@ pub struct Settings {
     /// Ask GitHub for the latest release at launch. On by default and documented as a network
     /// request, which is why it can be turned off.
     pub check_updates: bool,
+    /// A `brp://` link joins its room at once instead of asking. Off by default because any web page
+    /// can fire one, and joining shows the room this person's name and IP address.
+    pub auto_join_links: bool,
 }
 
 impl Default for Settings {
@@ -45,6 +48,7 @@ impl Default for Settings {
             audio: AudioSettings::default(),
             recent_rooms: Vec::new(),
             check_updates: true,
+            auto_join_links: false,
         }
     }
 }
@@ -290,6 +294,7 @@ mod tests {
                 last_joined_unix: 1_788_000_000,
             }],
             check_updates: false,
+            auto_join_links: true,
         }
     }
 
@@ -334,6 +339,12 @@ mod tests {
         assert_eq!(settings.relay, RelayChoice::Disabled);
         assert_eq!(settings.nickname, None);
         assert!(settings.recent_rooms.is_empty());
+    }
+
+    #[test]
+    fn a_file_from_before_the_setting_still_asks_before_a_link_joins() {
+        let settings: Settings = toml::from_str("fps = 24\n").unwrap();
+        assert!(!settings.auto_join_links);
     }
 
     #[test]

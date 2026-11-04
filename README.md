@@ -46,8 +46,11 @@ are postcard-encoded on the versioned media ALPN `brp/media/1`.
 Run `brp` with no arguments, or double-click `brp.exe` on Windows, to open the
 start screen: pick a nickname, then Create room, or paste a ticket or a link and
 Join room. The room rail's Copy link button gives you an `https://` link that
-opens OpenStream into the room on a machine that has it and offers the download on one
-that does not; Copy ticket gives the bare ticket for the terminal. Each time
+opens OpenStream on a machine that has it and offers the download on one that does
+not; Copy ticket gives the bare ticket for the terminal. A link does not join by
+itself, because any web page can fire one: the window asks first and shows the name
+the room would see. "Join without asking" under Invite links in Settings turns that
+off. A pasted ticket, a recent room, and `brp join <ticket>` join straight away. Each time
 the window starts it registers OpenStream as the handler for `brp://` links, pointing
 at the binary that is running: a hidden `brp.desktop` under
 `~/.local/share/applications` on Linux, the `brp` class under
@@ -69,7 +72,8 @@ cargo build --release
 
 The Settings button on the start screen and in the dock opens a dialog
 for the nickname, the relay choice (public relays, a custom relay URL, or no
-relay), the capture frame rate ceiling, and the audio output device. Settings
+relay), whether links join without asking, the capture frame rate ceiling, and the
+audio output device. Settings
 apply when the next room opens. The start screen lists recent rooms with a Join
 button. Command line flags override the saved settings for that launch and are
 not saved.

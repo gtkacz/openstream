@@ -2,7 +2,7 @@
 //! cargo run -p brp --example ui_preview -- /tmp/openstream start 1280 800
 //! A fifth argument captures that many 60 Hz frames in, to see motion part way through.
 //! A sixth sets the display scale; the width and height stay in physical pixels.
-//! Screens: start, recent, focus, room, quality, menu, watching, grid, sheet, sharesheet, empty,
+//! Screens: start, recent, invite, focus, room, quality, menu, watching, grid, sheet, sharesheet, empty,
 //! settings, custom, picker, applications.
 use std::{collections::HashSet, error::Error, io::Write};
 
@@ -28,6 +28,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui::theme::install(&ctx);
     ctx.set_zoom_factor(scale);
     let mut start = StartState::new("Alex".into());
+    if screen == "invite" {
+        start.invite("brproomticketexamplevaluethatrunslong".into());
+    }
     let mut state = UiState::new();
     if screen == "picker" {
         state.open_picker(
@@ -262,7 +265,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            if matches!(screen, "start" | "recent" | "focus" | "settings" | "custom") {
+            if matches!(
+                screen,
+                "start" | "recent" | "invite" | "focus" | "settings" | "custom"
+            ) {
                 ui::start::draw(ui, &mut start, &recent, 7200, &UpdateState::new(false));
                 if matches!(screen, "settings" | "custom") {
                     ui::settings::draw(ui.ctx(), &mut settings, false);

@@ -7,6 +7,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use brp_proto::RoomTicket;
 use brp_room::Room;
 use brp_update::{Install, Release};
 use iroh::SecretKey;
@@ -171,6 +172,7 @@ impl App {
         secret: SecretKey,
         nickname: String,
         intent: Option<Intent>,
+        invite: Option<RoomTicket>,
         start_error: Option<String>,
         store: SettingsStore,
         install: Option<Install>,
@@ -205,6 +207,9 @@ impl App {
         }
         if let Some(message) = &start_error {
             app.start.show_error(message);
+        }
+        if let Some(ticket) = invite {
+            app.start.invite(ticket.to_string());
         }
         if let Some(intent) = intent {
             app.start.connecting = true;
@@ -269,10 +274,11 @@ impl App {
         let on_start_screen = matches!(self.phase, Phase::Start);
         match route_link(on_start_screen, self.pending_open.is_some()) {
             LinkRoute::Here => match crate::link::parse_ticket(link) {
-                Ok(ticket) => {
+                Ok(ticket) if self.store.settings.auto_join_links => {
                     self.start.connecting = true;
                     self.open(Intent::Join(ticket));
                 }
+                Ok(ticket) => self.start.invite(ticket.to_string()),
                 Err(error) => self
                     .start
                     .show_error(&crate::error::AppError::Ticket(error).to_string()),

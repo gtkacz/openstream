@@ -23,20 +23,31 @@ fn main() -> ExitCode {
         }
     };
     let result = match cli.command {
-        None => participant::run(&runtime, None, None, WindowArgs::default()),
+        None => participant::run(&runtime, None, None, None, WindowArgs::default()),
         Some(Command::Publish(args)) => runtime.block_on(publish::run(args)),
         Some(Command::Create(args)) => {
-            participant::run(&runtime, Some(Intent::Create), None, args.window)
+            participant::run(&runtime, Some(Intent::Create), None, None, args.window)
         }
         Some(Command::Join(args)) => match link::parse_ticket(&args.ticket) {
-            Ok(ticket) => participant::run(&runtime, Some(Intent::Join(ticket)), None, args.window),
+            // A scheme link can come from any web page. A ticket typed here is the person's own
+            // choice, and so is the relaunch after an update, which rejoins with a bare ticket.
+            Ok(ticket) if link::is_scheme_link(&args.ticket) => {
+                participant::run(&runtime, None, Some(ticket), None, args.window)
+            }
+            Ok(ticket) => participant::run(
+                &runtime,
+                Some(Intent::Join(ticket)),
+                None,
+                None,
+                args.window,
+            ),
             // Both destinations are needed: a browser launches the binary without a console, so
             // the window has to carry the message, and a terminal launch on a machine that cannot
             // open a window would otherwise lose the diagnosis.
             Err(error) => {
                 let message = AppError::Ticket(error).to_string();
                 eprintln!("error: {message}");
-                participant::run(&runtime, None, Some(message), args.window)
+                participant::run(&runtime, None, None, Some(message), args.window)
             }
         },
     };
