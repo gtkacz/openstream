@@ -144,6 +144,17 @@ stage() {
   codesign --verify --strict --deep --verbose=2 dist/OpenStream.app || return 1
   echo "-- what the staged binary and libraries load:"
   for file in dist/brp/brp dist/brp/*.dylib; do otool -L "$file" | tail -n +2; done | sort -u
+  local dylib
+  for dylib in dist/brp/*.dylib; do
+    case "$(basename "$dylib")" in
+      libavcodec.*.dylib | libavutil.*.dylib | libswscale.*.dylib | libswresample.*.dylib) ;;
+      libopus.*.dylib | libdav1d.*.dylib | libSvtAv1Enc.*.dylib) ;;
+      *)
+        echo "unexpected library staged: $dylib" >&2
+        return 1
+        ;;
+    esac
+  done
   # The updater archive, made the way the release job makes it.
   rm -rf dist/archive && mkdir -p dist/archive/brp-0.0.0-macos-aarch64
   ditto dist/brp dist/archive/brp-0.0.0-macos-aarch64
@@ -158,7 +169,7 @@ stage() {
 # What an in-app update does to a bundle, then the refresh it runs: the seal must break, and the
 # refresh must mend it, stamp the new version, and leave no .old files.
 bundle_update() {
-  local copy="$DIR/update-check/OpenStream.app" new="$DIR/update-check/new"
+  local copy="$DIR/update-check/OpenStream.app" new="$DIR/update-check/new" file name
   rm -rf "$DIR/update-check" && mkdir -p "$new"
   ditto dist/OpenStream.app "$copy"
   tar -xzf dist/update.tar.gz -C "$new"
