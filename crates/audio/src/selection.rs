@@ -88,10 +88,13 @@ impl AudioSelection {
     }
 }
 
+/// How many applications a capture with [`SendVolumeSupport::Always`] can keep apart at once. Any
+/// more stay at full volume whatever their volume says.
+pub const MAX_SEPARATE_APPLICATIONS: usize = 15;
+
 /// How loud each application reaches the room, in percent; an application it does not name is at
 /// full volume. Shared with running sessions, so a change takes effect without swapping the session
-/// and gapping the room as a selection change does. The capture callback only holds the lock long
-/// enough to read a number, and already allocates per chunk, so a lock is not what threatens it.
+/// and gapping the room as a selection change does.
 #[derive(Debug, Clone, Default)]
 pub struct SendVolumes(Arc<RwLock<BTreeMap<AppKey, u8>>>);
 
@@ -103,10 +106,23 @@ impl SendVolumes {
     /// The multiplier for audio owned by this identity. A stream with no identity cannot have been
     /// given a volume, so it stays at full.
     pub fn gain(&self, key: Option<&AppKey>) -> f32 {
-        let volumes = self.0.read().unwrap_or_else(PoisonError::into_inner);
-        key.and_then(|key| volumes.get(key))
-            .map_or(1.0, |percent| f32::from((*percent).min(100)) / 100.0)
+        gain_in(&self.0.read().unwrap_or_else(PoisonError::into_inner), key)
     }
+
+    /// Writes each owner's gain, or leaves `gains` as they were if a change is being written right
+    /// now: for a real-time thread, which must not wait and can use the last values for one cycle.
+    pub fn try_gains(&self, owners: &[Option<AppKey>], gains: &mut [f32]) {
+        if let Ok(volumes) = self.0.try_read() {
+            for (gain, owner) in gains.iter_mut().zip(owners) {
+                *gain = gain_in(&volumes, owner.as_ref());
+            }
+        }
+    }
+}
+
+fn gain_in(volumes: &BTreeMap<AppKey, u8>, key: Option<&AppKey>) -> f32 {
+    key.and_then(|key| volumes.get(key))
+        .map_or(1.0, |percent| f32::from((*percent).min(100)) / 100.0)
 }
 
 /// When a backend can tell one application's audio from another's before mixing it.
@@ -138,6 +154,21 @@ mod tests {
         let volumes = SendVolumes::default();
         volumes.set(BTreeMap::from([(AppKey::new("game"), 250)]));
         assert_eq!(volumes.gain(Some(&AppKey::new("game"))), 1.0);
+    }
+
+    #[test]
+    fn a_real_time_reader_keeps_the_last_gains_rather_than_wait_for_a_writer() {
+        let volumes = SendVolumes::default();
+        volumes.set(BTreeMap::from([(AppKey::new("game"), 50)]));
+        let owners = [Some(AppKey::new("game")), None];
+        let mut gains = [0.25, 0.25];
+        {
+            let _writer = volumes.0.write().unwrap();
+            volumes.try_gains(&owners, &mut gains);
+            assert_eq!(gains, [0.25, 0.25]);
+        }
+        volumes.try_gains(&owners, &mut gains);
+        assert_eq!(gains, [0.5, 1.0]);
     }
 
     #[test]

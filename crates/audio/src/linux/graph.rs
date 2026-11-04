@@ -3,19 +3,19 @@
 
 use std::collections::BTreeMap;
 
-use crate::selection::{AppKey, AudioSelection, AudioSource};
+use crate::selection::{AppKey, AudioSelection, AudioSource, MAX_SEPARATE_APPLICATIONS};
 
 const APP_OUTPUT_CLASS: &str = "Stream/Output/Audio";
 
 /// Stereo pairs our capture stream takes. PipeWire sums whatever is linked to one port, so telling
 /// applications apart needs a port pair per application. The stream's format is fixed when it
 /// connects, hence a fixed number, and 16 pairs fit `SPA_AUDIO_MAX_CHANNELS` with room to spare.
-pub const APP_SLOTS: usize = 16;
+pub const APP_SLOTS: usize = MAX_SEPARATE_APPLICATIONS + 1;
 
 /// Where audio goes that cannot have a volume of its own: streams with no identity, and any
 /// application beyond what the slots hold. Never assigned to an identity, so always at full.
-/// shortcut: an application past the 15th keeps full volume until it restarts, whatever its slider
-/// says; tell the picker which rows have no slot if anyone runs into that.
+/// shortcut: an application past the limit keeps full volume until it restarts, and the picker can
+/// only warn that this may be happening; relink when a slot frees if anyone runs into it.
 const SHARED_SLOT: usize = 0;
 
 /// The `node.name` our own capture stream registers under.

@@ -173,8 +173,8 @@ struct State {
     inputs: RefCell<Inputs>,
     /// Which application feeds each of our stereo pairs, read by the process callback.
     owners: Arc<Mutex<Vec<Option<AppKey>>>>,
-    /// Links we created, kept alive by holding the proxies.
-    links: RefCell<Vec<pw::link::Link>>,
+    /// Links we created by output node, kept alive by holding the proxies.
+    links: RefCell<Vec<(u32, pw::link::Link)>>,
 }
 
 #[derive(Default)]
@@ -196,14 +196,16 @@ struct Capture {
     sink: AudioSink,
     owners: Arc<Mutex<Vec<Option<AppKey>>>>,
     volumes: SendVolumes,
+    gains: Vec<f32>,
 }
 
 impl Capture {
-    fn gains(&self) -> Vec<f32> {
-        lock(&self.owners)
-            .iter()
-            .map(|owner| self.volumes.gain(owner.as_ref()))
-            .collect()
+    /// Runs on the data thread, which must not wait: a cycle that loses a race for either lock
+    /// mixes with the gains of the cycle before.
+    fn refresh_gains(&mut self) {
+        if let Ok(owners) = self.owners.try_lock() {
+            self.volumes.try_gains(&owners, &mut self.gains);
+        }
     }
 }
 
@@ -241,6 +243,7 @@ fn run(
             sink,
             owners: owners.clone(),
             volumes,
+            gains: vec![1.0; APP_SLOTS],
         })
         .process(|stream, capture| {
             let Some(mut buffer) = stream.dequeue_buffer() else {
@@ -261,7 +264,8 @@ fn run(
                 .iter()
                 .map(|b| f32::from_le_bytes(*b))
                 .collect();
-            let samples = mix_slots(&samples, &capture.gains());
+            capture.refresh_gains();
+            let samples = mix_slots(&samples, &capture.gains);
             if !samples.is_empty() {
                 (capture.sink)(AudioChunk {
                     samples,
@@ -562,6 +566,7 @@ impl State {
     fn remove(&self, id: u32) {
         self.graph.borrow_mut().remove(id);
         // Links to a removed node die with it on the server; dropping our proxies just tidies up.
+        self.links.borrow_mut().retain(|(node, _)| *node != id);
     }
 
     fn link(&self, plan: LinkPlan) {
@@ -595,7 +600,7 @@ impl State {
                 },
             );
             match result {
-                Ok(link) => self.links.borrow_mut().push(link),
+                Ok(link) => self.links.borrow_mut().push((plan.node, link)),
                 Err(error) => {
                     tracing::warn!(node = plan.node, port = plan.port, %error, "could not link audio node")
                 }

@@ -4,7 +4,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brp_audio::{AppKey, AudioSelection, AudioSource, SendVolumeSupport};
+use brp_audio::{
+    AppKey, AudioSelection, AudioSource, MAX_SEPARATE_APPLICATIONS, SendVolumeSupport,
+};
 
 use super::state::UiState;
 use super::theme;
@@ -100,6 +102,17 @@ impl ApplicationPicker {
             SendVolumeSupport::OnlySelected => self.only && self.chosen.contains(key),
             SendVolumeSupport::Always => !self.only || self.chosen.contains(key),
         }
+    }
+
+    /// Whether the room hears more applications than the capture can keep apart, so some sliders
+    /// may have no effect. Which ones is up to the order they started in, so only the count is known.
+    pub fn too_many_for_volumes(&self) -> bool {
+        let heard = self
+            .reported
+            .iter()
+            .filter(|source| !self.only || self.chosen.contains(&source.key))
+            .count();
+        self.volume_support == SendVolumeSupport::Always && heard > MAX_SEPARATE_APPLICATIONS
     }
 
     pub fn volume(&self, key: &AppKey) -> u8 {
@@ -266,6 +279,16 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                         });
                 });
             });
+            if picker.too_many_for_volumes() {
+                ui.add_space(8.0);
+                ui.colored_label(
+                    theme::WARNING,
+                    format!(
+                        "Only {MAX_SEPARATE_APPLICATIONS} applications can have their own volume \
+                         at once. The rest stay at full."
+                    ),
+                );
+            }
             theme::dialog_footer(
                 ui,
                 |ui| {
@@ -364,6 +387,28 @@ mod tests {
             ..quieter.clone()
         };
         assert!(swaps_capture(&before, &only), "the selection changed too");
+    }
+
+    #[test]
+    fn the_picker_warns_when_the_room_hears_more_than_the_capture_keeps_apart() {
+        let many: Vec<AudioSource> = (0..=MAX_SEPARATE_APPLICATIONS)
+            .map(|index| source(&format!("app{index}"), "App"))
+            .collect();
+        let mut picker = ApplicationPicker::new(many, &AudioApplications::default());
+        assert!(
+            !picker.too_many_for_volumes(),
+            "this capture has no sliders"
+        );
+
+        picker.volume_support = SendVolumeSupport::Always;
+        assert!(picker.too_many_for_volumes());
+
+        picker.only = true;
+        assert!(!picker.too_many_for_volumes(), "none of them is chosen");
+        for index in 0..=MAX_SEPARATE_APPLICATIONS {
+            picker.toggle(&AppKey::new(&format!("app{index}")), true);
+        }
+        assert!(picker.too_many_for_volumes());
     }
 
     #[test]
