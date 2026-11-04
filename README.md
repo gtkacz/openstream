@@ -296,8 +296,8 @@ sustain high bitrates, and the members panel shows direct versus relayed per
 member. Settings are saved beside the identity key in `brp/settings.toml`:
 nickname, relay choice, frame rate ceiling, audio output device, the tickets of
 recent rooms, and whether to check for updates. A stored ticket contains the
-addresses of the peer that issued it, so treat the file as you would the
-tickets themselves.
+addresses of the peer that issued it, or of the members present when you last
+left that room, so treat the file as you would the tickets themselves.
 
 A share link carries the ticket in its fragment, which the browser never sends
 to the page's server, but browser history, chat logs, and clipboard managers

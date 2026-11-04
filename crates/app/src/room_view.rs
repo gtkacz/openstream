@@ -85,6 +85,19 @@ impl RoomView {
         refresh_ticket_cache(&mut self.last_ticket, &mut self.ticket, self.room.ticket());
     }
 
+    /// The ticket to keep for coming back later, naming the other members. `None` alone in the room,
+    /// where it could only name this participant, which leads nowhere: joining through yourself
+    /// opens an empty room. The ticket that got this participant in is the better guess then.
+    pub async fn way_back(&self) -> Option<String> {
+        let ticket = self.room.rejoin_ticket().await;
+        let me = self.room.id();
+        ticket
+            .bootstrap
+            .iter()
+            .any(|addr| addr.id != me)
+            .then(|| ticket.to_string())
+    }
+
     /// Uploads the newest decoded frame of every watched live.
     pub fn upload_frames(&self, gpu: &GpuContext, tiles: &mut TileRenderer) {
         for (key, handle) in &self.handles {
@@ -328,6 +341,34 @@ mod tests {
         refresh_ticket_cache(&mut last, &mut cached, relayed.clone());
         assert_eq!(cached, relayed.to_string());
         assert_eq!(last, relayed);
+    }
+
+    #[tokio::test]
+    async fn the_way_back_names_the_others_and_is_nothing_when_alone() {
+        let room = Room::create(config("alice")).await.unwrap();
+        let ticket = room.ticket();
+        let alice = RoomView::new(Arc::new(room));
+        assert_eq!(alice.way_back().await, None);
+
+        let bob = Room::join(config("bob"), ticket).await.unwrap();
+        wait_until("alice to see bob", Duration::from_secs(10), || {
+            !alice.room.snapshot().members.is_empty()
+        })
+        .await;
+        let way_back: RoomTicket = alice
+            .way_back()
+            .await
+            .expect("bob is there to come back through")
+            .parse()
+            .unwrap();
+        assert!(way_back.bootstrap.iter().any(|addr| addr.id == bob.id()));
+        assert!(
+            way_back
+                .bootstrap
+                .iter()
+                .all(|addr| addr.id != alice.room.id())
+        );
+        bob.leave().await;
     }
 
     #[tokio::test]

@@ -190,6 +190,12 @@ impl Settings {
         self.recent_rooms.truncate(RECENT_ROOMS_MAX);
     }
 
+    /// Swaps a remembered room's ticket for a newer way into the same room, and puts it first.
+    pub fn replace_room(&mut self, old_ticket: &str, ticket: &str, now_unix: u64) {
+        self.recent_rooms.retain(|room| room.ticket != old_ticket);
+        self.remember_room(ticket, now_unix);
+    }
+
     /// What Save refuses: a zero frame rate, or a custom relay URL that does not parse.
     pub fn validate(&self) -> Result<(), String> {
         if self.fps == 0 {
@@ -429,6 +435,22 @@ mod tests {
         store.load_error = None;
         assert!(store.save_unless_load_failed().unwrap());
         assert_eq!(Settings::load(&path).unwrap(), store.settings);
+    }
+
+    #[test]
+    fn replacing_a_room_keeps_one_entry_for_it_and_leaves_the_others() {
+        let mut settings = Settings::default();
+        settings.remember_room("other", 1);
+        settings.remember_room("old", 2);
+        settings.remember_room("another", 3);
+        settings.replace_room("old", "new", 4);
+        let tickets: Vec<&str> = settings
+            .recent_rooms
+            .iter()
+            .map(|room| room.ticket.as_str())
+            .collect();
+        assert_eq!(tickets, ["new", "another", "other"]);
+        assert_eq!(settings.recent_rooms[0].last_joined_unix, 4);
     }
 
     #[test]

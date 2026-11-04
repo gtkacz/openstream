@@ -37,7 +37,7 @@ use crate::render::tiles::{TileKey, TilePlacement, TileRenderer};
 use crate::render::ui::UiFrame;
 use crate::repaint::{NextFrame, RepaintSchedule, next_frame};
 use crate::room_view::RoomView;
-use crate::settings::{SettingsStore, normalised_nickname, now_unix};
+use crate::settings::{Settings, SettingsStore, normalised_nickname, now_unix};
 use crate::ui::applications::{self as applications_ui, PickerOutcome};
 use crate::ui::settings::{self as settings_ui, SettingsDialog};
 use crate::ui::start::{self, StartAction, StartState};
@@ -136,6 +136,8 @@ pub struct App {
     /// The intent an open in flight was started with; a join remembers the ticket that got us in,
     /// a create remembers the room's own ticket.
     pending_intent: Option<Intent>,
+    /// The recent-rooms entry for the room open now, to replace with a better one on the way out.
+    remembered_ticket: Option<String>,
     /// Where this binary runs from, captured before any swap; `None` when it could not be
     /// determined, in which case updates are noticed but never applied.
     install: Option<Install>,
@@ -197,6 +199,7 @@ impl App {
             store,
             settings_dialog: SettingsDialog::default(),
             pending_intent: None,
+            remembered_ticket: None,
             update: UpdateState::new(install.as_ref().is_some_and(Install::is_release_layout)),
             install,
             relaunch: None,
@@ -346,6 +349,7 @@ impl App {
             Some(Intent::Create) | None => room.ticket().to_string(),
         };
         self.store.settings.remember_room(&ticket, now_unix());
+        self.remembered_ticket = Some(ticket);
         if self.args.nickname.is_none()
             && let Some(nickname) = normalised_nickname(&self.start.nickname)
         {
@@ -353,6 +357,25 @@ impl App {
         }
         if let Err(error) = self.store.save_unless_load_failed() {
             self.state.status = format!("settings not saved: {error}");
+        }
+    }
+
+    /// Whoever created a room is remembered by a ticket naming only themselves, which opens an empty
+    /// room however many people are still in the real one. Leaving is when the others are known.
+    fn remember_way_back(&mut self) {
+        let (Phase::Room(view), Some(old)) = (&self.phase, &self.remembered_ticket) else {
+            return;
+        };
+        let Some(ticket) = self.runtime.block_on(view.way_back()) else {
+            return;
+        };
+        // Read again first: another window may have remembered a room since this one loaded them.
+        if let Ok(on_disk) = Settings::load(&self.store.path) {
+            self.store.settings.recent_rooms = on_disk.recent_rooms;
+        }
+        self.store.settings.replace_room(old, &ticket, now_unix());
+        if let Err(error) = self.store.save_unless_load_failed() {
+            tracing::warn!(%error, "could not remember the way back into the room");
         }
     }
 
@@ -896,6 +919,10 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
         self.request_redraw_all();
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.remember_way_back();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
