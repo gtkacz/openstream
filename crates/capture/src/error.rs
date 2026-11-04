@@ -20,3 +20,10 @@ pub enum CaptureError {
     #[error("macos: {0}")]
     MacOs(String),
 }
+
+impl CaptureError {
+    /// Whether the user, or a policy, refused the capture, as opposed to it failing.
+    pub fn is_refusal(&self) -> bool {
+        matches!(self, Self::PortalDenied | Self::PermissionDenied(_))
+    }
+}

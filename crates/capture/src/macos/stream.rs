@@ -78,7 +78,15 @@ define_class!(
     unsafe impl SCStreamDelegate for Output {
         #[unsafe(method(stream:didStopWithError:))]
         fn stream_did_stop(&self, _stream: &SCStream, error: &NSError) {
-            let _ = self.ivars().events.try_send(Event::Ended(ns_error(error)));
+            let error = ns_error(error);
+            let ivars = self.ivars();
+            // Before the first frame the starting thread is waiting on this channel; after it,
+            // the capture contract has no way to report an end, so it is logged, as Windows
+            // logs a closed window, and the live keeps its last frame until stopped.
+            if ivars.first_seen.load(Ordering::Acquire) {
+                tracing::warn!(%error, "the shared screen or window stopped; the live keeps its last frame until stopped");
+            }
+            let _ = ivars.events.try_send(Event::Ended(error));
         }
     }
 );

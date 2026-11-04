@@ -24,7 +24,8 @@ pub struct Attempt<'a> {
 
 /// Returns the first attempt that delivers a frame within `timeout`. A primary that fails to
 /// start, ends early, or stays silent is dropped, and therefore stopped, before the fallback
-/// starts. With nothing left to try, the error names every attempt and why it failed.
+/// starts. A refused permission ends the search and is returned as itself. With nothing left to
+/// try, the error names every attempt and why it failed.
 pub fn start_with_fallback(
     timeout: Duration,
     primary: Attempt<'_>,
@@ -32,18 +33,25 @@ pub fn start_with_fallback(
 ) -> Result<Box<dyn CaptureSession>, CaptureError> {
     let mut failures = Vec::new();
     for attempt in std::iter::once(primary).chain(fallback) {
-        match (attempt.start)() {
+        let error = match (attempt.start)() {
             Ok(mut started) => match started.wait_first_frame(timeout) {
                 Ok(Some(info)) => return Ok(started.into_session(info)),
                 // `started` drops at the end of this arm, so the capture has stopped by the time
                 // the loop starts the next attempt.
                 Ok(None) => {
-                    failures.push(format!("{}: no frame within {:?}", attempt.name, timeout))
+                    failures.push(format!("{}: no frame within {:?}", attempt.name, timeout));
+                    continue;
                 }
-                Err(error) => failures.push(format!("{}: {error}", attempt.name)),
+                Err(error) => error,
             },
-            Err(error) => failures.push(format!("{}: {error}", attempt.name)),
+            Err(error) => error,
+        };
+        // The user said no: another path would be refused the same way, and the caller needs the
+        // refusal itself to say where to allow it.
+        if error.is_refusal() {
+            return Err(error);
         }
+        failures.push(format!("{}: {error}", attempt.name));
     }
     Err(CaptureError::SourceLost(failures.join("; ")))
 }
@@ -141,6 +149,61 @@ mod tests {
                 }),
             }
         }
+    }
+
+    /// A started attempt whose first-frame wait fails with a permission refusal.
+    struct RefusedStarted;
+
+    impl Started for RefusedStarted {
+        fn wait_first_frame(&mut self, _: Duration) -> Result<Option<SourceInfo>, CaptureError> {
+            Err(CaptureError::PermissionDenied("declined".into()))
+        }
+        fn into_session(self: Box<Self>, info: SourceInfo) -> Box<dyn CaptureSession> {
+            Box::new(FakeSession(info))
+        }
+    }
+
+    #[test]
+    fn a_refused_permission_is_returned_as_itself_and_the_fallback_is_not_tried() {
+        let fallback = Probe::new();
+        let refused_at_start = Attempt {
+            name: "screencapturekit",
+            start: Box::new(|| Err(CaptureError::PermissionDenied("declined".into()))),
+        };
+        let error = start_with_fallback(
+            TIMEOUT,
+            refused_at_start,
+            Some(fallback.starting("other", Ok(Some(INFO_B)))),
+        )
+        .err()
+        .unwrap();
+        assert!(
+            matches!(&error, CaptureError::PermissionDenied(message) if message == "declined"),
+            "{error}"
+        );
+        assert!(
+            !fallback.called(),
+            "a refusal would refuse the fallback too"
+        );
+
+        let refused_on_wait = Attempt {
+            name: "screencapturekit",
+            start: Box::new(|| Ok(Box::new(RefusedStarted) as Box<dyn Started>)),
+        };
+        let error = start_with_fallback(TIMEOUT, refused_on_wait, None)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(error, CaptureError::PermissionDenied(_)),
+            "{error}"
+        );
+
+        let portal = Attempt {
+            name: "portal",
+            start: Box::new(|| Err(CaptureError::PortalDenied)),
+        };
+        let error = start_with_fallback(TIMEOUT, portal, None).err().unwrap();
+        assert!(matches!(error, CaptureError::PortalDenied), "{error}");
     }
 
     #[test]
