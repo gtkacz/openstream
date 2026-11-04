@@ -4,7 +4,8 @@ pub const MEDIA_ALPN: &[u8] = b"brp/media/1";
 pub const TICKET_KIND: &str = "brp";
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CONTROL_BYTES: usize = 64 * 1024;
-/// Frames buffered between the QUIC reader and the decoder before back-pressure reaches the publisher.
+/// Frames buffered between the QUIC reader and the decoder. A frame arriving while this is full is
+/// dropped, so a decoder that falls behind costs picture rather than memory and delay.
 pub const RECEIVE_QUEUE_FRAMES: usize = 8;
 pub const SENDER_BACKLOG_FRAMES: usize = 2;
 pub const FORCED_KEYFRAME_MIN_INTERVAL: Duration = Duration::from_secs(1);

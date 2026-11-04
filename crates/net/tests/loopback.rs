@@ -7,7 +7,7 @@ use brp_net::{
     AllowAll, AudioSubscription, LiveSource, MediaClient, MediaServer, NetError, PathKind,
     RelaySetting, SubscribeRejected, Subscription, bind_endpoint,
 };
-use brp_proto::constants::{AUDIO_PRESET_ID, MEDIA_ALPN};
+use brp_proto::constants::{AUDIO_PRESET_ID, MEDIA_ALPN, RECEIVE_QUEUE_FRAMES};
 use brp_proto::{AudioParams, Codec, CodecParams, EncodedFrame, FrameKind, ViewerMessage};
 use iroh::SecretKey;
 use iroh::protocol::Router;
@@ -408,4 +408,64 @@ async fn an_endpoint_binds_with_a_custom_relay_url() {
         .await
         .expect("bind with a custom relay map");
     endpoint.close().await;
+}
+
+#[tokio::test]
+async fn a_viewer_that_stops_reading_loses_frames_instead_of_holding_them_in_memory() {
+    let (tx, rx) = mpsc::channel(8);
+    let source = Arc::new(ScriptedSource {
+        params: params(),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::new()),
+        keyframe_requests: AtomicUsize::new(0),
+    });
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let router = Router::builder(server_ep.clone())
+        .accept(MEDIA_ALPN, MediaServer::new(source, Arc::new(AllowAll)))
+        .spawn();
+    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let client = MediaClient::connect(&client_ep, server_ep.addr())
+        .await
+        .unwrap();
+    let mut sub = client.subscribe(1, 1, false).await.unwrap();
+
+    let sent = RECEIVE_QUEUE_FRAMES * 8;
+    for seq in 0..sent as u64 {
+        let frame = EncodedFrame {
+            seq,
+            capture_ts_us: seq,
+            keyframe: seq == 0,
+            data: vec![0; 1024],
+        };
+        tx.send(Arc::new(frame)).await.unwrap();
+    }
+    drop(tx);
+    // The publisher reports the live ended only after it has written every frame.
+    let ended = tokio::time::timeout(Duration::from_secs(5), sub.events.recv())
+        .await
+        .expect("event in time");
+    assert!(matches!(
+        ended,
+        Some(brp_proto::PublisherMessage::LiveEnded)
+    ));
+
+    let mut delivered = 0;
+    while tokio::time::timeout(Duration::from_secs(5), sub.frames.recv())
+        .await
+        .expect("the stream ends once its route is gone")
+        .is_some()
+    {
+        delivered += 1;
+    }
+    assert!(
+        delivered * 2 < sent,
+        "{delivered} of {sent} frames were held for a viewer that read none of them"
+    );
+
+    client.close();
+    router.shutdown().await.unwrap();
 }

@@ -229,8 +229,11 @@ async fn receive_frames(conn: Connection, routes: Routes) {
                         header,
                         payload: payload.to_vec(),
                     };
-                    if sender.send(frame).await.is_err() {
-                        tracing::debug!("viewer dropped its frame receiver");
+                    // Never waits for room. QUIC gives its stream credit back as soon as a stream
+                    // is read, so a waiting task would not slow the publisher, only hold the frame
+                    // in memory. The gap this leaves makes the viewer ask for a keyframe.
+                    if let Err(error) = sender.try_send(frame) {
+                        tracing::debug!(%error, "frame not handed to the viewer");
                     }
                 }
                 None => tracing::trace!(
