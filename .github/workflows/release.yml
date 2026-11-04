@@ -1,11 +1,8 @@
 name: release
 on:
-  # Only what CI has passed reaches users: the app never downgrades, so a bad release can only be
-  # replaced by a newer one.
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
-    branches: [main]
+  # Called as the last job of CI, so only what passed reaches users: the app never downgrades, so a
+  # bad release can only be replaced by a newer one.
+  workflow_call:
   workflow_dispatch:
     inputs:
       version:
@@ -20,13 +17,6 @@ concurrency:
   cancel-in-progress: false
 jobs:
   prepare:
-    # A fork's pull request from its own `main` also matches `branches` above, so the event and the
-    # repository are checked too.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository)
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -39,7 +29,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable

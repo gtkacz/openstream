@@ -81,3 +81,9 @@ jobs:
         with:
           name: brp-macos-aarch64
           path: dist
+  release:
+    needs: [linux, windows, macos]
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
