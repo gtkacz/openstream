@@ -4,9 +4,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 
+use super::geometry::TILE_WIDTH;
 use crate::ui::theme;
-
-const TILE_WIDTH: f32 = 200.0;
 
 /// One embedded frame.
 pub struct Still {
