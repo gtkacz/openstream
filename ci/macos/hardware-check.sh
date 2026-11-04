@@ -257,15 +257,17 @@ quit_viewers() {
 save_viewer_log() { cp "$VIEWER_LOG" "$DIR/viewer-$1.log" 2>/dev/null || true; }
 
 # A headless publisher (its own identity, under its own HOME) shares the main display and the
-# machine's audio; the bundle joins it through brp:// links three ways.
+# machine's audio; the bundle joins it through brp:// links three ways. Watching needs a click
+# in the viewer, so the first checkpoint waits for one; the publisher starts capturing audio
+# only once someone watches, which is when it must leave every OpenStream window out.
 end_to_end() {
   local ok=0
   quit_viewers
   pkill -f "dist/brp/brp publish" 2>/dev/null || true
-  rm -f "$DIR/publisher.out"
+  rm -f "$DIR/publisher.out" "$DIR"/viewer-*.log
   (while true; do afplay "$SOUND"; done) &
   local player=$!
-  HOME="$DIR/home-publisher" RUST_LOG="info,brp_audio=debug,brp_codec=info" \
+  HOME="$DIR/home-publisher" RUST_LOG="info,brp_room=debug,brp_audio=debug" \
     ./dist/brp/brp publish --nickname mac-publisher >"$DIR/publisher.out" 2>&1 &
   local publisher=$!
   local ticket="" waited=0
@@ -281,13 +283,14 @@ end_to_end() {
     return 1
   fi
   record PASS publisher "sharing the main display"
-  grep -E "encoder opened|macos capture started|macos audio capture started" "$DIR/publisher.out" || true
+  grep -E "encoder opened|macos capture started" "$DIR/publisher.out" || true
 
   # 1. Idle start screen: the link joins in the window that is already open.
-  open "$APP"
+  open --env RUST_LOG="info,brp_room=debug" "$APP"
   sleep 8
-  local before
+  local before viewer
   before="$(viewer_count)"
+  viewer="$(viewer_pids | head -1)"
   open "brp://join/$ticket"
   sleep 15
   if [ "$before" = 1 ] && [ "$(viewer_count)" = 1 ] && grep -q "room joined" "$VIEWER_LOG" 2>/dev/null; then
@@ -296,37 +299,42 @@ end_to_end() {
     record FAIL link-idle-window "viewers before=$before after=$(viewer_count)"
     ok=1
   fi
-  checkpoint viewer-joined 240
-  if grep -q "decoder opened.*hardware=\"\?videotoolbox" "$VIEWER_LOG" 2>/dev/null; then
+  checkpoint watch 600
+  if grep -q 'decoder opened.*hardware="\?videotoolbox' "$VIEWER_LOG" 2>/dev/null; then
     record PASS viewer-decode "$(grep -o 'decoder opened.*' "$VIEWER_LOG" | head -1)"
   else
     record FAIL viewer-decode "no VideoToolbox decoder in the viewer log"
     ok=1
   fi
-
-  # The viewer is OpenStream too: the publisher must have dropped it from its audio.
-  local viewer
-  viewer="$(viewer_pids | head -1)"
-  sleep 4
-  if grep "retargeted the audio stream" "$DIR/publisher.out" | grep -qw "$viewer"; then
-    record PASS audio-excludes-other-window "viewer pid $viewer left out of the publisher's audio"
+  if grep "audio filter names these processes" "$DIR/publisher.out" | tail -1 | grep -qw "$viewer"; then
+    record PASS audio-excludes-viewer "the publisher's audio leaves out viewer pid $viewer"
   else
-    record FAIL audio-excludes-other-window "no retarget naming pid $viewer"
+    record FAIL audio-excludes-viewer "the publisher's audio filter does not name pid $viewer"
     ok=1
   fi
+  save_viewer_log idle
 
-  # 2. A room is open: the link opens a second window and leaves this one alone.
+  # 2. A room is open: the link opens a second window and leaves this one alone, and the
+  # publisher's audio, already running, must leave the new window out too.
   open "brp://join/$ticket"
   sleep 10
-  if [ "$(viewer_count)" = 2 ]; then
-    record PASS link-while-in-room "a second window opened"
+  local second
+  second="$(viewer_pids | grep -vx "$viewer" | head -1)"
+  if [ "$(viewer_count)" = 2 ] && [ -n "$second" ]; then
+    record PASS link-while-in-room "a second window opened (pid $second)"
   else
     record FAIL link-while-in-room "viewers=$(viewer_count)"
     ok=1
   fi
-  pkill -n -f "$APP_EXE" 2>/dev/null || true
+  sleep 4
+  if [ -n "$second" ] && grep "retargeted the audio stream" "$DIR/publisher.out" | grep -qw "$second"; then
+    record PASS audio-excludes-later-window "the running filter took in pid $second"
+  else
+    record FAIL audio-excludes-later-window "no retarget naming the second window"
+    ok=1
+  fi
+  [ -n "$second" ] && kill "$second" 2>/dev/null
   sleep 2
-  save_viewer_log room
 
   # 3. Not running: the link launches the bundle and the launch event joins.
   quit_viewers
@@ -338,7 +346,7 @@ end_to_end() {
     record FAIL link-cold-start "viewers=$(viewer_count)"
     ok=1
   fi
-  checkpoint cold-start 120
+  checkpoint cold-start 60
   save_viewer_log cold-start
 
   quit_viewers

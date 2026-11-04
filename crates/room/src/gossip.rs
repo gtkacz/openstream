@@ -93,6 +93,11 @@ impl PresenceLoop {
                 return;
             }
         };
+        tracing::debug!(
+            lives = presence.lives.len(),
+            bytes = bytes.len(),
+            "presence broadcast"
+        );
         if let Err(error) = self.sender.broadcast(Bytes::from(bytes)).await {
             tracing::warn!(%error, "presence broadcast failed");
         }
@@ -143,7 +148,17 @@ impl PresenceLoop {
             (applied, after != before)
         };
         match applied {
-            Applied::Inserted | Applied::Updated => (self.on_change)(),
+            Applied::Inserted | Applied::Updated => {
+                tracing::debug!(
+                    author = %signed.author.fmt_short(),
+                    ?applied,
+                    lives = lock(&self.membership)
+                        .get(&signed.author)
+                        .map_or(0, |m| m.presence.lives.len()),
+                    "presence applied"
+                );
+                (self.on_change)()
+            }
             Applied::Refreshed | Applied::Stale => {}
         }
         if audio_changed {
