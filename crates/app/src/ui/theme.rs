@@ -2,8 +2,8 @@
 use std::sync::Arc;
 
 use egui::{
-    AtomExt as _, Color32, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Margin,
-    Response, RichText, Sense, Stroke, TextStyle, Vec2, WidgetInfo, WidgetText, WidgetType,
+    Color32, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Margin, Response, RichText,
+    Sense, Stroke, TextStyle, Vec2, WidgetInfo, WidgetText, WidgetType,
 };
 
 use super::motion;
@@ -291,7 +291,7 @@ pub fn split_row(
 pub fn uniform_controls(ui: &mut egui::Ui) {
     let spacing = ui.spacing_mut();
     spacing.interact_size.y = CONTROL_HEIGHT;
-    spacing.button_padding.y = 8.0;
+    spacing.button_padding.y = 0.0;
 }
 
 /// A setting: its label on one fixed column and its control on another, so a stack of these reads
@@ -502,19 +502,67 @@ pub fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>, height: f32) -> Respon
     response
 }
 
-fn labelled_button<'a>(glyph: &'a str, text: &'a str) -> egui::Button<'a> {
-    egui::Button::new((icon(glyph), text)).min_size(egui::vec2(0.0, CONTROL_HEIGHT))
+/// Centre the visible ink, since the icon and text fonts have different ascenders.
+fn labelled_button(ui: &mut egui::Ui, glyph: &str, text: &str, size: Vec2) -> Response {
+    let ink = ui.visuals().widgets.inactive.fg_stroke.color;
+    let icon = ui.painter().layout_no_wrap(
+        glyph.to_owned(),
+        FontId::new(ICON_SIZE, FontFamily::Name(ICON_FAMILY.into())),
+        ink,
+    );
+    let label = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), medium(14.0), ink);
+    let gap = if text.is_empty() || glyph.is_empty() {
+        0.0
+    } else {
+        8.0
+    };
+    // Descenders (the p in Copy, for example) must not lift the whole label above its icon.
+    let capitals = ui.painter().layout_no_wrap("H".into(), medium(14.0), ink);
+    let icon_bounds = icon.mesh_bounds;
+    let label_bounds = label.mesh_bounds;
+    let icon_width = if glyph.is_empty() {
+        0.0
+    } else {
+        icon_bounds.width()
+    };
+    let label_width = if text.is_empty() {
+        0.0
+    } else {
+        label_bounds.width()
+    };
+    let width = icon_width + gap + label_width;
+    let desired = egui::vec2(width + 2.0 * ui.spacing().button_padding.x, CONTROL_HEIGHT).max(size);
+    let (rect, response) = ui.allocate_exact_size(desired, Sense::click());
+    let left = rect.center().x - width / 2.0;
+    for (galley, x, centre_y) in [
+        (icon, left - icon_bounds.left(), icon_bounds.center().y),
+        (
+            label,
+            left + icon_width + gap - label_bounds.left(),
+            capitals.mesh_bounds.center().y,
+        ),
+    ] {
+        if !galley.mesh_bounds.is_finite() {
+            continue;
+        }
+        ui.painter()
+            .galley(egui::pos2(x, rect.center().y - centre_y), galley, ink);
+    }
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), text));
+    response
 }
 
 pub fn action(ui: &mut egui::Ui, glyph: &str, text: &str, enabled: bool) -> Response {
     tactile(ui, Tone::Neutral, false, enabled, |ui| {
-        ui.add(labelled_button(glyph, text))
+        labelled_button(ui, glyph, text, Vec2::ZERO)
     })
 }
 
 pub fn primary_action(ui: &mut egui::Ui, glyph: &str, text: &str, enabled: bool) -> Response {
     tactile(ui, Tone::Primary, false, enabled, |ui| {
-        ui.add(labelled_button(glyph, text))
+        labelled_button(ui, glyph, text, Vec2::ZERO)
     })
 }
 
@@ -528,28 +576,20 @@ pub fn wide_action(
     enabled: bool,
     size: Vec2,
 ) -> Response {
-    // Each side grows towards the other, because separate spacer atoms would each take a gap too
-    // and widen the button past the column it was sized for.
-    let atoms = (
-        icon(glyph)
-            .atom_grow(true)
-            .atom_align(egui::Align2::RIGHT_CENTER),
-        text.atom_grow(true).atom_align(egui::Align2::LEFT_CENTER),
-    );
     tactile(ui, tone, false, enabled, |ui| {
-        ui.add(egui::Button::new(atoms).min_size(size))
+        labelled_button(ui, glyph, text, size)
     })
 }
 
 pub fn text_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
     tactile(ui, Tone::Neutral, false, enabled, |ui| {
-        ui.add(egui::Button::new(text).min_size(egui::vec2(0.0, CONTROL_HEIGHT)))
+        labelled_button(ui, "", text, Vec2::ZERO)
     })
 }
 
 pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
     tactile(ui, Tone::Primary, false, enabled, |ui| {
-        ui.add(egui::Button::new(text).min_size(egui::vec2(0.0, CONTROL_HEIGHT)))
+        labelled_button(ui, "", text, Vec2::ZERO)
     })
 }
 
@@ -572,7 +612,7 @@ pub fn toned_icon_button(
 ) -> Response {
     let response = tactile(ui, tone, false, enabled, |ui| {
         square_padding(ui);
-        ui.add(egui::Button::new(icon(glyph)).min_size(Vec2::splat(CONTROL_HEIGHT)))
+        labelled_button(ui, glyph, "", Vec2::splat(CONTROL_HEIGHT))
     });
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
     response.on_hover_text(name)
@@ -582,8 +622,10 @@ pub fn toned_icon_button(
 pub fn toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, text: &str) -> Response {
     let selected = *on;
     let mut response = tactile(ui, Tone::Neutral, selected, true, |ui| {
-        ui.add(labelled_button(glyph, text).selected(selected))
+        labelled_button(ui, glyph, text, Vec2::ZERO)
     });
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), selected, text));
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -595,11 +637,7 @@ pub fn icon_toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, name: &str) ->
     let selected = *on;
     let mut response = tactile(ui, Tone::Neutral, selected, true, |ui| {
         square_padding(ui);
-        ui.add(
-            egui::Button::new(icon(glyph))
-                .selected(selected)
-                .min_size(Vec2::splat(CONTROL_HEIGHT)),
-        )
+        labelled_button(ui, glyph, "", Vec2::splat(CONTROL_HEIGHT))
     });
     if response.clicked() {
         *on = !*on;
@@ -733,7 +771,15 @@ fn indicator_row(ui: &mut egui::Ui, indicator: Vec2, text: &str) -> (Response, e
     if ui.is_rect_visible(rect) {
         let ink = if ui.is_enabled() { TEXT } else { MUTED };
         ui.painter().galley(
-            egui::pos2(glyph.right() + GAP, rect.center().y - galley.size().y / 2.0),
+            egui::pos2(
+                glyph.right() + GAP,
+                rect.center().y
+                    - ui.painter()
+                        .layout_no_wrap("H".into(), FontId::proportional(14.0), ink)
+                        .mesh_bounds
+                        .center()
+                        .y,
+            ),
             galley,
             ink,
         );
@@ -1075,6 +1121,78 @@ pub fn dialog_footer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_and_label_ink_are_centred_in_controls() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        for width in [0.0, 380.0] {
+            let mut rects = Vec::new();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                for (glyph, text) in [(icons::CREATE, "Create room"), (icons::LINK, "Copy link")] {
+                    rects.push(
+                        wide_action(
+                            ui,
+                            glyph,
+                            text,
+                            Tone::Neutral,
+                            true,
+                            egui::vec2(width, FORM_HEIGHT),
+                        )
+                        .rect,
+                    );
+                }
+            });
+            output.textures_delta.clear();
+            let ink: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        Some(text.galley.mesh_bounds.translate(text.pos.to_vec2()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(ink.len(), rects.len() * 2);
+            for (rect, pair) in rects.iter().zip(ink.chunks_exact(2)) {
+                for bounds in pair {
+                    assert!((bounds.center().y - rect.center().y).abs() <= 2.0);
+                    assert!(rect.contains_rect(*bounds));
+                }
+                assert!((pair[0].union(pair[1]).center().x - rect.center().x).abs() <= 2.0);
+            }
+        }
+    }
+
+    #[test]
+    fn descenders_do_not_shift_labels_relative_to_icons() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                for text in ["Create room", "Copy link", "Copy ticket", "Join room"] {
+                    action(ui, icons::CREATE, text, true);
+                }
+            });
+        });
+        output.textures_delta.clear();
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    if text.galley.text().len() > 3 {
+                        return Some(text.pos.y);
+                    }
+                }
+                None
+            })
+            .collect();
+        assert_eq!(labels.len(), 4);
+        assert!(labels.iter().all(|y| (*y - labels[0]).abs() < 0.01));
+    }
 
     fn contrast(a: Color32, b: Color32) -> f32 {
         let luminance = |c: Color32| {
