@@ -42,7 +42,13 @@ pub fn share_buttons(
             source: None,
         });
     }
-    if !snapshot.own_lives.is_empty() && tool(ui, icons::STOP, "Stop sharing", true) {
+    // Always present, so starting a stream cannot shove the rest of the dock sideways.
+    if tool(
+        ui,
+        icons::STOP,
+        "Stop sharing",
+        !snapshot.own_lives.is_empty(),
+    ) {
         commands.extend(
             snapshot
                 .own_lives
@@ -74,8 +80,7 @@ pub fn audio_controls(
         (Some(status), false) => format!("{selection} · {status}"),
         _ => selection,
     };
-    if ui
-        .add(egui::Button::new("Applications…").min_size(egui::vec2(0.0, theme::CONTROL_HEIGHT)))
+    if theme::text_button(ui, "Applications…", true)
         .on_hover_text(tooltip)
         .clicked()
     {
@@ -117,10 +122,16 @@ pub fn share_sheet(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             theme::section_heading(ui, "Share");
-            ui.horizontal_wrapped(|ui| share_buttons(ui, snapshot, state, commands, true));
+            ui.horizontal_wrapped(|ui| {
+                theme::uniform_controls(ui);
+                share_buttons(ui, snapshot, state, commands, true);
+            });
             ui.add_space(12.0);
             theme::section_heading(ui, "Audio");
-            ui.horizontal_wrapped(|ui| audio_controls(ui, snapshot, commands, true));
+            ui.horizontal_wrapped(|ui| {
+                theme::uniform_controls(ui);
+                audio_controls(ui, snapshot, commands, true);
+            });
             ui.add_space(12.0);
             theme::section_heading(ui, "Upload");
             ui.label(theme::figure(format!("{} kbps", state.upload_kbps)));
@@ -136,7 +147,6 @@ pub fn live_card(
 ) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
-        theme::uniform_controls(ui);
         live_rows(ui, live, state, commands);
     });
 }
@@ -194,46 +204,58 @@ fn live_rows(
         .small()
         .color(theme::SECONDARY),
     );
-    ui.horizontal_wrapped(|ui| {
-        let fps = state.fps_edits.entry(info.id).or_insert(current_fps);
-        let response = ui.add(
-            egui::DragValue::new(fps)
-                .range(1..=info.source_fps.max(1))
-                .suffix(" fps"),
-        );
-        // Commit on release rather than on every change: each commit restarts the encoders.
-        if !response.dragged() && !response.has_focus() {
-            let value = *fps;
-            state.fps_edits.remove(&info.id);
-            if value != current_fps {
-                commands.push(RoomCommand::SetPresets {
+    let mut stop = false;
+    let mut edits = Vec::new();
+    theme::split_row(
+        ui,
+        theme::CONTROL_HEIGHT,
+        |ui| {
+            let fps = state.fps_edits.entry(info.id).or_insert(current_fps);
+            let response = theme::drag_value(
+                ui,
+                egui::DragValue::new(fps)
+                    .range(1..=info.source_fps.max(1))
+                    .suffix(" fps"),
+            );
+            // Commit on release rather than on every change: each commit restarts the encoders.
+            if !response.dragged() && !response.has_focus() {
+                let value = *fps;
+                state.fps_edits.remove(&info.id);
+                if value != current_fps {
+                    edits.push(RoomCommand::SetPresets {
+                        live_id: info.id,
+                        presets: presets::with_fps(info, value),
+                    });
+                }
+            }
+
+            let mut codec = current_codec;
+            theme::dropdown(
+                ui,
+                ("codec", info.id),
+                codec_name(codec),
+                Some(72.0),
+                |ui| {
+                    for candidate in [Codec::Hevc, Codec::H264, Codec::Av1] {
+                        ui.selectable_value(&mut codec, candidate, codec_name(candidate));
+                    }
+                },
+            );
+            if codec != current_codec {
+                edits.push(RoomCommand::SetPresets {
                     live_id: info.id,
-                    presets: presets::with_fps(info, value),
+                    presets: presets::with_codec(info, codec),
                 });
             }
-        }
-
-        let mut codec = current_codec;
-        egui::ComboBox::from_id_salt(("codec", info.id))
-            .width(72.0)
-            .icon(theme::chevron)
-            .selected_text(codec_name(codec))
-            .show_ui(ui, |ui| {
-                for candidate in [Codec::Hevc, Codec::H264, Codec::Av1] {
-                    ui.selectable_value(&mut codec, candidate, codec_name(candidate));
-                }
-            });
-        if codec != current_codec {
-            commands.push(RoomCommand::SetPresets {
-                live_id: info.id,
-                presets: presets::with_codec(info, codec),
-            });
-        }
-
-        if ui.button("Stop").clicked() {
-            commands.push(RoomCommand::StopLive(info.id));
-        }
-    });
+        },
+        |ui| {
+            stop = theme::icon_button(ui, icons::STOP, "Stop this stream", true).clicked();
+        },
+    );
+    commands.extend(edits);
+    if stop {
+        commands.push(RoomCommand::StopLive(info.id));
+    }
 
     for preset in &live.presets {
         if let Some(error) = &preset.last_error {
@@ -283,7 +305,8 @@ fn live_rows(
                         .bitrate_edits
                         .entry(key)
                         .or_insert(preset.bitrate_kbps);
-                    let response = ui.add(
+                    let response = theme::drag_value(
+                        ui,
                         egui::DragValue::new(kbps)
                             .range(MIN_BITRATE_KBPS..=MAX_BITRATE_KBPS)
                             .speed(100.0)

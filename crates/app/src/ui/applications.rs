@@ -129,14 +129,20 @@ pub enum PickerOutcome {
 /// the draft; the main window has no other Esc consumer, since the fullscreen rule lives in the
 /// pop-out windows and each has an egui context of its own.
 pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
-    // Cloned so the window closure does not borrow `state` while it draws, as `picker.rs` does.
-    let mut picker = state.applications.clone()?;
+    // Kept after the picker closes, so the dialog can leave still showing what it showed.
+    let leaving_id = egui::Id::new("application-picker-content");
+    let open = state.applications.is_some();
+    if let Some(picker) = &state.applications {
+        ctx.data_mut(|data| data.insert_temp(leaving_id, picker.clone()));
+    }
+    let mut picker = ctx.data(|data| data.get_temp::<ApplicationPicker>(leaving_id))?;
     let rows = picker.rows();
     let (mut done, mut cancelled, mut refresh) = (false, false, false);
     let (_, dismissed) = super::theme::dialog(
         ctx,
         "application-picker",
         "Applications the room hears",
+        open,
         |ui| {
             ui.radio_value(
                 &mut picker.only,
@@ -169,15 +175,17 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                 });
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
+                super::theme::uniform_controls(ui);
                 done = super::theme::primary_button(ui, "Done", true).clicked();
-                cancelled = ui
-                    .add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 36.0)))
-                    .clicked();
+                cancelled = super::theme::text_button(ui, "Cancel", true).clicked();
                 refresh = super::theme::action(ui, super::theme::icons::REFRESH, "Refresh", true)
                     .clicked();
             });
         },
-    );
+    )?;
+    if !open {
+        return None;
+    }
     if done {
         let applied = picker.applied();
         state.cancel_applications();

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use brp_room::{RoomSnapshot, WatchState, WatchView};
 
 use super::members::{offered_preset, preset_selector};
+use super::motion;
 use super::state::{UiState, live_title, visible_watches};
 use super::theme::{self, icons};
 use crate::commands::{RoomCommand, WindowCommand};
@@ -50,10 +51,17 @@ pub fn draw(
                 empty_canvas(ui, snapshot, popped);
                 return;
             }
-            let rects = grid::layout(ui.max_rect().shrink(AREA_INSET), watches.len());
+            let area = ui.max_rect().shrink(AREA_INSET);
+            let rects = grid::layout(area, watches.len());
             for (watch, cell) in watches.iter().zip(rects) {
                 let key = (watch.publisher, watch.live_id);
-                let rect = cell.shrink(CELL_INSET);
+                // The video renderer reads this same rect, so the picture itself moves.
+                let rect = motion::flowing_rect(
+                    ui.ctx(),
+                    ui.id().with(("tile-place", key)),
+                    area,
+                    cell.shrink(CELL_INSET),
+                );
                 placements.push((key, rect));
                 tile_overlay(
                     ui,
@@ -98,13 +106,14 @@ fn empty_canvas(ui: &mut egui::Ui, snapshot: &RoomSnapshot, popped: &HashSet<Til
             "Streams appear in the room list when someone shares",
         )
     };
-    let center = ui.max_rect().center();
+    let shown = motion::arrive(ui.ctx(), ui.id().with("empty-canvas"), motion::SURFACE);
+    let center = ui.max_rect().center() + motion::rise(shown, 6.0);
     ui.painter().text(
         center - egui::vec2(0.0, 14.0),
         egui::Align2::CENTER_CENTER,
         title,
         theme::semibold(20.0),
-        theme::TEXT,
+        theme::TEXT.gamma_multiply(shown),
     );
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(egui::Rect::from_center_size(
@@ -112,6 +121,7 @@ fn empty_canvas(ui: &mut egui::Ui, snapshot: &RoomSnapshot, popped: &HashSet<Til
             egui::vec2((ui.available_width() - 32.0).clamp(32.0, 360.0), 56.0),
         )),
         |ui| {
+            ui.set_opacity(shown);
             ui.vertical_centered(|ui| {
                 ui.weak(hint);
             });
@@ -120,7 +130,7 @@ fn empty_canvas(ui: &mut egui::Ui, snapshot: &RoomSnapshot, popped: &HashSet<Til
 }
 
 /// The name that stays on the video, so a grid of screens can always be told apart.
-fn name_chip(ui: &egui::Ui, rect: egui::Rect, title: &str, live: bool, opacity: f32) {
+fn name_chip(ui: &egui::Ui, rect: egui::Rect, title: &str, live: f32, opacity: f32) {
     const PADDING: egui::Vec2 = egui::vec2(8.0, 4.0);
     const DOT_SPACE: f32 = 12.0;
     let max_text = (rect.width() - 2.0 * TOOLBAR_MARGIN - 2.0 * PADDING.x - DOT_SPACE).max(0.0);
@@ -142,7 +152,7 @@ fn name_chip(ui: &egui::Ui, rect: egui::Rect, title: &str, live: bool, opacity: 
     painter.circle_filled(
         chip.left_center() + egui::vec2(PADDING.x + 3.0, 0.0),
         3.0,
-        if live { theme::LIVE } else { theme::MUTED },
+        theme::MUTED.lerp_to_gamma(theme::LIVE, live),
     );
     painter.galley(
         chip.min + PADDING + egui::vec2(DOT_SPACE, 0.0),
@@ -153,9 +163,22 @@ fn name_chip(ui: &egui::Ui, rect: egui::Rect, title: &str, live: bool, opacity: 
 
 /// What is happening instead of video: the stream's name, why it is not showing, and a spinner
 /// while something is still in flight. On its own surface, because a reconnecting tile can still
-/// be holding its last frame underneath, in any colour.
-fn tile_state(ui: &mut egui::Ui, rect: egui::Rect, title: &str, state: &WatchState) {
-    let (status, ink, in_flight) = match state {
+/// be holding its last frame underneath, in any colour. When video arrives it fades off the picture
+/// still saying what it last said, rather than vanishing on the frame the state changed.
+fn tile_state(ui: &mut egui::Ui, id: egui::Id, rect: egui::Rect, title: &str, state: WatchState) {
+    let shown = motion::appear(ui.ctx(), id, state != WatchState::Live, motion::TRAVEL);
+    if shown <= 0.0 {
+        return;
+    }
+    let last_id = id.with("last-state");
+    if state != WatchState::Live {
+        ui.ctx().data_mut(|data| data.insert_temp(last_id, state));
+    }
+    let said = ui
+        .ctx()
+        .data(|data| data.get_temp::<WatchState>(last_id))
+        .unwrap_or(state);
+    let (status, ink, in_flight) = match said {
         WatchState::Live => return,
         WatchState::Connecting => ("Connecting", theme::SECONDARY, true),
         WatchState::Reconnecting => ("Reconnecting", theme::WARNING, true),
@@ -165,12 +188,14 @@ fn tile_state(ui: &mut egui::Ui, rect: egui::Rect, title: &str, state: &WatchSta
     let height = if in_flight { 108.0 } else { 72.0 };
     let card = egui::Rect::from_center_size(center, egui::vec2(rect.width().min(240.0), height))
         .intersect(rect);
-    let painter = ui.painter_at(rect);
+    let mut painter = ui.painter_at(rect);
+    painter.multiply_opacity(shown);
     painter.rect_filled(card, 10.0, theme::SURFACE);
     if in_flight {
         theme::spinner_at(
             ui,
             egui::Rect::from_center_size(center - egui::vec2(0.0, 28.0), egui::Vec2::splat(20.0)),
+            shown,
         );
     }
     let text_top = if in_flight {
@@ -220,7 +245,13 @@ pub fn tile_overlay(
         .find(|m| m.id == key.0)
         .map(|m| m.nickname.as_str());
     let chip_text = owner.map_or_else(|| title.clone(), |name| format!("{name} · {title}"));
-    tile_state(ui, rect, &title, &watch.state);
+    tile_state(
+        ui,
+        ui.id().with(("tile-state", key)),
+        rect,
+        &title,
+        watch.state,
+    );
     if state.stats_visible.contains(&key) {
         let preset = live
             .and_then(|l| l.presets.iter().find(|p| p.id == watch.preset_id))
@@ -250,11 +281,11 @@ pub fn tile_overlay(
         || ui.input(|input| input.key_pressed(egui::Key::Tab))
         || egui::Popup::is_any_open(ui.ctx())
         || ui.ctx().memory(|memory| memory.focused().is_some());
-    let opacity = ui.ctx().animate_bool_with_time_and_easing(
+    let opacity = motion::appear(
+        ui.ctx(),
         ui.id().with(("stream-controls", key)),
         show_controls,
-        0.16,
-        egui::emath::easing::cubic_out,
+        motion::TRAVEL,
     );
     // A pop-out shows one stream, so its name has nothing to tell apart until the pointer arrives.
     let chip_opacity = match placement {
@@ -262,13 +293,13 @@ pub fn tile_overlay(
         Placement::PopOut { .. } => opacity,
     };
     if chip_opacity > 0.0 {
-        name_chip(
-            ui,
-            rect,
-            &chip_text,
+        let live = motion::follow(
+            ui.ctx(),
+            ui.id().with(("tile-live", key)),
             watch.state == WatchState::Live,
-            chip_opacity,
+            motion::TRAVEL,
         );
+        name_chip(ui, rect, &chip_text, live, chip_opacity);
     }
     if opacity <= 0.0 {
         return;
@@ -311,6 +342,7 @@ pub fn tile_overlay(
                 .id_salt(("tile-toolbar", key))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        theme::uniform_controls(ui);
                         ui.spacing_mut().item_spacing.x = 4.0;
                         if let Some(live) = live {
                             let Some(mut preset_id) = offered_preset(live, Some(watch.preset_id))

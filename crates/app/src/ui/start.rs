@@ -122,6 +122,7 @@ pub fn draw(
     update_state: &UpdateState,
 ) -> Option<StartAction> {
     let mut action = None;
+    super::motion::dissolve_in(ui.ctx(), "start", theme::GROUND);
     egui::CentralPanel::default()
         .frame(
             egui::Frame::NONE
@@ -129,13 +130,10 @@ pub fn draw(
                 .inner_margin(egui::Margin::same(24)),
         )
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                theme::brand(ui);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
-                        action = Some(StartAction::OpenSettings);
-                    }
-                });
+            theme::split_row(ui, theme::CONTROL_HEIGHT, theme::brand, |ui| {
+                if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
+                    action = Some(StartAction::OpenSettings);
+                }
             });
             let body = ui.available_rect_before_wrap();
             let with_diagram = ui.ctx().content_rect().width() >= DIAGRAM_MIN_WINDOW_WIDTH;
@@ -196,16 +194,23 @@ fn form(
     ui.add_space(16.0);
     let has_ticket = !state.ticket.trim().is_empty();
     let full_width = egui::vec2(ui.available_width(), 40.0);
-    // Pasting a ticket says what this person came to do, so Join takes the light surface from
-    // Create for as long as the field holds one.
-    let create =
-        egui::Button::new((theme::icon(icons::CREATE), "Create room")).min_size(full_width);
-    let created = if has_ticket {
-        ui.add_enabled(!state.connecting, create)
+    // Pasting a ticket says what this person came to do, so Join takes the accent surface from
+    // Create for as long as the field holds one. The two cross-fade.
+    let (create_tone, join_tone) = if has_ticket {
+        (theme::Tone::Neutral, theme::Tone::Primary)
     } else {
-        theme::inverted(ui, |ui| ui.add_enabled(!state.connecting, create))
+        (theme::Tone::Primary, theme::Tone::Neutral)
     };
-    if created.clicked() {
+    if theme::wide_action(
+        ui,
+        icons::CREATE,
+        "Create room",
+        create_tone,
+        !state.connecting,
+        full_width,
+    )
+    .clicked()
+    {
         *action = Some(StartAction::Create);
     }
     ui.add_space(20.0);
@@ -218,13 +223,16 @@ fn form(
             .desired_width(f32::INFINITY),
     );
     let can_join = !state.connecting && has_ticket;
-    let join = egui::Button::new((theme::icon(icons::JOIN), "Join room")).min_size(full_width);
-    let joined = if has_ticket {
-        theme::inverted(ui, |ui| ui.add_enabled(can_join, join))
-    } else {
-        ui.add_enabled(can_join, join)
-    };
-    if joined.clicked() {
+    if theme::wide_action(
+        ui,
+        icons::JOIN,
+        "Join room",
+        join_tone,
+        can_join,
+        full_width,
+    )
+    .clicked()
+    {
         *action = Some(StartAction::Join);
     }
     if state.connecting {
@@ -245,10 +253,7 @@ fn form(
             ui.horizontal(|ui| {
                 ui.label(theme::figure(abbreviate_ticket(&room.ticket)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(!state.connecting, egui::Button::new("Join"))
-                        .clicked()
-                    {
+                    if theme::text_button(ui, "Join", !state.connecting).clicked() {
                         state.ticket = room.ticket.clone();
                         *action = Some(StartAction::Join);
                     }
@@ -329,33 +334,33 @@ fn room_diagram(ui: &egui::Ui, area: egui::Rect) {
     tag(direct_peer + (relayed_peer - direct_peer) * 0.5, "Relayed");
 }
 
-/// The picture being shared: a low sun going down behind a ridgeline, in flat fills from the live
-/// hue's family. Drawn once per screen, so every peer visibly holds the same frame.
+/// The picture being shared: a low sun going down over a swell, in flat fills from the accent's
+/// family. Drawn once per screen, so every peer visibly holds the same frame.
 fn shared_picture(painter: &egui::Painter, rect: egui::Rect) {
-    const SKY: egui::Color32 = egui::Color32::from_rgb(13, 44, 45);
-    const FAR: egui::Color32 = egui::Color32::from_rgb(9, 30, 33);
-    const NEAR: egui::Color32 = egui::Color32::from_rgb(6, 18, 21);
+    const SKY: egui::Color32 = egui::Color32::from_rgb(12, 44, 68);
+    const FAR: egui::Color32 = egui::Color32::from_rgb(9, 31, 50);
+    const NEAR: egui::Color32 = egui::Color32::from_rgb(6, 19, 33);
     const SUN_CENTER: (f32, f32) = (0.63, 0.56);
     const SUN_RADIUS: f32 = 0.36;
     /// Slices taken out of the sun's lower half: top of each as a fraction of the height, then its
     /// thickness.
     const SUN_BANDS: [(f32, f32); 3] = [(0.50, 0.02), (0.56, 0.03), (0.63, 0.045)];
-    const FAR_RIDGE: [(f32, f32); 7] = [
+    const FAR_SWELL: [(f32, f32); 7] = [
         (0.0, 0.70),
-        (0.16, 0.54),
-        (0.30, 0.66),
-        (0.46, 0.60),
-        (0.68, 0.74),
-        (0.86, 0.58),
-        (1.0, 0.66),
+        (0.16, 0.62),
+        (0.32, 0.70),
+        (0.50, 0.63),
+        (0.68, 0.71),
+        (0.86, 0.62),
+        (1.0, 0.68),
     ];
-    const NEAR_RIDGE: [(f32, f32); 6] = [
-        (0.0, 0.86),
-        (0.20, 0.72),
-        (0.42, 0.88),
-        (0.64, 0.80),
-        (0.82, 0.90),
-        (1.0, 0.76),
+    const NEAR_SWELL: [(f32, f32); 6] = [
+        (0.0, 0.84),
+        (0.20, 0.77),
+        (0.42, 0.85),
+        (0.64, 0.78),
+        (0.82, 0.86),
+        (1.0, 0.79),
     ];
     let at = |x: f32, y: f32| rect.lerp_inside(egui::vec2(x, y));
     painter.rect_filled(rect, 0.0, SKY);
@@ -371,8 +376,8 @@ fn shared_picture(painter: &egui::Painter, rect: egui::Rect) {
             SKY,
         );
     }
-    for (ridge, fill) in [(&FAR_RIDGE[..], FAR), (&NEAR_RIDGE[..], NEAR)] {
-        // A ridgeline as one polygon is concave and epaint only fills convex shapes, so each span
+    for (ridge, fill) in [(&FAR_SWELL[..], FAR), (&NEAR_SWELL[..], NEAR)] {
+        // A swell as one polygon is concave and epaint only fills convex shapes, so each span
         // is its own quad down to the bottom edge. Each runs a point under the next, because two
         // feathered edges meeting exactly would leave a visible seam.
         for span in ridge.windows(2) {

@@ -3,6 +3,7 @@
 
 pub mod applications;
 pub mod members;
+pub mod motion;
 pub mod own_lives;
 pub mod picker;
 pub mod popout;
@@ -59,6 +60,7 @@ pub fn draw(
     let mut open_settings = false;
     let mut update_clicked = false;
     let compact = theme::is_compact(ui.ctx());
+    motion::dissolve_in(ui.ctx(), "room", theme::GROUND);
     if !compact {
         members::draw(ui, snapshot, ticket, state, &mut commands);
     }
@@ -101,15 +103,24 @@ fn compact_sheet(
     commands: &mut Vec<RoomCommand>,
 ) {
     let height = (ui.ctx().content_rect().height() * 0.6).max(160.0);
-    let mut is_open = state.sheet_open;
+    // Sized by a spring rather than slid, so the video above tracks the sheet's edge on every
+    // frame, and a second tap reverses it from wherever it has reached.
+    let shown = motion::follow(
+        ui.ctx(),
+        egui::Id::new("sheet-shown"),
+        state.sheet_open,
+        motion::SURFACE,
+    );
+    if shown <= 0.0 {
+        return;
+    }
     egui::Panel::bottom("sheet")
-        .exact_size(height)
+        .exact_size(height * shown)
         .frame(theme::rail())
-        .show_collapsible(ui, &mut is_open, |ui| match state.sheet {
+        .show(ui, |ui| match state.sheet {
             state::CompactSheet::Room => members::contents(ui, snapshot, ticket, state, commands),
             state::CompactSheet::Share => own_lives::share_sheet(ui, snapshot, state, commands),
         });
-    state.sheet_open = is_open;
 }
 
 /// A volume slider with a mute toggle. Returns the new gain when the user changed it. Mute sets

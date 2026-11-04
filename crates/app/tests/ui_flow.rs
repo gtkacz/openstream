@@ -232,13 +232,15 @@ fn an_encoder_failure_stays_visible_with_quality_details_collapsed() {
     brp_app::ui::theme::install(&ctx);
     let mut state = brp_app::ui::state::UiState::new();
     let mut shapes = Vec::new();
-    for _ in 0..3 {
+    // Long enough for the card to finish growing into the rail.
+    for frame in 0..60 {
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(1280.0, 800.0),
                 )),
+                time: Some(f64::from(frame) / 60.0),
                 ..Default::default()
             },
             |ui| {
@@ -382,8 +384,10 @@ fn the_video_keeps_most_of_the_window_while_sharing_at_every_width() {
         let snapshot = busy_room();
         let mut state = brp_app::ui::state::UiState::new();
         let mut placed = None;
-        for _ in 0..4 {
-            placed = Some(run_room(&ctx, window(width, height), &snapshot, &mut state).0);
+        // Long enough for a new tile to finish growing into its place.
+        for frame in 0..60 {
+            let raw = timed(window(width, height), frame);
+            placed = Some(run_room(&ctx, raw, &snapshot, &mut state).0);
         }
         let tile = placed.expect("drawn").tile_rects[0].1;
         assert!(
@@ -471,8 +475,10 @@ fn one_escape_closes_only_the_dialog_on_top() {
     let run = |raw: egui::RawInput| {
         let mut dismissed = (false, false);
         let mut output = ctx.run_ui(raw, |ui| {
-            dismissed.0 = theme::dialog(ui.ctx(), "under", "Under", |_| ()).1;
-            dismissed.1 = theme::dialog(ui.ctx(), "over", "Over", |_| ()).1;
+            dismissed.0 = theme::dialog(ui.ctx(), "under", "Under", true, |_| ())
+                .is_some_and(|(_, dismissed)| dismissed);
+            dismissed.1 = theme::dialog(ui.ctx(), "over", "Over", true, |_| ())
+                .is_some_and(|(_, dismissed)| dismissed);
         });
         output.textures_delta.clear();
         dismissed
@@ -497,10 +503,9 @@ fn a_stalled_stream_does_not_keep_the_window_drawing_flat_out() {
     snapshot.watches[0].state = brp_room::WatchState::Reconnecting;
     let mut state = brp_app::ui::state::UiState::new();
     let mut delay = std::time::Duration::ZERO;
-    // Past the panel and toolbar settling, which may each ask for one more pass.
-    for frame in 0..8 {
-        let mut raw = window(1280.0, 800.0);
-        raw.time = Some(f64::from(frame) * 0.05);
+    // Past every spring settling, which legitimately asks for frames while it moves.
+    for frame in 0..120 {
+        let raw = timed(window(1280.0, 800.0), frame);
         let mut output = ctx.run_ui(raw, |ui| {
             brp_app::ui::draw(
                 ui,
@@ -528,7 +533,183 @@ fn dialogs_stay_usable_in_a_window_too_small_for_them() {
     let ctx = egui::Context::default();
     theme::install(&ctx);
     let mut output = ctx.run_ui(window(24.0, 24.0), |ui| {
-        theme::dialog(ui.ctx(), "tiny", "Tiny", |_| ());
+        theme::dialog(ui.ctx(), "tiny", "Tiny", true, |_| ());
     });
     output.textures_delta.clear();
+}
+
+fn timed(mut raw: egui::RawInput, frame: u32) -> egui::RawInput {
+    raw.time = Some(f64::from(frame) / 60.0);
+    raw
+}
+
+#[test]
+fn a_button_centres_its_icon_on_its_label() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut output = ctx.run_ui(window(400.0, 200.0), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
+            brp_app::ui::theme::action(ui, brp_app::ui::theme::icons::LINK, "Copy link", true);
+        });
+    });
+    let shapes = std::mem::take(&mut output.shapes);
+    output.textures_delta.clear();
+    let label = text_rect(&shapes, "Copy link");
+    let icon = text_rect(&shapes, brp_app::ui::theme::icons::LINK);
+    assert!(
+        (label.center().y - icon.center().y).abs() <= 1.0,
+        "label at {} and icon at {}",
+        label.center().y,
+        icon.center().y
+    );
+}
+
+#[test]
+fn tiles_flow_to_their_new_places_and_track_a_resized_window_directly() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let mut frame = 0;
+    let mut run =
+        |snapshot: &brp_room::RoomSnapshot, state: &mut brp_app::ui::state::UiState, width: f32| {
+            frame += 1;
+            run_room(&ctx, timed(window(width, 800.0), frame), snapshot, state)
+                .0
+                .tile_rects
+        };
+    let mut alone = Vec::new();
+    for _ in 0..60 {
+        alone = run(&snapshot, &mut state, 1280.0);
+    }
+    let settled = alone[0].1;
+
+    // A second stream starts: the first tile must head for its half of the grid, not teleport.
+    let mut second = snapshot.watches[0].clone();
+    second.live_id = 2;
+    snapshot.watches.push(second);
+    let moving = run(&snapshot, &mut state, 1280.0)[0].1;
+    assert!(
+        moving.width() > settled.width() * 0.6,
+        "a tile must not jump on the frame the grid changes, it is {} of {}",
+        moving.width(),
+        settled.width()
+    );
+    let mut halves = Vec::new();
+    for _ in 0..60 {
+        halves = run(&snapshot, &mut state, 1280.0);
+    }
+    assert_eq!(halves.len(), 2);
+    assert!(halves[0].1.width() < settled.width() * 0.6);
+    assert!(halves[0].1.right() <= halves[1].1.left());
+
+    // Resizing is direct manipulation: the same pass must already be at the new size.
+    let before = halves[0].1;
+    let resized = run(&snapshot, &mut state, 1600.0)[0].1;
+    assert!(
+        resized.width() > before.width() + 100.0,
+        "the tile lagged behind the window: {} then {}",
+        before.width(),
+        resized.width()
+    );
+}
+
+#[test]
+fn a_closing_dialog_leaves_gradually_without_blocking_the_room_behind_it() {
+    use brp_app::{settings::Settings, ui::settings};
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut dialog = settings::SettingsDialog::default();
+    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    let mut frame = 0;
+    let mut clicked_behind = false;
+    let mut pass = |raw: egui::RawInput,
+                    dialog: &mut settings::SettingsDialog,
+                    clicked_behind: &mut bool| {
+        frame += 1;
+        let mut output = ctx.run_ui(timed(raw, frame), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                *clicked_behind |= ui
+                    .put(
+                        egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0)),
+                        egui::Button::new("behind"),
+                    )
+                    .clicked();
+            });
+            settings::draw(ui.ctx(), dialog, false);
+        });
+        output.textures_delta.clear();
+        output.shapes
+    };
+    for _ in 0..60 {
+        pass(window(1280.0, 800.0), &mut dialog, &mut clicked_behind);
+    }
+    dialog.open = false;
+    let has_title = |shapes: &[egui::epaint::ClippedShape]| {
+        shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(s) if s.galley.text() == "Settings"),
+        )
+    };
+    let leaving = pass(window(1280.0, 800.0), &mut dialog, &mut clicked_behind);
+    assert!(has_title(&leaving), "it must not vanish on the first frame");
+    for pressed in [true, false] {
+        pass(
+            click_at(window(1280.0, 800.0), egui::pos2(50.0, 50.0), pressed),
+            &mut dialog,
+            &mut clicked_behind,
+        );
+    }
+    assert!(
+        clicked_behind,
+        "the room takes input while the dialog leaves"
+    );
+    let mut gone = Vec::new();
+    for _ in 0..60 {
+        gone = pass(window(1280.0, 800.0), &mut dialog, &mut clicked_behind);
+    }
+    assert!(!has_title(&gone), "and then it is gone");
+}
+
+#[test]
+fn a_dropdown_still_highlights_the_row_under_the_pointer() {
+    use brp_app::ui::theme;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let mut choice = 1;
+    let mut frame = 0;
+    let mut pass = |raw: egui::RawInput, choice: &mut i32| {
+        frame += 1;
+        let mut output = ctx.run_ui(timed(raw, frame), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                theme::dropdown(ui, "row-test", "One", None, |ui| {
+                    ui.selectable_value(choice, 1, "First");
+                    ui.selectable_value(choice, 2, "Second");
+                });
+            });
+        });
+        output.textures_delta.clear();
+        output.shapes
+    };
+    let closed = pass(window(400.0, 400.0), &mut choice);
+    let button = text_rect(&closed, "One").center();
+    for pressed in [true, false] {
+        pass(click_at(window(400.0, 400.0), button, pressed), &mut choice);
+    }
+    let open = pass(window(400.0, 400.0), &mut choice);
+    let row = text_rect(&open, "Second").center();
+    let mut hover = window(400.0, 400.0);
+    hover.events = vec![egui::Event::PointerMoved(row)];
+    pass(hover, &mut choice);
+    // Long enough for the popup to finish fading in, since its opacity scales the row's fill.
+    let mut hovered = Vec::new();
+    for _ in 0..30 {
+        hovered = pass(window(400.0, 400.0), &mut choice);
+    }
+    let hover_fill = ctx.global_style().visuals.widgets.hovered.weak_bg_fill;
+    assert!(
+        hovered
+            .iter()
+            .any(|shape| matches!(&shape.shape, egui::Shape::Rect(r) if r.fill == hover_fill)),
+        "the wrapper's transparent surfaces must not leak into the popup"
+    );
 }

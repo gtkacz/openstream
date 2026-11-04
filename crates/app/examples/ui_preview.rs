@@ -1,5 +1,6 @@
 //! Render the actual native UI without opening a window or connecting to peers.
 //! cargo run -p brp --example ui_preview -- /tmp/openstream start 1280 800
+//! A fifth argument captures that many 60 Hz frames in, to see motion part way through.
 //! Screens: start, room, watching, grid, sheet, empty, settings, picker, applications.
 use std::{collections::HashSet, error::Error, io::Write};
 
@@ -19,6 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let screen = args.get(2).map(String::as_str).unwrap_or("start");
     let width: u32 = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(1280);
     let height: u32 = args.get(4).map(|s| s.parse()).transpose()?.unwrap_or(800);
+    let frames: u32 = args.get(5).map(|s| s.parse()).transpose()?.unwrap_or(60);
     let ctx = egui::Context::default();
     ui::theme::install(&ctx);
     let mut start = StartState::new("Alex".into());
@@ -174,7 +176,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Fake frames stand in for the video renderer, so the overlays are judged against a picture.
     let mut tile_rects: Vec<(brp_app::render::tiles::TileKey, egui::Rect)> = Vec::new();
     // Warm up egui's multi-pass layout and window placement before capturing.
-    for frame in 0..12 {
+    for frame in 0..frames {
         let input = egui::RawInput {
             events: if matches!(screen, "watching" | "grid") {
                 vec![egui::Event::PointerMoved(egui::pos2(
@@ -188,7 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 egui::Pos2::ZERO,
                 egui::vec2(width as f32, height as f32),
             )),
-            time: Some(frame as f64 * 0.1),
+            time: Some(f64::from(frame) / 60.0),
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {

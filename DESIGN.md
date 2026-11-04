@@ -6,12 +6,12 @@ URL schemes, wire protocols, and release machinery.
 
 ## Direction
 
-A control room at night: exact, nocturnal, quick. Live video is the richest thing on screen, so
-tiles sit on a black canvas and everything else stays near-black and neutral. The one hue is the
-green of a live signal; amber and red mean warnings and errors. The primary action is the only
-light surface on a screen. No glows, glass, or decorative gradients.
+A control room under deep water: exact, calm, quick. Live video is the richest thing on screen, so
+tiles sit on a black canvas and everything else stays in dark sea tones. The one hue is sky blue
+(`#5CC8FF`): it marks a live signal, the primary action, and whatever is switched on or focused.
+Amber and red mean warnings and errors. No glows, glass, or decorative gradients.
 
-Every window is one ground (`#0D0E11`) with tone steps for depth, and lines only between the rail,
+Every window is one ground (`#0A1017`) with tone steps for depth, and lines only between the rail,
 the dock, and the canvas. Spacing sits on a 4-point grid. Main controls are 36 points with 6-point
 corners, cards have 10, dialogs 12, tiles 8. Text has primary, secondary, and muted roles, all at
 4.5:1 or better where they are used. Long names truncate with a tooltip, never displacing actions.
@@ -39,7 +39,7 @@ the S. Files and how to regenerate them: [crates/app/assets/icon](crates/app/ass
 
 ## Layout
 
-- **Start.** The form on the left, with Join taking the primary surface from Create as soon as a
+- **Start.** The form on the left, with Join taking the accent surface from Create as soon as a
   ticket is pasted. At 960 points and wider, the diagram beside it shows what a room is: one
   picture on everyone's screen, joined directly or through a relay.
 - **Room.** The rail lists everyone, you first, with the streams they offer; your own streams carry
@@ -53,31 +53,50 @@ the S. Files and how to regenerate them: [crates/app/assets/icon](crates/app/ass
 - **Signature.** A small line between two nodes says how a person's video reaches you: straight for
   direct, a node in the middle for relayed, dashes while the path is unknown.
 
+## Alignment
+
+Controls in a row share one height, 36 points, and every row is sized before its contents are placed,
+so nothing drifts. Chakra Petch's line box centres on its capitals, which leaves mixed-case text
+0.04em low; the face carries that correction, so text and icons share a visual centre. Groups end on
+shared edges: the invite buttons split the rail's width equally, ending where the cards below end.
+
 ## Motion
 
-Motion is feedback, and all of it can be interrupted.
+Everything animated is a critically damped spring (`crates/app/src/ui/motion.rs`). New input only
+moves a spring's target, so motion continues from the value on screen at its current velocity, and
+anything can be reversed mid-flight without a jump. Nothing overshoots, because nothing here is
+thrown. No input is ever locked out for an animation to finish.
 
-- Press lands on pointer-down: a half-point inset on buttons, a stretched thumb on switches.
-- Switches and the watched card retarget from their current value, so a second click reverses them.
-- Tile controls rise from the bottom edge and sink back the same way in 160 ms with a cubic
-  ease-out. The compact sheets slide up from the dock and back down into it.
-- Dialogs rise 8 points over a dimmed room in 180 ms and close at once, so dismissing one never
-  makes you wait. A click on the backdrop does not dismiss them, because they hold drafts; Esc and
-  the close button do.
-- A spinner runs only while something is in flight. Nothing else loops, and page content has no
-  entrance. egui has no reduced-motion signal, so travel is kept to a few points everywhere.
+- **Controls.** Every button, dropdown, and drag value goes through one wrapper, `theme::tactile`:
+  hover eases in about 120 ms, a press lands within a frame or two of pointer-down and lets go over
+  about 220 ms, and selection and focus ease too.
+- **Tiles.** When the grid changes, tiles and their video flow to their new places in about 360 ms,
+  with X and Y independent. They spring in fractions of the canvas, so resizing the window or
+  dragging the rail stays 1:1 with no lag.
+- **Surfaces.** Tile controls rise from the bottom edge and sink back the same way. Compact sheets
+  grow from the dock, with the video tracking their edge. Dialogs rise 12 points over a deepening
+  scrim and leave the way they came, without blocking the room while they go. A click on the backdrop
+  does not dismiss them, because they hold drafts; Esc and the close button do.
+- **Between states.** Screens dissolve into each other. Stream cards grow into the rail while what is
+  below makes room. The Connecting card fades off the picture as video arrives, still saying what it
+  last said. Join and Create cross-fade their surfaces. Stop sharing is always in the dock, so
+  starting a stream shoves nothing sideways.
+- **At rest, nothing moves.** A settled spring asks for no frames, so an idle window sleeps. Spinners
+  run only while something is in flight, capped at 20 frames a second.
+
+egui has no reduced-motion signal, so travel is kept to a few points everywhere.
 
 ## References
 
 - Chakra Petch and Lucide files, licences, and how to regenerate the subset:
   [crates/app/assets/fonts](crates/app/assets/fonts/README.md).
-- Taste skill: True-black flat, seed 1536711867, adapted to native egui. Its face here is a cool
-  near-black ground, its signature element the connection path. Its pill buttons gave way to small
-  radii that match the typeface.
+- Taste skill: True-black flat, seed 1536711867, adapted to native egui. Its signature element here
+  is the connection path. Its pill buttons gave way to small radii that match the typeface, and its
+  neutral ground and accent-free buttons gave way to the requested oceanic palette.
 - [Awesome DESIGN.md](https://github.com/voltagent/awesome-design-md), particularly Raycast (dark
   surface ladder, tight radii, the white primary) and Linear (near-black canvas, neutral chrome),
   taken as measures rather than copied. Vercel's system is mostly light and fits less well here.
-- Apple's *Designing Fluid Interfaces* and Emil Kowalski's animation guidance, for interruptibility
-  and for feedback on press. Their springs and gesture physics have nothing to act on in a
-  pointer-driven panel layout, so they are not used.
+- Apple's *Designing Fluid Interfaces* and Emil Kowalski's animation guidance: springs,
+  interruptibility, symmetric paths, feedback on press. Velocity handoff and momentum projection
+  are not used yet, because nothing here is dragged and released.
 - Unslop craft guidance by [Damir Sokolovsky](https://heydamir.design/unslop), CC BY 4.0.

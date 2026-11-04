@@ -85,11 +85,9 @@ pub fn device_label(selected: Option<&str>, devices: &[OutputDevice]) -> String 
 /// Draws the dialog when open. Returns the settings to persist when Save was clicked and the
 /// draft validates; the caller saves and reopens the dialog with the error if that fails.
 pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -> Option<Settings> {
-    if !dialog.open {
-        return None;
-    }
     let mut saved = None;
-    let (_, dismissed) = super::theme::dialog(ctx, "settings", "Settings", |ui| {
+    let visible = dialog.open;
+    let (_, dismissed) = super::theme::dialog(ctx, "settings", "Settings", visible, |ui| {
         egui::ScrollArea::vertical()
             .max_height((ctx.content_rect().height() - 200.0).clamp(120.0, 560.0))
             .auto_shrink([false, true])
@@ -122,19 +120,22 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                 super::theme::section_heading(ui, "Frame rate ceiling");
                 ui.horizontal_wrapped(|ui| {
                     super::theme::uniform_controls(ui);
-                    ui.add(
+                    super::theme::drag_value(
+                        ui,
                         egui::DragValue::new(&mut dialog.draft.fps)
                             .range(1..=u32::MAX)
                             .suffix(" fps"),
                     );
                     for fps in [30, 60] {
-                        if ui
-                            .add(
-                                egui::Button::new(format!("{fps} fps"))
-                                    .selected(dialog.draft.fps == fps),
-                            )
-                            .clicked()
-                        {
+                        let selected = dialog.draft.fps == fps;
+                        let option = super::theme::tactile(
+                            ui,
+                            super::theme::Tone::Neutral,
+                            selected,
+                            true,
+                            |ui| ui.add(egui::Button::new(format!("{fps} fps")).selected(selected)),
+                        );
+                        if option.clicked() {
                             dialog.draft.fps = fps;
                         }
                     }
@@ -143,24 +144,21 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                 super::theme::section_heading(ui, "Audio output");
                 let label =
                     device_label(dialog.draft.audio.output_device.as_deref(), &dialog.devices);
-                egui::ComboBox::from_id_salt("settings-output-device")
-                    .selected_text(label)
-                    .width(ui.available_width())
-                    .icon(super::theme::chevron)
-                    .show_ui(ui, |ui| {
+                let width = ui.available_width();
+                super::theme::dropdown(ui, "settings-output-device", label, Some(width), |ui| {
+                    ui.selectable_value(
+                        &mut dialog.draft.audio.output_device,
+                        None,
+                        "System default",
+                    );
+                    for device in &dialog.devices {
                         ui.selectable_value(
                             &mut dialog.draft.audio.output_device,
-                            None,
-                            "System default",
+                            Some(device.id.clone()),
+                            &device.name,
                         );
-                        for device in &dialog.devices {
-                            ui.selectable_value(
-                                &mut dialog.draft.audio.output_device,
-                                Some(device.id.clone()),
-                                &device.name,
-                            );
-                        }
-                    });
+                    }
+                });
                 ui.add_space(16.0);
                 super::theme::section_heading(ui, "Updates");
                 super::theme::switch(
@@ -194,14 +192,11 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     Err(error) => dialog.error = error,
                 }
             }
-            if ui
-                .add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 36.0)))
-                .clicked()
-            {
+            if super::theme::text_button(ui, "Cancel", true).clicked() {
                 dialog.open = false;
             }
         });
-    });
+    })?;
     // The title bar's close button and Esc behave like Cancel.
     dialog.open &= !dismissed;
     saved

@@ -1,22 +1,33 @@
-//! OpenStream's dark control-room material, shared by every native window.
+//! OpenStream's deep-water control-room material, shared by every native window.
 use std::sync::Arc;
 
 use egui::{
-    Color32, FontData, FontDefinitions, FontFamily, FontId, Margin, Response, RichText, Sense,
-    Stroke, TextStyle, Vec2, WidgetInfo, WidgetText, WidgetType,
+    Atom, Color32, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Margin, Response,
+    RichText, Sense, Stroke, TextStyle, Vec2, WidgetInfo, WidgetText, WidgetType,
 };
+
+use super::motion;
 
 /// Video letterboxes on black, so the canvas between tiles stays black and tiles read as screens.
 pub const CANVAS: Color32 = Color32::BLACK;
-pub const GROUND: Color32 = Color32::from_rgb(13, 14, 17);
-pub const SURFACE: Color32 = Color32::from_rgb(21, 23, 27);
-pub const RAISED: Color32 = Color32::from_rgb(32, 34, 39);
-pub const HIGHLIGHT: Color32 = Color32::from_rgb(46, 49, 55);
-pub const RULE: Color32 = Color32::from_rgb(37, 39, 44);
-pub const TEXT: Color32 = Color32::from_rgb(243, 244, 246);
-pub const SECONDARY: Color32 = Color32::from_rgb(166, 170, 179);
-pub const MUTED: Color32 = Color32::from_rgb(128, 133, 144);
-pub const LIVE: Color32 = Color32::from_rgb(95, 227, 161);
+pub const GROUND: Color32 = Color32::from_rgb(10, 16, 23);
+pub const SURFACE: Color32 = Color32::from_rgb(17, 26, 35);
+pub const RAISED: Color32 = Color32::from_rgb(27, 38, 50);
+pub const HIGHLIGHT: Color32 = Color32::from_rgb(39, 53, 68);
+pub const PRESSED: Color32 = Color32::from_rgb(52, 70, 89);
+pub const RULE: Color32 = Color32::from_rgb(31, 43, 55);
+pub const TEXT: Color32 = Color32::from_rgb(238, 245, 250);
+pub const SECONDARY: Color32 = Color32::from_rgb(163, 179, 194);
+pub const MUTED: Color32 = Color32::from_rgb(125, 143, 160);
+pub const ACCENT: Color32 = Color32::from_rgb(92, 200, 255);
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(132, 215, 255);
+pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(62, 172, 235);
+/// Ink on an accent surface.
+pub const ON_ACCENT: Color32 = Color32::from_rgb(4, 22, 36);
+pub const SELECTED: Color32 = Color32::from_rgb(22, 66, 97);
+pub const SELECTED_HOVER: Color32 = Color32::from_rgb(29, 84, 122);
+/// A live signal is the accent, so the one hue on screen always means the same thing.
+pub const LIVE: Color32 = ACCENT;
 pub const ERROR: Color32 = Color32::from_rgb(255, 142, 147);
 pub const WARNING: Color32 = Color32::from_rgb(239, 192, 110);
 
@@ -67,6 +78,12 @@ fn fonts() -> FontDefinitions {
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
+    // Chakra Petch's line box is centred on its capitals, so mixed-case text reads about 0.04em low
+    // against anything centred with it, such as an icon or the middle of a button.
+    let optical_centre = FontTweak {
+        y_offset_factor: -0.04,
+        ..Default::default()
+    };
     let faces: [(&str, &'static [u8], FontFamily); 3] = [
         (
             "chakra-petch-regular",
@@ -85,9 +102,10 @@ fn fonts() -> FontDefinitions {
         ),
     ];
     for (name, bytes, family) in faces {
-        fonts
-            .font_data
-            .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+        fonts.font_data.insert(
+            name.to_owned(),
+            Arc::new(FontData::from_static(bytes).tweak(optical_centre.clone())),
+        );
         let chain = std::iter::once(name.to_owned())
             .chain(fallback.iter().cloned())
             .collect();
@@ -116,7 +134,7 @@ fn style() -> egui::Style {
             (TextStyle::Monospace, FontId::monospace(12.0)),
         ]
         .into(),
-        animation_time: 0.12,
+        animation_time: 0.16,
         ..Default::default()
     };
     style.interaction.selectable_labels = false;
@@ -154,10 +172,10 @@ fn style() -> egui::Style {
     };
     visuals.warn_fg_color = WARNING;
     visuals.error_fg_color = ERROR;
-    visuals.hyperlink_color = TEXT;
+    visuals.hyperlink_color = ACCENT;
     visuals.slider_trailing_fill = true;
-    visuals.selection.bg_fill = Color32::from_rgb(62, 66, 74);
-    visuals.selection.stroke = Stroke::new(1.0, TEXT);
+    visuals.selection.bg_fill = SELECTED;
+    visuals.selection.stroke = Stroke::new(1.0, ACCENT);
     for (widget, fill, border, ink, expansion) in [
         (
             &mut visuals.widgets.noninteractive,
@@ -175,8 +193,7 @@ fn style() -> egui::Style {
             0.0,
         ),
         // egui reuses `active` for keyboard focus, so the bright border doubles as the focus ring.
-        // The small inset is the press feedback, and it lands on pointer-down.
-        (&mut visuals.widgets.active, HIGHLIGHT, TEXT, TEXT, -0.5),
+        (&mut visuals.widgets.active, PRESSED, ACCENT, TEXT, 0.0),
         (&mut visuals.widgets.open, HIGHLIGHT, HIGHLIGHT, TEXT, 0.0),
     ] {
         widget.bg_fill = fill;
@@ -253,8 +270,8 @@ pub fn split_row(
 /// and switches lines up.
 pub fn uniform_controls(ui: &mut egui::Ui) {
     let spacing = ui.spacing_mut();
-    spacing.interact_size.y = 32.0;
-    spacing.button_padding.y = 6.0;
+    spacing.interact_size.y = CONTROL_HEIGHT;
+    spacing.button_padding.y = 8.0;
 }
 
 /// A chevron in place of egui's filled triangle, in the ink of the control it sits on.
@@ -271,30 +288,143 @@ pub fn chevron(ui: &egui::Ui, rect: egui::Rect, visuals: &egui::style::WidgetVis
     ));
 }
 
+/// What a control's surface is at rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Neutral,
+    /// The one action on a screen that matters most, and its only accent surface.
+    Primary,
+    /// No surface until the pointer arrives, for rows in a list.
+    Quiet,
+}
+
+/// Wraps any egui control in one physical behaviour. Its own surface is switched off and drawn
+/// here instead, under it, from springs: hover eases in and out, a press lands on pointer-down and
+/// lets go slowly, and selection and focus ease too. All of them can be reversed mid-flight.
+pub fn tactile(
+    ui: &mut egui::Ui,
+    tone: Tone,
+    selected: bool,
+    enabled: bool,
+    add: impl FnOnce(&mut egui::Ui) -> Response,
+) -> Response {
+    const PRESS_INSET: f32 = 1.0;
+    let backing = ui.painter().add(egui::Shape::Noop);
+    let accent_ink = tone == Tone::Primary && enabled;
+    let response = ui
+        .scope(|ui| {
+            if !enabled {
+                ui.disable();
+            }
+            let visuals = ui.visuals_mut();
+            visuals.selection.bg_fill = Color32::TRANSPARENT;
+            let widgets = &mut visuals.widgets;
+            for widget in [
+                &mut widgets.noninteractive,
+                &mut widgets.inactive,
+                &mut widgets.hovered,
+                &mut widgets.active,
+                &mut widgets.open,
+            ] {
+                widget.bg_fill = Color32::TRANSPARENT;
+                widget.weak_bg_fill = Color32::TRANSPARENT;
+                widget.bg_stroke = Stroke::NONE;
+                widget.expansion = 0.0;
+                if accent_ink {
+                    widget.fg_stroke.color = ON_ACCENT;
+                }
+            }
+            add(ui)
+        })
+        .inner;
+    let (ctx, id) = (ui.ctx().clone(), response.id);
+    let hover = motion::follow(&ctx, id.with("hover"), response.hovered(), motion::HOVER);
+    let held = motion::press(&ctx, id.with("held"), response.is_pointer_button_down_on());
+    let chosen = motion::follow(&ctx, id.with("chosen"), selected, motion::HOVER);
+    let live = motion::follow(&ctx, id.with("enabled"), enabled, motion::TRAVEL);
+    let focus = motion::follow(&ctx, id.with("focus"), response.has_focus(), motion::HOVER);
+    let (rest, over, down) = match tone {
+        Tone::Primary => (ACCENT, ACCENT_HOVER, ACCENT_PRESSED),
+        Tone::Neutral => (RAISED, HIGHLIGHT, PRESSED),
+        Tone::Quiet => (Color32::TRANSPARENT, HIGHLIGHT, PRESSED),
+    };
+    let fill = SURFACE
+        .lerp_to_gamma(rest, live)
+        .lerp_to_gamma(SELECTED, chosen)
+        .lerp_to_gamma(over.lerp_to_gamma(SELECTED_HOVER, chosen), hover)
+        .lerp_to_gamma(down, held);
+    let surface = response.rect.shrink(held * PRESS_INSET);
+    let mut shapes = vec![egui::Shape::rect_filled(surface, 6.0, fill)];
+    if focus > 0.0 {
+        shapes.push(egui::Shape::rect_stroke(
+            response.rect,
+            6.0,
+            Stroke::new(1.0, ACCENT.gamma_multiply(focus)),
+            egui::StrokeKind::Outside,
+        ));
+    }
+    ui.painter().set(backing, egui::Shape::Vec(shapes));
+    response
+}
+
+fn labelled_button<'a>(glyph: &'a str, text: &'a str) -> egui::Button<'a> {
+    egui::Button::new((icon(glyph), text)).min_size(egui::vec2(0.0, CONTROL_HEIGHT))
+}
+
 pub fn action(ui: &mut egui::Ui, glyph: &str, text: &str, enabled: bool) -> Response {
-    ui.add_enabled(
-        enabled,
-        egui::Button::new((icon(glyph), text)).min_size(egui::vec2(0.0, CONTROL_HEIGHT)),
-    )
+    tactile(ui, Tone::Neutral, false, enabled, |ui| {
+        ui.add(labelled_button(glyph, text))
+    })
+}
+
+pub fn primary_action(ui: &mut egui::Ui, glyph: &str, text: &str, enabled: bool) -> Response {
+    tactile(ui, Tone::Primary, false, enabled, |ui| {
+        ui.add(labelled_button(glyph, text))
+    })
+}
+
+/// A button of a set size with its content centred, for buttons that line up with what is around
+/// them.
+pub fn wide_action(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    text: &str,
+    tone: Tone,
+    enabled: bool,
+    size: Vec2,
+) -> Response {
+    tactile(ui, tone, false, enabled, |ui| {
+        ui.add(egui::Button::new((Atom::grow(), icon(glyph), text, Atom::grow())).min_size(size))
+    })
+}
+
+pub fn text_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
+    tactile(ui, Tone::Neutral, false, enabled, |ui| {
+        ui.add(egui::Button::new(text).min_size(egui::vec2(0.0, CONTROL_HEIGHT)))
+    })
+}
+
+pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
+    tactile(ui, Tone::Primary, false, enabled, |ui| {
+        ui.add(egui::Button::new(text).min_size(egui::vec2(0.0, CONTROL_HEIGHT)))
+    })
 }
 
 /// An icon with no visible label still has to name itself, to the pointer and to a screen reader.
 pub fn icon_button(ui: &mut egui::Ui, glyph: &str, name: &str, enabled: bool) -> Response {
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::new(icon(glyph)).min_size(Vec2::splat(CONTROL_HEIGHT)),
-    );
+    let response = tactile(ui, Tone::Neutral, false, enabled, |ui| {
+        ui.add(egui::Button::new(icon(glyph)).min_size(Vec2::splat(CONTROL_HEIGHT)))
+    });
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
     response.on_hover_text(name)
 }
 
 /// A control that stays pressed. Flips `on` and reports the change.
 pub fn toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, text: &str) -> Response {
-    let mut response = ui.add(
-        egui::Button::new((icon(glyph), text))
-            .selected(*on)
-            .min_size(egui::vec2(0.0, CONTROL_HEIGHT)),
-    );
+    let selected = *on;
+    let mut response = tactile(ui, Tone::Neutral, selected, true, |ui| {
+        ui.add(labelled_button(glyph, text).selected(selected))
+    });
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -303,11 +433,14 @@ pub fn toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, text: &str) -> Resp
 }
 
 pub fn icon_toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, name: &str) -> Response {
-    let mut response = ui.add(
-        egui::Button::new(icon(glyph))
-            .selected(*on)
-            .min_size(Vec2::splat(CONTROL_HEIGHT)),
-    );
+    let selected = *on;
+    let mut response = tactile(ui, Tone::Neutral, selected, true, |ui| {
+        ui.add(
+            egui::Button::new(icon(glyph))
+                .selected(selected)
+                .min_size(Vec2::splat(CONTROL_HEIGHT)),
+        )
+    });
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -316,36 +449,32 @@ pub fn icon_toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, name: &str) ->
     response.on_hover_text(name)
 }
 
-pub fn primary_action(ui: &mut egui::Ui, glyph: &str, text: &str, enabled: bool) -> Response {
-    inverted(ui, |ui| action(ui, glyph, text, enabled))
-}
-
-pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
-    inverted(ui, |ui| {
-        ui.add_enabled(
-            enabled,
-            egui::Button::new(text).min_size(egui::vec2(0.0, CONTROL_HEIGHT)),
-        )
-    })
-}
-
-/// The one action per screen that matters most is the only light surface on it.
-pub fn inverted(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> Response) -> Response {
-    ui.scope(|ui| {
-        let widgets = &mut ui.visuals_mut().widgets;
-        for (widget, fill) in [
-            (&mut widgets.inactive, TEXT),
-            (&mut widgets.hovered, Color32::WHITE),
-            (&mut widgets.active, Color32::from_gray(200)),
-        ] {
-            widget.weak_bg_fill = fill;
-            widget.bg_fill = fill;
-            widget.bg_stroke.color = fill;
-            widget.fg_stroke.color = GROUND;
+/// A dropdown with the same surface and height as every other control.
+pub fn dropdown(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    text: impl Into<WidgetText>,
+    width: Option<f32>,
+    items: impl FnOnce(&mut egui::Ui),
+) -> Response {
+    tactile(ui, Tone::Neutral, false, true, |ui| {
+        uniform_controls(ui);
+        let mut combo = egui::ComboBox::from_id_salt(id_salt)
+            .icon(chevron)
+            .selected_text(text);
+        if let Some(width) = width {
+            combo = combo.width(width);
         }
-        add(ui)
+        combo.show_ui(ui, items).response
     })
-    .inner
+}
+
+/// A drag value with the same surface and height as every other control.
+pub fn drag_value(ui: &mut egui::Ui, value: egui::DragValue<'_>) -> Response {
+    tactile(ui, Tone::Neutral, false, true, |ui| {
+        uniform_controls(ui);
+        ui.add(value)
+    })
 }
 
 /// An on/off switch whose thumb travels when flipped and stretches while held. The flip retargets
@@ -374,33 +503,38 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> Response {
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, *on, text));
     if ui.is_rect_visible(rect) {
-        let t = ui.ctx().animate_bool_responsive(response.id, *on);
+        let ctx = ui.ctx().clone();
+        let t = motion::follow(&ctx, response.id, *on, motion::TRAVEL);
+        let hover = motion::follow(
+            &ctx,
+            response.id.with("hover"),
+            response.hovered(),
+            motion::HOVER,
+        );
+        let held = motion::press(
+            &ctx,
+            response.id.with("held"),
+            response.is_pointer_button_down_on(),
+        );
         let track = egui::Rect::from_min_size(
             egui::pos2(rect.left(), rect.center().y - TRACK.y / 2.0),
             TRACK,
         );
-        let off_fill = if response.hovered() {
-            HIGHLIGHT
-        } else {
-            RAISED
-        };
-        let fill = off_fill.lerp_to_gamma(TEXT, t);
-        let thumb_fill = SECONDARY.lerp_to_gamma(GROUND, t);
+        let fill = HIGHLIGHT
+            .lerp_to_gamma(PRESSED, hover)
+            .lerp_to_gamma(ACCENT.lerp_to_gamma(ACCENT_HOVER, hover), t);
+        let thumb_fill = SECONDARY.lerp_to_gamma(ON_ACCENT, t);
         let painter = ui.painter();
         painter.rect_filled(track, TRACK.y / 2.0, fill);
         if response.has_focus() {
             painter.rect_stroke(
                 track.expand(2.0),
                 TRACK.y / 2.0 + 2.0,
-                Stroke::new(1.0, TEXT),
+                Stroke::new(1.0, ACCENT),
                 egui::StrokeKind::Inside,
             );
         }
-        let stretch = if response.is_pointer_button_down_on() {
-            HELD_STRETCH
-        } else {
-            0.0
-        };
+        let stretch = held * HELD_STRETCH;
         let left = egui::lerp(
             track.left() + THUMB_INSET..=track.right() - THUMB_INSET - 2.0 * THUMB_RADIUS - stretch,
             t,
@@ -425,10 +559,10 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> Response {
 /// stays away, which would keep the window drawing flat out over nothing.
 pub fn spinner(ui: &mut egui::Ui, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    spinner_at(ui, rect);
+    spinner_at(ui, rect, 1.0);
 }
 
-pub fn spinner_at(ui: &egui::Ui, rect: egui::Rect) {
+pub fn spinner_at(ui: &egui::Ui, rect: egui::Rect, opacity: f32) {
     const FRAME: std::time::Duration = std::time::Duration::from_millis(50);
     const SWEEP: f32 = 1.5 * std::f32::consts::PI;
     const SEGMENTS: usize = 24;
@@ -444,8 +578,10 @@ pub fn spinner_at(ui: &egui::Ui, rect: egui::Rect) {
             rect.center() + radius * Vec2::angled(angle)
         })
         .collect();
-    ui.painter()
-        .add(egui::Shape::line(points, Stroke::new(2.0, SECONDARY)));
+    ui.painter().add(egui::Shape::line(
+        points,
+        Stroke::new(2.0, ACCENT.gamma_multiply(opacity)),
+    ));
 }
 
 pub fn live_dot(ui: &mut egui::Ui, live: bool) {
@@ -469,77 +605,78 @@ pub fn brand(ui: &mut egui::Ui) {
     });
 }
 
-/// A modal dialog: dims the room behind it and rises a few points as it arrives. Returns what
-/// `content` produced and whether the user dismissed it with Esc or the close button. A click on
-/// the backdrop does not count, because these dialogs hold drafts a stray click must not discard.
+/// A modal dialog: dims the room behind it and rises a few points as it arrives, and leaves the
+/// way it came when `visible` goes false, carrying on from wherever it had got to. Returns nothing
+/// once it has fully gone. Otherwise returns what `content` produced and whether the user dismissed
+/// it with Esc or the close button. A click on the backdrop does not count, because these dialogs
+/// hold drafts a stray click must not discard.
+///
+/// While it leaves it takes no input and blocks nothing, so the room responds at once.
 pub fn dialog<T>(
     ctx: &egui::Context,
     id: &str,
     title: &str,
+    visible: bool,
     content: impl FnOnce(&mut egui::Ui) -> T,
-) -> (T, bool) {
-    const RISE: f32 = 8.0;
+) -> Option<(T, bool)> {
+    const RISE: f32 = 12.0;
     const WIDTH: f32 = 448.0;
     const WINDOW_MARGIN: f32 = 16.0;
     const PADDING: f32 = 20.0;
     let id = egui::Id::new(id);
+    let shown = motion::appear(ctx, id.with("presence"), visible, motion::SURFACE);
+    if !visible && shown <= 0.0 {
+        return None;
+    }
     // Sampled before the pass: a popup reacts to Esc while it is drawn and closes itself, so
     // reading this afterwards would always see it as already closed.
     let popup_open = egui::Popup::is_any_open(ctx);
-    let arrived = arrival(ctx, id);
     let width = WIDTH.min(ctx.content_rect().width() - 2.0 * WINDOW_MARGIN);
     let inner_width = (width - 2.0 * PADDING).max(0.0);
     let frame = egui::Frame::popup(&ctx.global_style())
         .corner_radius(12)
-        .inner_margin(PADDING as i8);
+        .inner_margin(PADDING as i8)
+        .multiply_with_opacity(shown);
+    let scrim = Color32::from_black_alpha(170).gamma_multiply(shown);
+    let area = egui::Modal::default_area(id)
+        .fade_in(false)
+        .anchor(egui::Align2::CENTER_CENTER, motion::rise(shown, RISE));
     let mut closed = false;
+    let body = |ui: &mut egui::Ui| {
+        ui.set_opacity(shown);
+        ui.set_width(inner_width);
+        split_row(
+            ui,
+            CONTROL_HEIGHT,
+            |ui| {
+                ui.label(RichText::new(title).font(semibold(18.0)));
+            },
+            |ui| {
+                closed = icon_button(ui, icons::CLOSE, "Close", true).clicked();
+            },
+        );
+        ui.add_space(4.0);
+        content(ui)
+    };
+    if !visible {
+        let inner = area
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(ctx.content_rect(), 0.0, scrim);
+                frame.show(ui, body).inner
+            })
+            .inner;
+        return Some((inner, false));
+    }
     let response = egui::Modal::new(id)
         .frame(frame)
-        .backdrop_color(Color32::from_black_alpha(150))
-        .area(
-            egui::Modal::default_area(id)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, (1.0 - arrived) * RISE]),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(inner_width);
-            split_row(
-                ui,
-                CONTROL_HEIGHT,
-                |ui| {
-                    ui.label(RichText::new(title).font(semibold(18.0)));
-                },
-                |ui| {
-                    closed = icon_button(ui, icons::CLOSE, "Close", true).clicked();
-                },
-            );
-            ui.add_space(4.0);
-            content(ui)
-        });
+        .backdrop_color(scrim)
+        .area(area)
+        .show(ctx, body);
     // A source list can arrive while Settings is open; one Esc closes only the dialog on top.
     let escape =
         response.is_top_modal && !popup_open && ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    (response.inner, closed || escape)
-}
-
-/// How far a dialog has come since it opened, from 0 to 1. Time-based, because `animate_bool` starts
-/// at its target the first time it sees an id, and a dialog is only drawn while it is open. A gap
-/// in the frames it was drawn on means it closed and opened again.
-fn arrival(ctx: &egui::Context, id: egui::Id) -> f32 {
-    const SECONDS: f64 = 0.18;
-    let seen = id.with("arrival");
-    let frame = ctx.cumulative_frame_nr();
-    let now = ctx.input(|i| i.time);
-    let opened = ctx.data_mut(|data| {
-        let (last_frame, opened) = data.get_temp::<(u64, f64)>(seen).unwrap_or((0, now));
-        let opened = if frame > last_frame + 1 { now } else { opened };
-        data.insert_temp(seen, (frame, opened));
-        opened
-    });
-    let progress = (((now - opened) / SECONDS) as f32).clamp(0.0, 1.0);
-    if progress < 1.0 {
-        ctx.request_repaint();
-    }
-    egui::emath::easing::cubic_out(progress)
+    Some((response.inner, closed || escape))
 }
 
 #[cfg(test)]
@@ -564,13 +701,21 @@ mod tests {
 
     #[test]
     fn every_text_role_stays_readable_on_every_surface_it_sits_on() {
-        for ink in [TEXT, SECONDARY, LIVE, WARNING, ERROR] {
+        for ink in [TEXT, SECONDARY, ACCENT, WARNING, ERROR] {
             for surface in [GROUND, SURFACE, RAISED] {
                 assert!(contrast(ink, surface) >= 4.5, "{ink:?} on {surface:?}");
             }
         }
         for surface in [GROUND, SURFACE] {
             assert!(contrast(MUTED, surface) >= 4.5, "muted on {surface:?}");
+        }
+        for surface in [ACCENT, ACCENT_HOVER, ACCENT_PRESSED] {
+            assert!(contrast(ON_ACCENT, surface) >= 4.5, "ink on {surface:?}");
+        }
+        for ink in [TEXT, ACCENT] {
+            for surface in [SELECTED, SELECTED_HOVER] {
+                assert!(contrast(ink, surface) >= 3.0, "{ink:?} on {surface:?}");
+            }
         }
     }
 

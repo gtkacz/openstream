@@ -9,6 +9,7 @@ use brp_proto::constants::SOURCE_PRESET_ID;
 use brp_proto::{LiveInfo, Preset};
 use brp_room::{MemberView, RoomSnapshot, WatchState};
 
+use super::motion;
 use super::own_lives;
 use super::state::{UiState, ordered_members};
 use super::theme::{self, icons};
@@ -26,8 +27,8 @@ pub fn draw(
     commands: &mut Vec<RoomCommand>,
 ) {
     egui::Panel::left("members")
-        .default_size(280.0)
-        .min_size(232.0)
+        .default_size(288.0)
+        .min_size(280.0)
         .max_size(380.0)
         .resizable(true)
         .frame(theme::rail())
@@ -46,11 +47,12 @@ pub fn contents(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    ui.horizontal_wrapped(|ui| {
-        copy_button(ui, icons::LINK, "Copy link", "Link copied", || {
+    // Two equal columns, so the pair ends on the same edge as the cards below it.
+    ui.columns(2, |columns| {
+        copy_button(&mut columns[0], icons::LINK, "Copy link", || {
             link::share_link(ticket)
         });
-        copy_button(ui, icons::TICKET, "Copy ticket", "Ticket copied", || {
+        copy_button(&mut columns[1], icons::TICKET, "Copy ticket", || {
             ticket.to_string()
         });
     });
@@ -69,8 +71,10 @@ pub fn contents(
                 ui.weak("Copy an invite link to bring someone in");
             }
             for member in ordered_members(snapshot) {
-                ui.add_space(16.0);
-                member_block(ui, snapshot, member, state, commands);
+                motion::reveal(ui, member.id, |ui| {
+                    ui.add_space(16.0);
+                    member_block(ui, snapshot, member, state, commands);
+                });
             }
         });
 }
@@ -94,8 +98,10 @@ fn own_block(
         });
     });
     for live in &snapshot.own_lives {
-        ui.add_space(8.0);
-        own_lives::live_card(ui, live, state, commands);
+        motion::reveal(ui, ("own-live", live.info.id), |ui| {
+            ui.add_space(8.0);
+            own_lives::live_card(ui, live, state, commands);
+        });
     }
 }
 
@@ -138,8 +144,10 @@ fn member_block(
         });
     }
     for live in &member.lives {
-        ui.add_space(8.0);
-        live_row(ui, snapshot, member, live, state, commands);
+        motion::reveal(ui, ("member-live", live.id), |ui| {
+            ui.add_space(8.0);
+            live_row(ui, snapshot, member, live, state, commands);
+        });
     }
 }
 
@@ -160,15 +168,17 @@ fn live_row(
     let wanted = watch
         .map(|w| w.preset_id)
         .or_else(|| state.preset_choice.get(&key).copied());
-    let raised = ui
-        .ctx()
-        .animate_bool_responsive(ui.id().with(("live-watched", key)), watched);
+    let raised = motion::follow(
+        ui.ctx(),
+        ui.id().with(("live-watched", key)),
+        watched,
+        motion::TRAVEL,
+    );
     theme::card()
         // Stops short of the controls' own fill, so the dropdown stays visible on a watched card.
         .fill(theme::SURFACE.lerp_to_gamma(theme::RAISED, raised * 0.45))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            theme::uniform_controls(ui);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 20.0),
                 egui::Layout::left_to_right(egui::Align::Center),
@@ -202,13 +212,15 @@ fn live_row(
             let mut flipped = false;
             theme::split_row(
                 ui,
-                ui.spacing().interact_size.y,
+                theme::CONTROL_HEIGHT,
                 |ui| {
                     flipped = theme::switch(ui, &mut watched, "Watch")
                         .on_hover_text(&live.title)
                         .changed();
                 },
-                |ui| preset_selector(ui, ("member-preset", key), &live.presets, &mut preset_id),
+                |ui| {
+                    preset_selector(ui, ("member-preset", key), &live.presets, &mut preset_id);
+                },
             );
             if flipped {
                 commands.push(if watched {
@@ -308,13 +320,7 @@ pub fn path_badge(path: PathKind) -> &'static str {
     }
 }
 
-fn copy_button(
-    ui: &mut egui::Ui,
-    glyph: &str,
-    label: &str,
-    copied: &str,
-    text: impl FnOnce() -> String,
-) {
+fn copy_button(ui: &mut egui::Ui, glyph: &str, label: &str, text: impl FnOnce() -> String) {
     let id = ui.make_persistent_id(("clipboard-feedback", label));
     let now = ui.input(|input| input.time);
     let until = ui
@@ -322,12 +328,14 @@ fn copy_button(
         .data(|data| data.get_temp::<f64>(id))
         .unwrap_or(0.0);
     let remaining = until - now;
+    // One short word for both, so the confirmation fits the column the label did.
     let (glyph, shown) = if remaining > 0.0 {
-        (icons::COPIED, copied)
+        (icons::COPIED, "Copied")
     } else {
         (glyph, label)
     };
-    let response = theme::action(ui, glyph, shown, true);
+    let size = egui::vec2(ui.available_width(), theme::CONTROL_HEIGHT);
+    let response = theme::wide_action(ui, glyph, shown, theme::Tone::Neutral, true, size);
     if response.clicked() {
         ui.ctx().copy_text(text());
         ui.ctx().data_mut(|data| data.insert_temp(id, now + 1.5));
@@ -361,18 +369,15 @@ pub fn preset_selector(
         .find(|p| p.id == *selected)
         .map(|p| p.name.clone())
         .unwrap_or_default();
-    egui::ComboBox::from_id_salt(id_salt)
-        .selected_text(text)
-        .icon(theme::chevron)
-        .show_ui(ui, |ui| {
-            for preset in presets {
-                ui.selectable_value(
-                    selected,
-                    preset.id,
-                    format!("{} {}x{}", preset.name, preset.width, preset.height),
-                );
-            }
-        });
+    theme::dropdown(ui, id_salt, text, None, |ui| {
+        for preset in presets {
+            ui.selectable_value(
+                selected,
+                preset.id,
+                format!("{} {}x{}", preset.name, preset.width, preset.height),
+            );
+        }
+    });
 }
 
 #[cfg(test)]

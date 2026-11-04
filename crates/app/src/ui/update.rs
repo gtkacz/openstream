@@ -99,7 +99,7 @@ pub fn draw(ui: &mut egui::Ui, state: &UpdateState) -> bool {
                 ui.weak(progress_text(*received, *total));
             }
             UpdatePhase::Idle | UpdatePhase::Failed(_) => {
-                if ui.button("Update and restart").clicked() {
+                if super::theme::text_button(ui, "Update and restart", true).clicked() {
                     clicked = true;
                 }
             }
