@@ -7,7 +7,7 @@ use brp_audio::AudioSource;
 use brp_capture::{SourceDescriptor, SourceId};
 use brp_proto::SourceKind;
 use brp_proto::constants::STATS_LOG_INTERVAL;
-use brp_room::{MemberView, RoomSnapshot, WatchView};
+use brp_room::{MemberView, RoomSnapshot, WatchState, WatchView};
 
 use super::applications::ApplicationPicker;
 use crate::commands::RoomCommand;
@@ -234,6 +234,7 @@ pub fn visible_watches<'a>(
 ) -> Vec<&'a WatchView> {
     ordered_watches(snapshot)
         .into_iter()
+        .filter(|w| w.state != WatchState::Ended)
         .filter(|w| !popped.contains(&(w.publisher, w.live_id)))
         .collect()
 }
