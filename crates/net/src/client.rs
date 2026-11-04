@@ -3,8 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use brp_proto::constants::{
-    AUDIO_PRESET_ID, AUDIO_SENDER_BACKLOG_PACKETS, MAX_AUDIO_PACKET_BYTES, MAX_CONTROL_BYTES,
-    MAX_FRAME_BYTES, MEDIA_ALPN, RECEIVE_QUEUE_FRAMES,
+    AUDIO_PACKET_DURATION, AUDIO_PRESET_ID, MAX_AUDIO_PACKET_BYTES, MAX_CONTROL_BYTES,
+    MAX_FRAME_BYTES, MEDIA_ALPN, RECEIVE_QUEUE_DURATION, RECEIVE_QUEUE_MAX_FRAMES,
+    RECEIVE_QUEUE_MIN_FRAMES,
 };
 use brp_proto::{
     AudioParams, CodecParams, FrameHeader, FrameKind, PublisherMessage, ViewerMessage,
@@ -97,9 +98,10 @@ impl MediaClient {
                 _ => return Err(NetError::Protocol("expected SubscribeAck")),
             };
 
-        let (frame_tx, frame_rx) = mpsc::channel(RECEIVE_QUEUE_FRAMES);
+        let (frame_tx, frame_rx) = mpsc::channel(receive_queue_frames(params.fps));
         let audio = audio_params.map(|params| {
-            let (tx, rx) = mpsc::channel(AUDIO_SENDER_BACKLOG_PACKETS);
+            let packets = RECEIVE_QUEUE_DURATION.as_millis() / AUDIO_PACKET_DURATION.as_millis();
+            let (tx, rx) = mpsc::channel(packets as usize);
             (params, tx, rx)
         });
         let audio_tx = audio.as_ref().map(|(_, tx, _)| tx.clone());
@@ -166,6 +168,16 @@ impl MediaClient {
     pub fn close(&self) {
         self.conn.close(0u32.into(), b"done");
     }
+}
+
+/// Room for `RECEIVE_QUEUE_DURATION` of video at this stream's frame rate.
+///
+/// shortcut: bounded in frames, not bytes, so a hostile publisher can still make a viewer hold
+/// `RECEIVE_QUEUE_MAX_FRAMES` of `MAX_FRAME_BYTES` each, about 3.8 GB. Count queued bytes if that
+/// ever matters more than it does between people who shared a ticket.
+pub fn receive_queue_frames(fps: u32) -> usize {
+    let frames = u64::from(fps) * RECEIVE_QUEUE_DURATION.as_millis() as u64 / 1000;
+    (frames as usize).clamp(RECEIVE_QUEUE_MIN_FRAMES, RECEIVE_QUEUE_MAX_FRAMES)
 }
 
 /// Audio frames have their own, much smaller, ceiling than video ones.
@@ -249,6 +261,14 @@ async fn receive_frames(conn: Connection, routes: Routes) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_queue_holds_half_a_second_of_video_within_its_bounds() {
+        assert_eq!(receive_queue_frames(60), 30);
+        assert_eq!(receive_queue_frames(240), 120);
+        assert_eq!(receive_queue_frames(1), RECEIVE_QUEUE_MIN_FRAMES);
+        assert_eq!(receive_queue_frames(u32::MAX), RECEIVE_QUEUE_MAX_FRAMES);
+    }
 
     #[test]
     fn the_audio_route_takes_only_small_audio_frames() {
