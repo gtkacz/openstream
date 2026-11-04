@@ -223,10 +223,13 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                         ui.add_space(4.0);
                         ui.weak("No applications are playing audio");
                     }
+                    let list_height =
+                        (ctx.content_rect().height() - 280.0).clamp(120.0, MAX_LIST_HEIGHT);
                     egui::ScrollArea::vertical()
-                        .max_height(
-                            (ctx.content_rect().height() - 280.0).clamp(120.0, MAX_LIST_HEIGHT),
-                        )
+                        .max_height(list_height)
+                        // The surrounding row offers only one row's height, which would otherwise
+                        // shrink a long list to egui's two-row minimum. A short list still shrinks.
+                        .min_scrolled_height(list_height)
                         .show(ui, |ui| {
                             for row in &rows {
                                 let mut chosen = picker.is_chosen(&row.key);
