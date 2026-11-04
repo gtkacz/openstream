@@ -19,69 +19,94 @@ pub fn draw(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    egui::Panel::left("members").resizable(true).show(ui, |ui| {
-        ui.heading("Room");
-        if snapshot.members.is_empty() {
-            ui.weak("nobody else yet");
-        }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for member in ordered_members(snapshot) {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.strong(member.nickname.as_str());
-                    ui.weak(member.id.fmt_short().to_string());
-                    ui.weak(path_badge(member.path));
-                    if member.has_audio
-                        && let Some(gain) =
-                            super::volume_control(ui, ("member-volume", member.id), member.gain)
-                    {
-                        commands.push(RoomCommand::SetVolume {
-                            publisher: member.id,
-                            gain,
+    let narrow = ui.ctx().content_rect().width() < 600.0;
+    egui::Panel::left("members")
+        .default_size(if narrow { 168.0 } else { 248.0 })
+        .min_size(144.0)
+        .max_size(if narrow { 184.0 } else { 360.0 })
+        .resizable(true)
+        .frame(super::theme::panel())
+        .show(ui, |ui| {
+            super::theme::brand(ui);
+            ui.add_space(24.0);
+            ui.label(egui::RichText::new("Room").size(18.0));
+            if snapshot.members.is_empty() {
+                ui.weak("You’re the first here");
+                ui.weak("Copy an invite link to bring someone in");
+            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for member in ordered_members(snapshot) {
+                    ui.add_space(16.0);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&member.nickname).size(16.0))
+                            .truncate(),
+                    )
+                    .on_hover_text(&member.nickname);
+                    ui.weak(format!(
+                        "{} · {}",
+                        member.id.fmt_short(),
+                        path_badge(member.path)
+                    ));
+                    if member.has_audio {
+                        ui.horizontal_wrapped(|ui| {
+                            if let Some(gain) =
+                                super::volume_control(ui, ("member-volume", member.id), member.gain)
+                            {
+                                commands.push(RoomCommand::SetVolume {
+                                    publisher: member.id,
+                                    gain,
+                                });
+                            }
                         });
                     }
-                });
-                for live in &member.lives {
-                    let key = (member.id, live.id);
-                    let watch = snapshot
-                        .watches
-                        .iter()
-                        .find(|w| w.publisher == key.0 && w.live_id == key.1);
-                    let mut watched = watch.is_some();
-                    let wanted = watch
-                        .map(|w| w.preset_id)
-                        .or_else(|| state.preset_choice.get(&key).copied());
-                    let label = format!(
-                        "{} {}x{}",
-                        live.title, live.source_width, live.source_height
-                    );
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        let Some(mut preset_id) = offered_preset(live, wanted) else {
-                            // The publisher advertises no presets at all; nothing to watch yet.
-                            ui.add_enabled(false, egui::Checkbox::new(&mut watched, label));
-                            return;
-                        };
-                        if ui.checkbox(&mut watched, label).changed() {
-                            commands.push(if watched {
-                                RoomCommand::Watch { key, preset_id }
-                            } else {
-                                RoomCommand::Unwatch(key)
-                            });
-                        }
-                        let before = preset_id;
-                        preset_selector(ui, ("member-preset", key), &live.presets, &mut preset_id);
-                        if preset_id != before {
-                            state.preset_choice.insert(key, preset_id);
-                            if watched {
-                                commands.push(RoomCommand::Watch { key, preset_id });
+                    for live in &member.lives {
+                        let key = (member.id, live.id);
+                        let watch = snapshot
+                            .watches
+                            .iter()
+                            .find(|w| w.publisher == key.0 && w.live_id == key.1);
+                        let mut watched = watch.is_some();
+                        let wanted = watch
+                            .map(|w| w.preset_id)
+                            .or_else(|| state.preset_choice.get(&key).copied());
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            let label = live.title.as_str();
+                            let Some(mut preset_id) = offered_preset(live, wanted) else {
+                                // The publisher advertises no presets at all; nothing to watch yet.
+                                ui.add_enabled(false, egui::Checkbox::new(&mut watched, label));
+                                return;
+                            };
+                            if ui
+                                .add(egui::Checkbox::new(&mut watched, label))
+                                .on_hover_text(label)
+                                .changed()
+                            {
+                                commands.push(if watched {
+                                    RoomCommand::Watch { key, preset_id }
+                                } else {
+                                    RoomCommand::Unwatch(key)
+                                });
                             }
-                        }
-                    });
+                            ui.weak(format!("{} × {}", live.source_width, live.source_height));
+                            let before = preset_id;
+                            preset_selector(
+                                ui,
+                                ("member-preset", key),
+                                &live.presets,
+                                &mut preset_id,
+                            );
+                            if preset_id != before {
+                                state.preset_choice.insert(key, preset_id);
+                                if watched {
+                                    commands.push(RoomCommand::Watch { key, preset_id });
+                                }
+                            }
+                        });
+                    }
                 }
-            }
+            });
         });
-    });
 }
 
 /// Human-readable label for a member's connection path.

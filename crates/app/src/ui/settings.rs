@@ -94,59 +94,64 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
+        .default_width(400.0)
+        .default_height(640.0)
+        .max_height((ctx.content_rect().height() - 96.0).max(160.0))
+        .max_width((ctx.content_rect().width() - 64.0).max(160.0))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            egui::Grid::new("settings-grid")
-                .num_columns(2)
-                .spacing([12.0, 8.0])
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 240.0).clamp(120.0, 560.0))
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    ui.label("Nickname");
-                    ui.text_edit_singleline(&mut dialog.nickname_text);
-                    ui.end_row();
-
-                    ui.label("Relay");
-                    ui.vertical(|ui| {
-                        let mut kind = RelayKind::of(&dialog.draft.relay);
-                        let before = kind;
-                        ui.radio_value(&mut kind, RelayKind::Default, "Public relays");
-                        ui.radio_value(&mut kind, RelayKind::Custom, "Custom relay URL");
-                        ui.radio_value(&mut kind, RelayKind::Disabled, "No relay (LAN only)");
-                        if kind != before {
-                            dialog.draft.relay = switch_relay(&dialog.draft.relay, kind);
-                        }
-                        if let RelayChoice::Custom(url) = &mut dialog.draft.relay {
-                            ui.add(
-                                egui::TextEdit::singleline(url)
-                                    .hint_text("https://relay.example.com/"),
-                            );
-                        }
-                    });
-                    ui.end_row();
-
+                    ui.label(egui::RichText::new("Identity").size(18.0));
+                    ui.label("Your name");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut dialog.nickname_text)
+                            .margin(egui::vec2(12.0, 10.0))
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Connection").size(18.0));
+                    let mut kind = RelayKind::of(&dialog.draft.relay);
+                    let before = kind;
+                    ui.radio_value(&mut kind, RelayKind::Default, "Public relays");
+                    ui.radio_value(&mut kind, RelayKind::Custom, "Custom relay URL");
+                    ui.radio_value(&mut kind, RelayKind::Disabled, "No relay (LAN only)");
+                    if kind != before {
+                        dialog.draft.relay = switch_relay(&dialog.draft.relay, kind);
+                    }
+                    if let RelayChoice::Custom(url) = &mut dialog.draft.relay {
+                        ui.add(
+                            egui::TextEdit::singleline(url)
+                                .hint_text("https://relay.example.com/")
+                                .desired_width(f32::INFINITY),
+                        );
+                    }
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Video & audio").size(18.0));
                     ui.label("Frame rate ceiling");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut dialog.draft.fps).range(1..=u32::MAX));
-                        // Quick picks for the two rates the sharing panel actually offers;
-                        // the drag value still takes any explicit choice.
-                        if ui
-                            .selectable_label(dialog.draft.fps == 30, "30 fps")
-                            .clicked()
-                        {
-                            dialog.draft.fps = 30;
-                        }
-                        if ui
-                            .selectable_label(dialog.draft.fps == 60, "60 fps")
-                            .clicked()
-                        {
-                            dialog.draft.fps = 60;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut dialog.draft.fps)
+                                .range(1..=u32::MAX)
+                                .suffix(" fps"),
+                        );
+                        for fps in [30, 60] {
+                            if ui
+                                .selectable_label(dialog.draft.fps == fps, format!("{fps} fps"))
+                                .clicked()
+                            {
+                                dialog.draft.fps = fps;
+                            }
                         }
                     });
-                    ui.end_row();
-
                     ui.label("Audio output");
                     let label =
                         device_label(dialog.draft.audio.output_device.as_deref(), &dialog.devices);
                     egui::ComboBox::from_id_salt("settings-output-device")
                         .selected_text(label)
+                        .width(ui.available_width())
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut dialog.draft.audio.output_device,
@@ -161,29 +166,30 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                                 );
                             }
                         });
-                    ui.end_row();
-
-                    ui.label("Updates");
+                    ui.add_space(16.0);
+                    ui.label(egui::RichText::new("Updates").size(18.0));
                     ui.checkbox(
                         &mut dialog.draft.check_updates,
-                        "Check for updates at launch (from the next launch)",
+                        "Check for updates at launch",
                     );
-                    ui.end_row();
+                    ui.weak("Takes effect the next time OpenStream starts");
+                    ui.add_space(16.0);
+                    if let Some(error) = &dialog.devices_error {
+                        ui.colored_label(
+                            super::theme::ERROR,
+                            format!("could not list output devices: {error}"),
+                        );
+                    }
+                    if room_open {
+                        ui.weak("Changes apply to the next room you open");
+                    }
+                    if !dialog.error.is_empty() {
+                        ui.colored_label(super::theme::ERROR, &dialog.error);
+                    }
                 });
-            if let Some(error) = &dialog.devices_error {
-                ui.colored_label(
-                    egui::Color32::LIGHT_RED,
-                    format!("could not list output devices: {error}"),
-                );
-            }
-            if room_open {
-                ui.weak("Applies to the next room you open.");
-            }
-            if !dialog.error.is_empty() {
-                ui.colored_label(egui::Color32::LIGHT_RED, &dialog.error);
-            }
+            ui.add_space(16.0);
             ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
+                if super::theme::primary_button(ui, "Save changes", true).clicked() {
                     dialog.draft.nickname = normalised_nickname(&dialog.nickname_text);
                     match dialog.draft.validate() {
                         Ok(()) => {

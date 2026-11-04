@@ -5,7 +5,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 pub const DEFAULT_FPS: u32 = 60;
 
 #[derive(Parser, Debug)]
-#[command(name = "brp", about = "Peer-to-peer screen sharing", version)]
+#[command(
+    name = "brp",
+    about = "OpenStream — peer-to-peer screen sharing",
+    version
+)]
 pub struct Cli {
     /// Without a subcommand the participant window opens on its start screen.
     #[command(subcommand)]

@@ -10,6 +10,7 @@ pub mod settings;
 pub mod start;
 pub mod state;
 pub mod status;
+pub mod theme;
 pub mod tiles;
 pub mod update;
 
@@ -98,7 +99,7 @@ pub fn volume_control(
     ui.push_id(id_salt, |ui| {
         ui.add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(false));
         let mut muted = gain == 0.0;
-        if ui.toggle_value(&mut muted, "mute").changed() {
+        if ui.toggle_value(&mut muted, "Mute").changed() {
             value = toggled_gain(muted);
         }
     });

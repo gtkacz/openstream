@@ -22,7 +22,7 @@ assignees: ""
 
 ## Environment
 
-- brp version or commit:
+- OpenStream version or commit:
 - Operating system and version:
 - Installation method:
 - GPU and driver (if relevant):

@@ -138,12 +138,18 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
+        .default_width(400.0)
+        .max_width((ctx.content_rect().width() - 64.0).max(160.0))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.radio_value(&mut picker.only, false, "All applications (except brp)");
+            ui.radio_value(
+                &mut picker.only,
+                false,
+                "All applications (except OpenStream)",
+            );
             ui.radio_value(&mut picker.only, true, "Only the applications I select");
             if rows.is_empty() {
-                ui.weak("nothing is playing audio");
+                ui.weak("No applications are playing audio");
             }
             let only = picker.only;
             egui::ScrollArea::vertical()
@@ -165,10 +171,10 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                         }
                     }
                 });
-            ui.separator();
-            ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui.horizontal_wrapped(|ui| {
                 refresh = ui.button("Refresh").clicked();
-                done = ui.button("Done").clicked();
+                done = super::theme::primary_button(ui, "Done", true).clicked();
                 cancelled = ui.button("Cancel").clicked();
             });
         });

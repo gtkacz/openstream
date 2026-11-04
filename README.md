@@ -44,9 +44,9 @@ are postcard-encoded on the versioned media ALPN `brp/media/1`.
 Run `brp` with no arguments, or double-click `brp.exe` on Windows, to open the
 start screen: pick a nickname, then Create room, or paste a ticket or a link and
 Join room. The status bar's Copy link button gives you an `https://` link that
-opens brp into the room on a machine that has it and offers the download on one
+opens OpenStream into the room on a machine that has it and offers the download on one
 that does not; Copy ticket gives the bare ticket for the terminal. Each time
-the window starts it registers brp as the handler for `brp://` links, pointing
+the window starts it registers OpenStream as the handler for `brp://` links, pointing
 at the binary that is running: a hidden `brp.desktop` under
 `~/.local/share/applications` on Linux, the `brp` class under
 `HKEY_CURRENT_USER\Software\Classes` on Windows. From a terminal the same window
@@ -72,11 +72,11 @@ apply when the next room opens. The start screen lists recent rooms with a Join
 button. Command line flags override the saved settings for that launch and are
 not saved.
 
-At launch brp asks GitHub for the latest release and, when it is newer, shows
+At launch OpenStream asks GitHub for the latest release and, when it is newer, shows
 "vX.Y.Z is available" on the start screen and in the status bar with an
 "Update and restart" button. The button downloads the release for this
 platform, checks it against the release's `SHA256SUMS`, replaces every file
-of the directory brp runs from, and relaunches: from a room, straight back into
+of the directory OpenStream runs from, and relaunches: from a room, straight back into
 that room; from the start screen, to the start screen. The check can be turned
 off in Settings and applies from the next launch. A build from source sees the
 notice with a link and no button, since only an extracted release directory is
@@ -103,12 +103,12 @@ live back in the grid. A live is decoded once wherever it is shown.
 
 The own-lives panel also has a "Share audio" checkbox, on by default, beside
 a "Choose applications…" button. The button opens a window listing what is
-playing, with two radio buttons — all applications except brp, or only the
+playing, with two radio buttons — all applications except OpenStream, or only the
 ones you tick — applied on Done and remembered in `settings.toml`. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
 that member in the members panel, and the status bar has a "mute all" for
 every publisher at once. On Linux, capture links to the selected applications'
-PipeWire output, always excluding brp's own. On Windows, the default remains
+PipeWire output, always excluding OpenStream's own. On Windows, the default remains
 one WASAPI process-loopback client in exclude mode; a selection enumerates
 audio sessions and opens one include-tree client per selected application root,
 mixed into the same publisher stream. Requires Windows 10 version 2004. The
@@ -130,7 +130,7 @@ sudo dnf install gcc clang clang-devel pkgconf-pkg-config \
 
 At runtime, install and run `xdg-desktop-portal` with a compositor backend and
 PipeWire. The portal's ScreenCast interface supplies the monitor/window picker
-and capture stream. PipeWire also serves audio: brp captures every
+and capture stream. PipeWire also serves audio: OpenStream captures every
 application's output except its own by default, or only the selected
 applications, and plays received audio through the default output device. A
 working Vulkan/GL-capable `wgpu` graphics backend is also required for the
@@ -149,7 +149,7 @@ of that directory in place, keeping the previous ones as `.old` until the next
 launch removes them. The tarball is built on Fedora 44 and links its glibc, so
 it runs on distributions with glibc 2.43 or newer; PipeWire, the desktop
 portal, libva, and the graphics stack come from the system as described above.
-VAAPI encoding and decoding need libva installed; without it brp skips VAAPI
+VAAPI encoding and decoding need libva installed; without it OpenStream skips VAAPI
 and continues with the other encoders and software decoding. Elsewhere, build
 from source, either against the distribution's FFmpeg as shown or with
 `FFMPEG_DIR` pointing at an extracted BtbN build. CI builds and tests the Linux
@@ -227,9 +227,9 @@ unlike the log, contains process memory, so treat one as you would a
 screenshot of the session.
 
 The launch update check is one HTTPS request to github.com carrying only a
-`brp/<version>` user agent; it tells GitHub that a brp of that version started
+`brp/<version>` user agent; it tells GitHub that an OpenStream instance of that version started
 from your address, and the Settings checkbox turns it off. When an update
-relaunches brp into a room, the ticket is passed on the new process's command
+relaunches OpenStream into a room, the ticket is passed on the new process's command
 line, exactly as `brp join <ticket>` does, and command lines are readable by
 other users of the same machine on most systems.
 
@@ -337,13 +337,13 @@ the workflow so it cannot start another release.
    bundled FFmpeg, Windows CI, the in-app picker, and a start screen so the
    app needs no terminal.
 4. **Audio** — done on Linux pending the manual two-instance check; Windows
-   pending hardware: everything the machine plays except brp itself, Opus over
+   pending hardware: everything the machine plays except OpenStream itself, Opus over
    the existing frame streams, one stream per publisher, per-publisher volume
    and a master mute.
 5. **Window management and polish** — done: pop-outs and fullscreen, settings
    UI and persistence, tagged releases for Windows and Linux.
 6. **Per-application audio** — implemented on Linux and Windows pending their
-   manual hardware checks: share every application except brp, which stays the
+   manual hardware checks: share every application except OpenStream, which stays the
    default, or only the applications you select, stored by executable name so
    the choice survives restarts.
 7. **Join links** — done on Linux pending the manual browser check and the

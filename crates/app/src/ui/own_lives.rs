@@ -19,18 +19,26 @@ pub fn draw(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
+    let narrow = ui.ctx().content_rect().width() < 600.0;
     egui::Panel::bottom("own-lives")
+        .default_size(if snapshot.own_lives.is_empty() {
+            if narrow { 192.0 } else { 128.0 }
+        } else if narrow {
+            328.0
+        } else {
+            288.0
+        })
+        .min_size(120.0)
+        .max_size((ui.ctx().content_rect().height() * 0.6).max(160.0))
         .resizable(true)
+        .frame(super::theme::panel())
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("My lives");
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Your streams").size(18.0));
                 let can_share = !state.share_pending
                     && state.picker.is_none()
                     && snapshot.own_lives.len() < MAX_LIVES_PER_PARTICIPANT;
-                if ui
-                    .add_enabled(can_share, egui::Button::new("Share monitor"))
-                    .clicked()
-                {
+                if super::theme::primary_button(ui, "Share monitor", can_share).clicked() {
                     commands.push(RoomCommand::Share {
                         kind: SourceKind::Monitor,
                         source: None,
@@ -58,9 +66,11 @@ pub fn draw(
                     );
                 }
                 if state.share_pending {
-                    ui.weak("starting the share");
+                    ui.weak("Starting your stream…");
                 }
-                ui.separator();
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
                 let mut share_audio = snapshot.own_audio.enabled;
                 if ui.checkbox(&mut share_audio, "Share audio").changed() {
                     commands.push(RoomCommand::SetAudio(share_audio));
@@ -85,18 +95,19 @@ pub fn draw(
                         }
                     },
                     AudioCaptureState::Failed(error) => {
-                        ui.colored_label(
-                            egui::Color32::LIGHT_RED,
-                            format!("audio failed: {error}"),
-                        );
+                        ui.colored_label(super::theme::ERROR, format!("audio failed: {error}"));
                     }
                 }
             });
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for live in &snapshot.own_lives {
-                    live_rows(ui, live, state, commands);
-                }
-            });
+            let width = ui.available_width();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    for live in &snapshot.own_lives {
+                        live_rows(ui, live, state, commands);
+                    }
+                });
         });
 }
 
@@ -113,14 +124,31 @@ fn live_rows(
         .map(|p| p.fps)
         .unwrap_or(info.source_fps);
     let current_codec = info.presets.first().map(|p| p.codec).unwrap_or(Codec::H264);
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.strong(info.title.as_str());
-        ui.weak(format!(
-            "{}x{} @ {} fps",
-            info.source_width, info.source_height, info.source_fps
-        ));
-
+    ui.add_space(16.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.add(egui::Label::new(egui::RichText::new(&info.title).size(16.0)).truncate())
+            .on_hover_text(&info.title);
+        let streaming = live.presets.iter().any(|preset| {
+            preset
+                .encoder
+                .as_ref()
+                .is_some_and(|encoder| encoder.subscribers > 0)
+        });
+        if live
+            .presets
+            .iter()
+            .any(|preset| preset.last_error.is_some())
+        {
+            ui.colored_label(super::theme::ERROR, "Needs attention");
+        } else {
+            super::theme::live_status(ui, if streaming { "Live" } else { "Ready" }, streaming);
+        }
+    });
+    ui.weak(format!(
+        "{} × {} · {} fps",
+        info.source_width, info.source_height, info.source_fps
+    ));
+    ui.horizontal_wrapped(|ui| {
         let fps = state.fps_edits.entry(info.id).or_insert(current_fps);
         let response = ui.add(
             egui::DragValue::new(fps)
@@ -159,78 +187,89 @@ fn live_rows(
         }
     });
 
-    ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        ui.label("Templates:");
-        // The last preset cannot be unticked: a live that offers nothing cannot be watched.
-        let last_one = info.presets.len() == 1;
-        for template in presets::templates_for(info) {
-            let mut enabled = info.presets.iter().any(|p| p.id == template.id);
-            let locked = enabled && last_one;
-            let checkbox = egui::Checkbox::new(&mut enabled, template.name.as_str());
-            if ui.add_enabled(!locked, checkbox).changed() {
-                commands.push(RoomCommand::SetPresets {
-                    live_id: info.id,
-                    presets: presets::toggle_template(info, template.id),
+    for preset in &live.presets {
+        if let Some(error) = &preset.last_error {
+            ui.colored_label(
+                super::theme::ERROR,
+                format!("{} failed: {error}", preset.preset.name),
+            );
+        }
+    }
+    if live.presets.iter().any(|preset| {
+        preset
+            .encoder
+            .as_ref()
+            .is_some_and(|encoder| brp_codec::is_software_encoder(encoder.name))
+    }) {
+        ui.colored_label(super::theme::WARNING, "Software encoding · using the CPU");
+    }
+    egui::CollapsingHeader::new("Quality & encoding")
+        .id_salt(("quality", info.id))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(12.0);
+                ui.label("Templates:");
+                // The last preset cannot be unticked: a live that offers nothing cannot be watched.
+                let last_one = info.presets.len() == 1;
+                for template in presets::templates_for(info) {
+                    let mut enabled = info.presets.iter().any(|p| p.id == template.id);
+                    let locked = enabled && last_one;
+                    let checkbox = egui::Checkbox::new(&mut enabled, template.name.as_str());
+                    if ui.add_enabled(!locked, checkbox).changed() {
+                        commands.push(RoomCommand::SetPresets {
+                            live_id: info.id,
+                            presets: presets::toggle_template(info, template.id),
+                        });
+                    }
+                }
+            });
+
+            for view in &live.presets {
+                let preset = &view.preset;
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(12.0);
+                    ui.label(format!(
+                        "{} · {} × {}",
+                        preset.name, preset.width, preset.height
+                    ));
+                    let key = (info.id, preset.id);
+                    let kbps = state
+                        .bitrate_edits
+                        .entry(key)
+                        .or_insert(preset.bitrate_kbps);
+                    let response = ui.add(
+                        egui::DragValue::new(kbps)
+                            .range(MIN_BITRATE_KBPS..=MAX_BITRATE_KBPS)
+                            .speed(100.0)
+                            .suffix(" kbps"),
+                    );
+                    if !response.dragged() && !response.has_focus() {
+                        let value = *kbps;
+                        state.bitrate_edits.remove(&key);
+                        if value != preset.bitrate_kbps {
+                            commands.push(RoomCommand::SetPresets {
+                                live_id: info.id,
+                                presets: presets::with_bitrate(info, preset.id, value),
+                            });
+                        }
+                    }
+                    match (&view.encoder, &view.last_error) {
+                        (Some(encoder), _) => {
+                            let plural = if encoder.subscribers == 1 { "" } else { "s" };
+                            let measured = state.preset_kbps(info.id, preset.id).unwrap_or(0);
+                            ui.label(format!(
+                                "{} · {measured} kbps · {} viewer{plural} · {} frames",
+                                encoder.name, encoder.subscribers, encoder.frames_encoded
+                            ))
+                        }
+                        (None, Some(error)) => {
+                            ui.colored_label(super::theme::ERROR, format!("failed: {error}"))
+                        }
+                        (None, None) => ui.weak("idle"),
+                    };
                 });
             }
-        }
-    });
-
-    for view in &live.presets {
-        let preset = &view.preset;
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui.monospace(format!(
-                "{:<7} {}x{}",
-                preset.name, preset.width, preset.height
-            ));
-            let key = (info.id, preset.id);
-            let kbps = state
-                .bitrate_edits
-                .entry(key)
-                .or_insert(preset.bitrate_kbps);
-            let response = ui.add(
-                egui::DragValue::new(kbps)
-                    .range(MIN_BITRATE_KBPS..=MAX_BITRATE_KBPS)
-                    .speed(100.0)
-                    .suffix(" kbps"),
-            );
-            if !response.dragged() && !response.has_focus() {
-                let value = *kbps;
-                state.bitrate_edits.remove(&key);
-                if value != preset.bitrate_kbps {
-                    commands.push(RoomCommand::SetPresets {
-                        live_id: info.id,
-                        presets: presets::with_bitrate(info, preset.id, value),
-                    });
-                }
-            }
-            match (&view.encoder, &view.last_error) {
-                (Some(encoder), _) => {
-                    let plural = if encoder.subscribers == 1 { "" } else { "s" };
-                    let measured = state.preset_kbps(info.id, preset.id).unwrap_or(0);
-                    let label = ui.label(format!(
-                        "{} · {measured} kbps · {} viewer{plural} · {} frames",
-                        encoder.name, encoder.subscribers, encoder.frames_encoded
-                    ));
-                    if brp_codec::is_software_encoder(encoder.name) {
-                        // Plain-language note for the user; the per-attempt hardware failures
-                        // that led here stay in the logs rather than cluttering this panel.
-                        ui.colored_label(
-                            egui::Color32::YELLOW,
-                            "software encoding (no GPU encoder available, uses more CPU)",
-                        );
-                    }
-                    label
-                }
-                (None, Some(error)) => {
-                    ui.colored_label(egui::Color32::LIGHT_RED, format!("failed: {error}"))
-                }
-                (None, None) => ui.weak("idle"),
-            };
         });
-    }
 }
 
 fn codec_name(codec: Codec) -> &'static str {

@@ -25,6 +25,7 @@ rustc-ice-*.txt
 #.idea/
 .vscode/
 .repowise/
+.taste-skill/
 
 # Claude Code worktrees live inside the checkout
 .claude/worktrees/

@@ -639,7 +639,8 @@ impl App {
         }
         .unwrap_or_else(|| "live".to_string());
         let attributes = Window::default_attributes()
-            .with_title(format!("brp: {title}"))
+            .with_title(format!("OpenStream · {title}"))
+            .with_theme(Some(winit::window::Theme::Dark))
             .with_inner_size(DEFAULT_WINDOW_SIZE)
             .with_visible(false);
         let window = match event_loop.create_window(attributes) {
@@ -693,7 +694,8 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let window = match event_loop.create_window(
             Window::default_attributes()
-                .with_title("brp")
+                .with_title("OpenStream")
+                .with_theme(Some(winit::window::Theme::Dark))
                 .with_inner_size(DEFAULT_WINDOW_SIZE),
         ) {
             Ok(window) => Arc::new(window),
@@ -729,7 +731,7 @@ impl ApplicationHandler<AppEvent> for App {
                 self.state = UiState::new();
                 if let Some(main) = &self.main {
                     main.window
-                        .set_title(&format!("brp: {}", room.snapshot().nickname));
+                        .set_title(&format!("OpenStream · {}", room.snapshot().nickname));
                 }
                 self.remember_open(&room);
                 self.phase = Phase::Room(Box::new(RoomView::new(room)));

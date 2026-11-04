@@ -54,7 +54,7 @@ mod linux {
     /// launchers: started from a menu without a URL, `brp join` is a usage error.
     pub fn desktop_entry(exe: &Path) -> String {
         format!(
-            "[Desktop Entry]\nType=Application\nName=brp\nComment=Peer-to-peer screen sharing\n\
+            "[Desktop Entry]\nType=Application\nName=OpenStream\nComment=Peer-to-peer screen sharing\n\
              Exec={} join %u\nTerminal=false\nNoDisplay=true\nMimeType={SCHEME_MIME};\n",
             quote_exec(exe)
         )
@@ -208,7 +208,7 @@ mod windows {
             ClassValue {
                 subkey: "",
                 name: None,
-                data: "URL:brp".to_string(),
+                data: "URL:OpenStream".to_string(),
             },
             ClassValue {
                 subkey: "",
@@ -306,7 +306,7 @@ mod windows {
                 .iter()
                 .find(|v| v.subkey.is_empty() && v.name.is_none())
                 .expect("class default value");
-            assert_eq!(class.data, "URL:brp");
+            assert_eq!(class.data, "URL:OpenStream");
             let icon = values
                 .iter()
                 .find(|v| v.subkey == "DefaultIcon")

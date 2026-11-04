@@ -117,76 +117,101 @@ pub fn draw(
     update_state: &UpdateState,
 ) -> Option<StartAction> {
     let mut action = None;
-    egui::CentralPanel::default().show(ui, |ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            if ui.button("Settings").clicked() {
-                action = Some(StartAction::OpenSettings);
-            }
-        });
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.2);
-            ui.heading("brp");
-            ui.add_space(8.0);
-            if update::draw(ui, update_state) {
-                action = Some(StartAction::Update);
-            }
-            ui.add_space(16.0);
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::NONE
+                .fill(super::theme::GROUND)
+                .inner_margin(24),
+        )
+        .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Nickname");
-                ui.add_enabled(
-                    !state.connecting,
-                    egui::TextEdit::singleline(&mut state.nickname).desired_width(240.0),
-                );
+                super::theme::brand(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Settings").clicked() {
+                        action = Some(StartAction::OpenSettings);
+                    }
+                });
             });
-            ui.add_space(8.0);
-            if ui
-                .add_enabled(!state.connecting, egui::Button::new("Create room"))
-                .clicked()
-            {
-                action = Some(StartAction::Create);
-            }
-            ui.add_space(16.0);
-            ui.separator();
-            ui.add_space(8.0);
-            ui.add_enabled(
-                !state.connecting,
-                egui::TextEdit::singleline(&mut state.ticket)
-                    .hint_text("paste a ticket or link")
-                    .desired_width(480.0),
-            );
-            let can_join = !state.connecting && !state.ticket.trim().is_empty();
-            if ui
-                .add_enabled(can_join, egui::Button::new("Join room"))
-                .clicked()
-            {
-                action = Some(StartAction::Join);
-            }
-            if !recent.is_empty() {
-                ui.add_space(16.0);
-                ui.label("Recent rooms");
-                for room in recent {
-                    ui.horizontal(|ui| {
-                        ui.monospace(abbreviate_ticket(&room.ticket));
-                        ui.weak(relative_age(room.last_joined_unix, now_unix));
-                        if ui
-                            .add_enabled(!state.connecting, egui::Button::new("Join"))
-                            .clicked()
-                        {
-                            state.ticket = room.ticket.clone();
-                            action = Some(StartAction::Join);
+            ui.add_space(24.0);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let width = ui.available_width().min(448.0);
+                let inset = ((ui.available_width() - width) / 2.0).max(0.0);
+                ui.add_space((ui.available_height() * 0.06).clamp(0.0, 40.0));
+                ui.horizontal(|ui| {
+                    ui.add_space(inset);
+                    ui.vertical(|ui| {
+                        ui.set_width(width);
+                        ui.label(egui::RichText::new("Share your screen").size(28.0));
+                        ui.weak("A room for your screens, windows, and audio");
+                        ui.add_space(24.0);
+                        super::theme::card().show(ui, |ui| {
+                            ui.set_width((width - 48.0).max(0.0));
+                            ui.label("Your name");
+                            ui.add_enabled(
+                                !state.connecting,
+                                egui::TextEdit::singleline(&mut state.nickname)
+                                    .hint_text("Nickname")
+                                    .margin(egui::vec2(12.0, 10.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.add_space(8.0);
+                            ui.style_mut().spacing.button_padding.x = 20.0;
+                            if super::theme::primary_button(ui, "Create room", !state.connecting)
+                                .clicked()
+                            {
+                                action = Some(StartAction::Create);
+                            }
+                            ui.add_space(24.0);
+                            ui.label(egui::RichText::new("Join a room").size(18.0));
+                            ui.weak("Have an invite? Paste the link or ticket");
+                            ui.add_enabled(
+                                !state.connecting,
+                                egui::TextEdit::singleline(&mut state.ticket)
+                                    .hint_text("Room link or ticket")
+                                    .margin(egui::vec2(12.0, 10.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let can_join = !state.connecting && !state.ticket.trim().is_empty();
+                            if ui
+                                .add_enabled(can_join, egui::Button::new("Join room"))
+                                .clicked()
+                            {
+                                action = Some(StartAction::Join);
+                            }
+                            if state.connecting {
+                                ui.add_space(8.0);
+                                super::theme::live_status(ui, "Connecting to the room…", false);
+                            }
+                            if !state.error.is_empty() {
+                                ui.add_space(8.0);
+                                ui.colored_label(super::theme::ERROR, &state.error);
+                            }
+                        });
+                        if !recent.is_empty() {
+                            ui.add_space(24.0);
+                            ui.label("Recent rooms");
+                            for room in recent {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(abbreviate_ticket(&room.ticket));
+                                    ui.weak(relative_age(room.last_joined_unix, now_unix));
+                                    if ui
+                                        .add_enabled(!state.connecting, egui::Button::new("Join"))
+                                        .clicked()
+                                    {
+                                        state.ticket = room.ticket.clone();
+                                        action = Some(StartAction::Join);
+                                    }
+                                });
+                            }
+                        }
+                        ui.add_space(16.0);
+                        if update::draw(ui, update_state) {
+                            action = Some(StartAction::Update);
                         }
                     });
-                }
-            }
-            ui.add_space(16.0);
-            if state.connecting {
-                ui.weak("connecting");
-            }
-            if !state.error.is_empty() {
-                ui.colored_label(egui::Color32::LIGHT_RED, &state.error);
-            }
+                });
+            });
         });
-    });
     action
 }
 

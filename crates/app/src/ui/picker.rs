@@ -23,10 +23,12 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState, commands: &mut Vec<RoomCom
     egui::Window::new(title)
         .collapsible(false)
         .resizable(false)
+        .default_width(400.0)
+        .max_width((ctx.content_rect().width() - 64.0).max(160.0))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             if picker.choices.is_empty() {
-                ui.weak("nothing to share");
+                ui.weak("No screens or windows are available to share");
             }
             egui::ScrollArea::vertical()
                 .max_height(MAX_LIST_HEIGHT)
@@ -38,7 +40,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState, commands: &mut Vec<RoomCom
                         }
                     }
                 });
-            ui.separator();
+            ui.add_space(16.0);
             if ui.button("Cancel").clicked() {
                 cancelled = true;
             }
