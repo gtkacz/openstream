@@ -17,6 +17,9 @@ use crate::frame::{CaptureFrame, CaptureSession, SourceInfo};
 
 /// The converter expects BGRA; asking for it up front avoids a per-frame format check.
 const FORMATS: [DxgiDuplicationFormat; 1] = [DxgiDuplicationFormat::Bgra8];
+/// How often a refused duplication is tried again. Short enough that the picture comes back as a
+/// prompt closes, long enough not to spin on a desktop that stays away.
+const RECREATE_RETRY: Duration = Duration::from_millis(250);
 
 type FirstFrame = Result<SourceInfo, CaptureError>;
 
@@ -80,9 +83,20 @@ fn run(
             // carries on from the current desktop.
             Err(Error::AccessLost) => match duplication.recreate_options(&FORMATS) {
                 Ok(recreated) => duplication = recreated,
+                // Windows refuses while the secure desktop is up, for a UAC prompt or the lock
+                // screen, and gives it back once that closes. The failed attempt consumed the old
+                // duplication, so the retries build a new one.
                 Err(error) => {
-                    tracing::warn!(%error, "desktop duplication could not be recreated; the live keeps its last frame");
-                    return;
+                    tracing::warn!(%error, "desktop duplication refused; retrying");
+                    duplication = loop {
+                        thread::sleep(RECREATE_RETRY);
+                        if stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if let Ok(created) = DxgiDuplicationApi::new_options(monitor, &FORMATS) {
+                            break created;
+                        }
+                    };
                 }
             },
             Err(error) => {
