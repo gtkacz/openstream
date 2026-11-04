@@ -825,7 +825,32 @@ fn a_rail_card_keeps_its_title_detail_and_controls_on_one_left_edge() {
 }
 
 #[test]
-fn the_start_form_is_centred_on_the_same_axis_as_the_diagram() {
+fn the_form_stays_clickable_beside_the_wall() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut state = start::StartState::new("Alex".into());
+    let mut action = None;
+    let mut shapes = Vec::new();
+    for frame in 0..3 {
+        let mut output = ctx.run_ui(timed(window(1280.0, 800.0), frame), |ui| {
+            start::draw(ui, &mut state, &[], 0, &UpdateState::new(false));
+        });
+        shapes = std::mem::take(&mut output.shapes);
+        output.textures_delta.clear();
+    }
+    let button = text_rect(&shapes, "Create room").center();
+    for (frame, pressed) in [(3, true), (4, false)] {
+        let raw = timed(click_at(window(1280.0, 800.0), button, pressed), frame);
+        let mut output = ctx.run_ui(raw, |ui| {
+            action = start::draw(ui, &mut state, &[], 0, &UpdateState::new(false));
+        });
+        output.textures_delta.clear();
+    }
+    assert_eq!(action, Some(StartAction::Create));
+}
+
+#[test]
+fn the_start_form_is_centred_in_the_body() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut state = start::StartState::new("Alex".into());
@@ -841,9 +866,6 @@ fn the_start_form_is_centred_on_the_same_axis_as_the_diagram() {
     let join_label = text_rect(&shapes, "Join room");
     // The Join button is 40 tall around its label, so its bottom edge is 20 below the label's centre.
     let form = (title.top() + join_label.center().y + 20.0) / 2.0;
-    let live = text_rect(&shapes, "Alex · Live");
-    let relayed = text_rect(&shapes, "Relayed");
-    assert!(live.top() < form && relayed.bottom() > form);
     let body = (24.0 + 36.0 + 8.0 + 800.0 - 24.0) / 2.0;
     assert!(
         (form - body).abs() <= 1.0,
@@ -1429,41 +1451,6 @@ fn the_audio_switch_and_its_chooser_are_one_control_with_two_targets() {
             .iter()
             .any(|command| matches!(command, brp_app::commands::RoomCommand::ChooseApplications))
     );
-}
-
-#[test]
-fn the_start_diagram_puts_the_typed_name_on_the_screen_that_person_will_have() {
-    let ctx = egui::Context::default();
-    brp_app::ui::theme::install(&ctx);
-    let mut state = start::StartState::new("Alex".into());
-    let run = |state: &mut start::StartState, from: u32| {
-        let mut shapes = Vec::new();
-        for frame in from..from + 60 {
-            let mut output = ctx.run_ui(timed(window(1440.0, 900.0), frame), |ui| {
-                start::draw(ui, state, &[], 0, &UpdateState::new(false));
-            });
-            shapes = std::mem::take(&mut output.shapes);
-            output.textures_delta.clear();
-        }
-        shapes
-    };
-    let creating = run(&mut state, 0);
-    assert!(!text_rects(&creating, "Alex · Live").is_empty());
-    assert!(text_rects(&creating, "Alex · Watching").is_empty());
-
-    state.nickname = "Sam".into();
-    let renamed = run(&mut state, 60);
-    assert!(!text_rects(&renamed, "Sam · Live").is_empty());
-
-    state.ticket = "brpsomething".into();
-    let joining = run(&mut state, 120);
-    assert!(!text_rects(&joining, "Sam · Watching").is_empty());
-    assert!(text_rects(&joining, "Sam · Live").is_empty());
-
-    state.nickname = "   ".into();
-    let nameless = run(&mut state, 180);
-    assert_eq!(text_rects(&nameless, "Watching").len(), 2);
-    assert!(text_rects(&nameless, "   · Watching").is_empty());
 }
 
 #[test]

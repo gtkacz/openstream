@@ -74,7 +74,7 @@ pub fn paint_mark(ui: &mut egui::Ui, size: f32) {
 }
 
 /// Paints the mark into `rect`, which should be square.
-pub fn paint_mark_at(painter: &egui::Painter, rect: egui::Rect) {
+fn paint_mark_at(painter: &egui::Painter, rect: egui::Rect) {
     let size = rect.width();
     let row_height = size / f32::from(MARK_ROWS);
     for &(row, start, end) in &MARK_BARS {

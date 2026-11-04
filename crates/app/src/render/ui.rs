@@ -32,6 +32,9 @@ impl EguiLayer {
             renderer,
         }
     }
+    pub fn ctx(&self) -> &egui::Context {
+        &self.ctx
+    }
     pub fn on_window_event(
         &mut self,
         window: &Window,

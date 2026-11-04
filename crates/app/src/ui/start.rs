@@ -1,11 +1,8 @@
 //! The start screen: nickname and ticket entry with Create and Join, shown until a room is open.
 
-use brp_net::PathKind;
-
-use super::members::{self, PathShape};
-use super::motion;
 use super::theme::{self, icons};
 use super::update::{self, UpdateState};
+use super::wall;
 use crate::launch::Intent;
 use crate::link;
 use crate::settings::RecentRoom;
@@ -112,11 +109,11 @@ pub fn abbreviate_ticket(ticket: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// Wide enough to set the room diagram beside the form instead of dropping it.
-const DIAGRAM_MIN_WINDOW_WIDTH: f32 = 960.0;
+/// Wide enough to set the wall beside the form instead of dropping it.
+const WALL_MIN_WINDOW_WIDTH: f32 = 960.0;
 const FORM_WIDTH: f32 = 380.0;
 const COLUMN_GAP: f32 = 64.0;
-/// The brand, the form, the diagram and the settings button all share this column, so on a very wide
+/// The brand, the form and the settings button all share this column, so on a very wide
 /// window they stay on two common edges instead of drifting to the corners of the screen.
 const CONTENT_WIDTH: f32 = 1200.0;
 
@@ -143,21 +140,20 @@ pub fn draw(
                 space.center(),
                 egui::vec2(space.width().min(CONTENT_WIDTH), space.height()),
             );
+            let window = ui.ctx().content_rect();
+            let with_wall = window.width() >= WALL_MIN_WINDOW_WIDTH;
+            if with_wall {
+                wall::draw(ui, wall_area(window, column));
+            }
             ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
                 theme::split_row(ui, theme::CONTROL_HEIGHT, theme::brand, |ui| {
                     if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
                         action = Some(StartAction::OpenSettings);
                     }
                 });
-                let body = ui.available_rect_before_wrap();
-                let with_diagram = ui.ctx().content_rect().width() >= DIAGRAM_MIN_WINDOW_WIDTH;
-                if with_diagram {
-                    let beside = egui::pos2(body.left() + FORM_WIDTH + COLUMN_GAP, body.top());
-                    room_diagram(ui, egui::Rect::from_min_max(beside, body.max), state);
-                }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let width = ui.available_width().min(FORM_WIDTH);
-                    let inset = if with_diagram {
+                    let inset = if with_wall {
                         0.0
                     } else {
                         ((ui.available_width() - width) / 2.0).max(0.0)
@@ -175,6 +171,15 @@ pub fn draw(
             });
         });
     action
+}
+
+/// From the form's gap to the window's own edges, past the panel's margin, so the wall bleeds off
+/// the top, right and bottom rather than floating in a box.
+fn wall_area(window: egui::Rect, column: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(column.left() + FORM_WIDTH + COLUMN_GAP, window.top()),
+        window.max,
+    )
 }
 
 fn form(
@@ -286,184 +291,6 @@ fn form(
     }
 }
 
-/// Where the diagram's three screens sit in `area`: the sharer across the full width, and two
-/// viewers beneath it that end on its edges, so the figure has one axis and two clean sides. It ends
-/// on the right of `area`, sharing an edge with the settings button above it.
-fn diagram_screens(area: egui::Rect) -> [egui::Rect; 3] {
-    const ASPECT: f32 = 9.0 / 16.0;
-    const LINK_HEIGHT: f32 = 72.0;
-    const VIEWER_GAP: f32 = 16.0;
-    const WIDEST: f32 = 600.0;
-    // Height = width * ASPECT + LINK_HEIGHT + (width - VIEWER_GAP) / 2 * ASPECT, solved for width.
-    let fits_height = (area.height() - LINK_HEIGHT + VIEWER_GAP / 2.0 * ASPECT) / (1.5 * ASPECT);
-    let width = area.width().min(fits_height).clamp(VIEWER_GAP, WIDEST);
-    let viewer = egui::vec2(
-        (width - VIEWER_GAP) / 2.0,
-        (width - VIEWER_GAP) / 2.0 * ASPECT,
-    );
-    let total_height = width * ASPECT + LINK_HEIGHT + viewer.y;
-    let left = area.right() - width;
-    let top = area.center().y - total_height / 2.0;
-    let sharer =
-        egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, width * ASPECT));
-    let viewers_top = sharer.bottom() + LINK_HEIGHT;
-    [
-        sharer,
-        egui::Rect::from_min_size(egui::pos2(left, viewers_top), viewer),
-        egui::Rect::from_min_size(egui::pos2(area.right() - viewer.x, viewers_top), viewer),
-    ]
-}
-
-/// What a screen in the diagram says, moving from `away` to `here` as `blend` rises: the words
-/// cross-fade and the chip's width follows, so a name passing between screens never jumps.
-struct DiagramChip {
-    away: String,
-    here: String,
-    blend: f32,
-    ink: egui::Color32,
-    dot: egui::Color32,
-}
-
-fn paint_chip(painter: &egui::Painter, rect: egui::Rect, chip: DiagramChip) {
-    const DOT_SPACE: f32 = 20.0;
-    const SIDES: egui::Vec2 = egui::vec2(28.0, 8.0);
-    let widest = (rect.width() - 20.0 - SIDES.x).max(0.0);
-    let galley = |text: String| {
-        let mut job = egui::text::LayoutJob::simple_singleline(text, theme::medium(12.0), chip.ink);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(widest);
-        painter.layout_job(job)
-    };
-    let (away, here) = (galley(chip.away), galley(chip.here));
-    let size = egui::vec2(
-        egui::lerp(away.size().x..=here.size().x, chip.blend),
-        away.size().y,
-    ) + SIDES;
-    let frame = egui::Rect::from_min_size(rect.min + egui::Vec2::splat(10.0), size);
-    painter.rect_filled(frame, theme::RADIUS_CHIP, theme::SURFACE);
-    painter.circle_filled(frame.left_center() + egui::vec2(11.0, 0.0), 3.0, chip.dot);
-    let at = frame.min + egui::vec2(DOT_SPACE, 4.0);
-    let words = painter.with_clip_rect(frame.intersect(painter.clip_rect()));
-    if chip.blend < 1.0 {
-        words.galley(at, away, chip.ink.gamma_multiply(1.0 - chip.blend));
-    }
-    if chip.blend > 0.0 {
-        words.galley(at, here, chip.ink.gamma_multiply(chip.blend));
-    }
-}
-
-/// What a room is, drawn with the product's own vocabulary: one person's screen arriving as the
-/// same picture on everyone else's, with no server in the middle, directly where it can and through
-/// a relay where it cannot. It answers the form: the name being typed is on the screen that person
-/// will have, which is the sharer's until an invite in the form makes them a viewer.
-fn room_diagram(ui: &egui::Ui, area: egui::Rect, state: &StartState) {
-    const DOT_RADIUS: f32 = 3.0;
-    const LINK_INSET: f32 = 10.0;
-    const YOU_RING: f32 = 1.5;
-    let painter = ui.painter_at(area);
-    let [sharer, direct_peer, relayed_peer] = diagram_screens(area);
-    for (rect, path, name) in [
-        (direct_peer, PathKind::Direct, "Direct"),
-        (relayed_peer, PathKind::Relayed, "Relayed"),
-    ] {
-        let x = rect.center().x;
-        let (from, to) = (
-            egui::pos2(x, sharer.bottom() + LINK_INSET),
-            egui::pos2(x, rect.top() - LINK_INSET),
-        );
-        members::paint_path(
-            &painter,
-            from,
-            to,
-            PathShape::of(path),
-            DOT_RADIUS,
-            theme::SECONDARY,
-        );
-        painter.text(
-            egui::pos2(x + 14.0, (from.y + to.y) / 2.0),
-            egui::Align2::LEFT_CENTER,
-            name,
-            egui::FontId::proportional(12.0),
-            theme::SECONDARY,
-        );
-    }
-    let joining = motion::follow(
-        ui.ctx(),
-        egui::Id::new("diagram-joining"),
-        !state.ticket.trim().is_empty(),
-        motion::SURFACE,
-    );
-    let name = state.nickname.trim();
-    let with_name = |role: &str| {
-        if name.is_empty() {
-            role.to_string()
-        } else {
-            format!("{name} · {role}")
-        }
-    };
-    let screens = [
-        (
-            sharer,
-            1.0 - joining,
-            DiagramChip {
-                away: "Live".to_string(),
-                here: with_name("Live"),
-                blend: 1.0 - joining,
-                ink: theme::LIVE,
-                dot: theme::LIVE,
-            },
-        ),
-        (
-            direct_peer,
-            joining,
-            DiagramChip {
-                away: "Watching".to_string(),
-                here: with_name("Watching"),
-                blend: joining,
-                ink: theme::TEXT,
-                dot: theme::MUTED,
-            },
-        ),
-        (
-            relayed_peer,
-            0.0,
-            DiagramChip {
-                away: "Watching".to_string(),
-                here: "Watching".to_string(),
-                blend: 0.0,
-                ink: theme::TEXT,
-                dot: theme::MUTED,
-            },
-        ),
-    ];
-    for (rect, yours, chip) in screens {
-        shared_picture(&painter, rect);
-        paint_chip(&painter, rect, chip);
-        if yours > 0.0 {
-            painter.rect_stroke(
-                rect,
-                theme::RADIUS_CARD,
-                egui::Stroke::new(YOU_RING, theme::ACCENT.gamma_multiply(yours)),
-                egui::StrokeKind::Inside,
-            );
-        }
-    }
-}
-
-/// The picture being shared: OpenStream's own mark, the same frame on every screen, so each peer
-/// visibly holds what the sharer sends.
-fn shared_picture(painter: &egui::Painter, rect: egui::Rect) {
-    const PICTURE: egui::Color32 = egui::Color32::from_rgb(12, 44, 68);
-    const MARK_TO_HEIGHT: f32 = 0.36;
-    painter.rect_filled(rect, theme::RADIUS_CARD, PICTURE);
-    crate::icon::paint_mark_at(
-        painter,
-        egui::Rect::from_center_size(
-            rect.center(),
-            egui::Vec2::splat(rect.height() * MARK_TO_HEIGHT),
-        ),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -479,51 +306,127 @@ mod tests {
         RoomTicket::new([1u8; 32], vec![addr])
     }
 
+    fn sized(width: f32, height: f32) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, height),
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn run(
+        ctx: &egui::Context,
+        state: &mut StartState,
+        raw: egui::RawInput,
+    ) -> (egui::FullOutput, Option<StartAction>) {
+        let mut action = None;
+        let mut output = ctx.run_ui(raw, |ui| {
+            action = draw(ui, state, &[], 0, &UpdateState::new(false));
+        });
+        output.textures_delta.clear();
+        (output, action)
+    }
+
     #[test]
-    fn the_diagram_keeps_one_axis_and_two_clean_sides_at_every_window_size() {
-        for (width, height) in [
-            (468.0, 516.0),
-            (788.0, 716.0),
-            (1200.0, 1000.0),
-            (500.0, 300.0),
+    fn the_wall_reaches_the_windows_edges_and_stops_short_of_the_form() {
+        // The column is the window less 24-point margins, at most 1200 wide and centred.
+        for (width, height, column_left, wall_left) in [
+            (960.0, 540.0, 24.0, 468.0),
+            (1300.0, 780.0, 50.0, 494.0),
+            (2560.0, 1440.0, 680.0, 1124.0),
+            (3840.0, 2160.0, 1320.0, 1764.0),
         ] {
-            let area =
-                egui::Rect::from_min_size(egui::pos2(444.0, 60.0), egui::vec2(width, height));
-            let [sharer, left, right] = diagram_screens(area);
-            assert!(
-                (left.left() - sharer.left()).abs() < 0.01
-                    && (right.right() - sharer.right()).abs() < 0.01,
-                "viewers must end on the sharer's edges at {width} by {height}"
+            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+            let column = egui::Rect::from_min_size(
+                egui::pos2(column_left, 24.0),
+                egui::vec2(1200.0, height - 48.0),
             );
-            assert_eq!(left.size(), right.size());
-            assert_eq!(left.top(), right.top());
-            assert!(
-                (sharer.right() - area.right()).abs() < 0.01,
-                "ends on the column's edge"
-            );
-            assert!(
-                ((sharer.top() + left.bottom()) / 2.0 - area.center().y).abs() < 0.01,
-                "centred on the area's height"
-            );
-            assert!(
-                sharer.top() >= area.top() - 0.01 && left.bottom() <= area.bottom() + 0.01,
-                "{width} by {height} overflows: {sharer:?} {left:?}"
+            assert_eq!(
+                wall_area(window, column),
+                egui::Rect::from_min_max(egui::pos2(wall_left, 0.0), egui::pos2(width, height))
             );
         }
     }
 
     #[test]
-    fn a_diagram_with_no_room_collapses_instead_of_inverting() {
-        for (width, height) in [(10.0, 500.0), (500.0, 40.0), (0.0, 0.0)] {
-            let area =
-                egui::Rect::from_min_size(egui::pos2(444.0, 60.0), egui::vec2(width, height));
-            for screen in diagram_screens(area) {
-                assert!(
-                    screen.width() >= 0.0 && screen.height() >= 0.0,
-                    "{width} by {height} gave {screen:?}"
-                );
-            }
+    fn the_wall_paints_past_the_panels_margin_to_the_windows_edges() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        wall::install_loaded(&ctx);
+        let mut state = StartState::new("Alex".into());
+        let (output, _) = run(&ctx, &mut state, sized(1300.0, 780.0));
+        let clips: Vec<egui::Rect> = output
+            .shapes
+            .iter()
+            .filter(|clipped| matches!(clipped.shape, egui::Shape::Mesh(_)))
+            .map(|clipped| clipped.clip_rect)
+            .collect();
+        assert!(!clips.is_empty(), "no tiles were painted");
+        let expected = egui::Rect::from_min_max(egui::pos2(494.0, 0.0), egui::pos2(1300.0, 780.0));
+        assert!(clips.iter().all(|clip| *clip == expected), "{clips:?}");
+    }
+
+    #[test]
+    fn below_960_points_the_start_screen_paints_no_wall() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut state = StartState::new("Alex".into());
+        let (output, _) = run(&ctx, &mut state, sized(959.0, 700.0));
+        assert!(
+            !output
+                .shapes
+                .iter()
+                .any(|clipped| matches!(clipped.shape, egui::Shape::Mesh(_)))
+        );
+        assert!(!wall::has_state(&ctx));
+        run(&ctx, &mut state, sized(960.0, 700.0));
+        assert!(wall::has_state(&ctx));
+    }
+
+    #[test]
+    fn a_tile_under_settings_is_not_hovered_and_settings_takes_the_click() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        wall::install_loaded(&ctx);
+        let mut state = StartState::new("Alex".into());
+        let with_events = |events: Vec<egui::Event>| {
+            let mut raw = sized(1440.0, 900.0);
+            raw.events = events;
+            raw
+        };
+        // The 1200-point column ends at 1320, and the 36-point button sits at its top right.
+        let on_settings = egui::pos2(1302.0, 42.0);
+        let on_the_wall = egui::pos2(1000.0, 450.0);
+        for _ in 0..3 {
+            run(
+                &ctx,
+                &mut state,
+                with_events(vec![egui::Event::PointerMoved(on_the_wall)]),
+            );
         }
+        assert!(
+            wall::hovered(&ctx).is_some(),
+            "the wall takes a free pointer"
+        );
+        for _ in 0..3 {
+            run(
+                &ctx,
+                &mut state,
+                with_events(vec![egui::Event::PointerMoved(on_settings)]),
+            );
+        }
+        assert_eq!(wall::hovered(&ctx), None);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: on_settings,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run(&ctx, &mut state, with_events(vec![button(true)]));
+        let (_, action) = run(&ctx, &mut state, with_events(vec![button(false)]));
+        assert_eq!(action, Some(StartAction::OpenSettings));
     }
 
     #[test]

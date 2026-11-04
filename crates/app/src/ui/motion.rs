@@ -14,7 +14,7 @@ pub const SURFACE: f32 = 0.28;
 pub const REFLOW: f32 = 0.36;
 
 /// A dropped frame shortens a step rather than teleporting the value.
-const LONGEST_STEP: f32 = 0.05;
+pub const LONGEST_STEP: f32 = 0.05;
 /// The step taken by a spring leaving rest. The time since its last frame says nothing, since an
 /// idle window may not have drawn for minutes.
 const FIRST_STEP: f32 = 1.0 / 60.0;
