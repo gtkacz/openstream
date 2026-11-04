@@ -250,6 +250,48 @@ mod tests {
     }
 
     #[test]
+    fn full_chroma_is_right_for_every_format_a_compositor_hands_over_at_any_stride() {
+        // Red, in each byte order, with rows padded the way real capture pads them.
+        let cases = [
+            (PixelFormat::Bgra, [0, 0, 255, 255]),
+            (PixelFormat::Bgrx, [0, 0, 255, 0]),
+            (PixelFormat::Rgba, [255, 0, 0, 255]),
+            (PixelFormat::Rgbx, [255, 0, 0, 0]),
+        ];
+        let (width, height, stride) = (8u32, 4u32, 64usize);
+        for (format, pixel) in cases {
+            let mut data = vec![0xAB; stride * height as usize];
+            for row in data.chunks_mut(stride) {
+                for out in row[..width as usize * 4].as_chunks_mut::<4>().0 {
+                    *out = pixel;
+                }
+            }
+            let image = InputImage {
+                width,
+                height,
+                stride,
+                format,
+                data: &data,
+                capture_ts_us: 1,
+            };
+            let mut converter =
+                SwsConverter::new(width, height, format, width, height, ChromaLayout::Full)
+                    .unwrap();
+            let output = converter.convert(&image).unwrap();
+            output.validate().unwrap();
+            // Limited-range BT.709 red is close to Y 63, U 102, V 240; the padding must not show.
+            for pair in output.uv.as_chunks::<2>().0 {
+                assert!((98..=106).contains(&pair[0]), "{format:?} U {}", pair[0]);
+                assert!((236..=244).contains(&pair[1]), "{format:?} V {}", pair[1]);
+            }
+            assert!(
+                output.y.iter().all(|y| (59..=67).contains(y)),
+                "{format:?} Y"
+            );
+        }
+    }
+
+    #[test]
     fn short_input_buffer_is_rejected() {
         let mut converter =
             SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4, ChromaLayout::Half).unwrap();
