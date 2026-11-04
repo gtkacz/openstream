@@ -51,3 +51,27 @@ jobs:
         with:
           name: brp-windows-x86_64
           path: dist
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/macos-ffmpeg
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+        env:
+          # Test binaries load the FFmpeg dylibs straight from the build, by their @rpath names.
+          RUSTFLAGS: -C link-arg=-Wl,-rpath,${{ env.FFMPEG_DIR }}/lib
+      - run: cargo build --release -p brp
+        env:
+          # Same rpath as the release job: the binary loads the libraries staged beside it.
+          RUSTFLAGS: -C link-arg=-Wl,-rpath,@executable_path
+      - name: Stage the artifact
+        run: ./ci/stage-macos.sh dist/brp dist/OpenStream.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brp-macos-aarch64
+          path: dist

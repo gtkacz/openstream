@@ -9,15 +9,16 @@ encodes it with FFmpeg hardware encoders, and sends it directly to the other
 participants over QUIC using [iroh](https://docs.rs/iroh/latest/iroh/). Each viewer decodes the
 stream and renders it in a native `wgpu` window.
 
-> **Status:** video on Linux and Windows. A participant creates or joins a room
-> from a start screen, shares several monitors or windows with quality presets,
-> and watches other members' lives in a tile grid. Audio, pop-out windows,
-> persistent settings, and tagged releases are in; macOS is on the backlog.
+> **Status:** video on Linux, Windows, and macOS. A participant creates or joins a
+> room from a start screen, shares several monitors or windows with quality
+> presets, and watches other members' lives in a tile grid. Audio, pop-out
+> windows, persistent settings, and tagged releases are in.
 
 ## How it works
 
 ```text
-  portal/PipeWire (Linux) or Graphics Capture (Windows)  ->  BGRA frames
+  portal/PipeWire (Linux), Graphics Capture (Windows), or
+  ScreenCaptureKit (macOS)  ->  BGRA frames
         -> FFmpeg encoder, one per preset in use  ->  iroh QUIC, brp/media/1
         -> FFmpeg decoder  ->  NV12  ->  wgpu tile grid under an egui UI
 ```
@@ -30,10 +31,11 @@ Media connections are accepted only from current members. iroh relays and hole
 punching are on by default; `--no-relay` turns relays off for a local network.
 
 Encoder selection probes NVENC, AMD AMF, Intel QSV, then Media Foundation on
-Windows or VAAPI on Linux, then software AV1, and the window names the encoder
-actually running. Decoding tries D3D11VA on Windows or VAAPI on Linux, then
-NVDEC, then software. Each preset is encoded once and the bitstream fans out to
-every viewer; encoders run only while someone watches. Every live decodes once.
+Windows, VideoToolbox on macOS, or VAAPI on Linux, then software AV1, and the
+window names the encoder actually running. Decoding tries D3D11VA on Windows,
+VideoToolbox on macOS, or VAAPI on Linux, then NVDEC, then software. Each
+preset is encoded once and the bitstream fans out to every viewer; encoders run
+only while someone watches. Every live decodes once.
 
 Latency stays bounded through single-slot and bounded queues: when a stage falls
 behind, older frames are dropped rather than queued. Control and frame metadata
@@ -199,6 +201,51 @@ and passes the hardware-free suite on the CI runner; per-application audio,
 the picker, the duplication fallback, the hardware codecs, and the console
 behaviour are verified by reading, not by running, until one does.
 
+## macOS
+
+macOS 14 Sonoma or later. Screen, window, and audio capture use
+ScreenCaptureKit, which needs the Screen & System Audio Recording permission:
+the first Share asks for it, and System Settings › Privacy & Security ›
+Screen & System Audio Recording turns it on or off later. Share monitor and
+Share window open an in-app list, as on Windows. Audio follows the same two
+modes as the other platforms: everything except OpenStream, or only the chosen
+applications, which are identified by bundle identifier; an application chosen
+while closed is picked up when it starts. The list of audible applications
+comes from CoreAudio on macOS 14.2 and later, and shows applications with a
+window on 14.0 and 14.1. Encoding and decoding use VideoToolbox, with software
+AV1 as the last resort.
+
+Tagged releases publish `OpenStream-<version>-macos-aarch64.zip`, an Apple
+Silicon app bundle to drag into Applications, and
+`brp-<version>-macos-aarch64.tar.gz`, the same files as a flat directory, which
+is what an in-app update downloads and swaps into `OpenStream.app/Contents/MacOS`.
+The bundle claims `brp://` links through its `Info.plist` and re-registers with
+LaunchServices on every launch; a link clicked while a room is open starts a
+second window, as on the other platforms. The bundle is signed ad hoc, not
+notarised, so the first launch needs Control-click › Open, and macOS asks for the
+recording permission again after an update. Every push uploads
+`brp-macos-aarch64` from the `macos` CI job.
+
+CI builds FFmpeg 8.1.3 from source as LGPL shared libraries with VideoToolbox,
+libopus, libdav1d, and libsvtav1 (`.github/actions/macos-ffmpeg`), since no
+LGPL shared macOS build is published. To build yourself, install the Xcode
+command line tools and Homebrew, build FFmpeg the same way with
+`--install-name-dir='@rpath'`, and:
+
+```sh
+export FFMPEG_DIR=/path/to/ffmpeg MACOSX_DEPLOYMENT_TARGET=14.0
+RUSTFLAGS="-C link-arg=-Wl,-rpath,$FFMPEG_DIR/lib" cargo build --release
+```
+
+`ci/stage-macos.sh dist/brp dist/OpenStream.app` then gathers the libraries
+beside the binary, rewrites their install names, signs ad hoc, and builds the
+bundle.
+
+No Mac has run the result yet: the macOS code is type-checked and linted for
+`aarch64-apple-darwin`, and its platform-neutral logic is unit-tested on every
+runner; capture, audio, the codecs, and link handling are verified on hardware
+once the `macos` job and a Mac have run them.
+
 ## Identity and privacy
 
 On first run, `brp` creates a persistent iroh identity in the platform config
@@ -237,7 +284,8 @@ other users of the same machine on most systems.
 ## Diagnostics
 
 Every run writes a log beside the identity key and the settings:
-`~/.config/brp/brp.log` on Linux, `%APPDATA%\brp\config\brp.log` on Windows.
+`~/.config/brp/brp.log` on Linux, `%APPDATA%\brp\config\brp.log` on Windows,
+`~/Library/Application Support/brp/brp.log` on macOS.
 The run before it is kept as `brp.log.1`, because a crashed run is read after
 the next launch has already started. `RUST_LOG` sets the level, `info` by
 default. A panic is logged with its location and a backtrace before the process
@@ -261,8 +309,8 @@ under `LocalDumps` undoes it.
 | --- | --- |
 | `brp-proto` | Wire types, postcard encoding, frame headers, tickets, presence, preset templates, constants, and bitrate rules |
 | `brp-codec` | Encoder/decoder traits, the FFmpeg implementation with hardware probing across NVIDIA, AMD, Intel, Media Foundation/VAAPI, and software, plus test fakes |
-| `brp-capture` | Capture traits, the synthetic source, the Linux portal/PipeWire backend, the Windows Graphics Capture backend with its desktop-duplication fallback, and the platform-neutral fallback driver |
-| `brp-audio` | Audio capture traits, the PipeWire application-output capture, the WASAPI process-loopback capture, cpal playback, and the test doubles |
+| `brp-capture` | Capture traits, the synthetic source, the Linux portal/PipeWire backend, the Windows Graphics Capture backend with its desktop-duplication fallback, the macOS ScreenCaptureKit backend, and the platform-neutral fallback driver |
+| `brp-audio` | Audio capture traits, the PipeWire application-output capture, the WASAPI process-loopback capture, the ScreenCaptureKit audio capture, cpal playback, and the test doubles |
 | `brp-net` | iroh endpoint, QUIC media client/server, connection policy, and stream framing |
 | `brp-room` | Room membership over signed gossip presence, the live registry with lazy encoders, watches, and snapshots |
 | `brp-pipeline` | Bounded publisher/viewer pipelines, fan-out, reordering, frame pacing, and latest-frame slots |
@@ -270,7 +318,7 @@ under `LocalDumps` undoes it.
 | `brp` | CLI, identity, the winit event loop with the start screen and room view, the wgpu tile renderer, and the egui panels |
 
 Platform-specific capture and codec device selection sit behind crate
-interfaces so the macOS backend can be added without touching the pipeline.
+interfaces, so each platform's backend plugs in without touching the pipeline.
 
 ## Development
 
@@ -294,7 +342,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 CI runs formatting, clippy with warnings denied, and the hardware-free suite on
 Linux, and clippy, the suite, a release build, and the artifact upload on
-Windows.
+Windows and macOS.
 
 The codec smoke test is opt-in because it requires installed FFmpeg codecs and
 real hardware:

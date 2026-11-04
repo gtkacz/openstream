@@ -1,0 +1,50 @@
+name: macOS FFmpeg
+description: >-
+  The pinned FFmpeg release built from source as LGPL shared libraries with VideoToolbox, libopus,
+  libdav1d and libsvtav1, installed with @rpath install names. No LGPL shared macOS build is
+  published, so this builds one and caches it. Exports FFMPEG_DIR, PKG_CONFIG_PATH and
+  MACOSX_DEPLOYMENT_TARGET.
+runs:
+  using: composite
+  steps:
+    - name: Codec libraries and build tools
+      shell: bash
+      run: |
+        set -eu
+        brew install --quiet nasm pkgconf opus dav1d svt-av1 librsvg
+        dir="$GITHUB_WORKSPACE/ffmpeg"
+        echo "FFMPEG_DIR=$dir" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$dir/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
+        # Keyed on the codec libraries too: the FFmpeg dylibs link the versions brew installed.
+        echo "MACOS_FFMPEG_KEY=$(brew list --versions opus dav1d svt-av1 | shasum | cut -c1-12)" >> "$GITHUB_ENV"
+    - name: Restore the FFmpeg build
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ffmpeg
+        key: macos-ffmpeg-n8.1.3-${{ runner.arch }}-14.0-${{ env.MACOS_FFMPEG_KEY }}-v1
+    - name: Build FFmpeg (LGPL shared, pinned)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -eu
+        tag="n8.1.3"
+        curl -fsSL -o ffmpeg-src.tar.gz "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/$tag.tar.gz"
+        mkdir -p ffmpeg-src
+        tar -xzf ffmpeg-src.tar.gz -C ffmpeg-src --strip-components 1
+        cd ffmpeg-src
+        # Plain LGPL: no --enable-gpl or --enable-nonfree, so the libraries may ship beside an
+        # MIT binary as on the other platforms.
+        ./configure \
+          --prefix="$FFMPEG_DIR" \
+          --install-name-dir='@rpath' \
+          --enable-shared --disable-static \
+          --disable-programs --disable-doc --disable-debug \
+          --enable-videotoolbox --enable-audiotoolbox \
+          --enable-libopus --enable-libdav1d --enable-libsvtav1 \
+          --extra-cflags="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET" \
+          --extra-ldflags="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET -Wl,-headerpad_max_install_names"
+        make -j"$(sysctl -n hw.ncpu)"
+        make install
+        cp COPYING.LGPLv2.1 "$FFMPEG_DIR/LICENSE.txt"
