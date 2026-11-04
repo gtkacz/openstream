@@ -12,7 +12,7 @@ use brp_codec::{CodecError, FrameConverter, InputImage, RawFrame};
 use brp_net::{AudioSubscription, LiveSource, SubscribeRejected, Subscription};
 use brp_pipeline::{AudioPublisher, LatestSlot, Pacer, Publisher, SlotWait};
 use brp_proto::constants::{IDLE_KEYFRAME_RETRY, MAX_LIVES_PER_PARTICIPANT, MAX_PRESETS_PER_LIVE};
-use brp_proto::{LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
+use brp_proto::{ChromaLayout, LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
 
 use crate::codecs::EncoderFactory;
 use crate::error::RoomError;
@@ -22,6 +22,8 @@ pub type ChangeNotify = Arc<dyn Fn() + Send + Sync>;
 
 type CaptureSlot = Arc<LatestSlot<Arc<CaptureFrame>>>;
 type RawSlot = Arc<LatestSlot<Arc<RawFrame>>>;
+/// What a conversion's output looks like; presets that agree on it share one converter.
+type GroupKey = (u32, u32, ChromaLayout);
 
 /// Delivers each captured frame to every running encoder of one live without copying pixels.
 #[derive(Default)]
@@ -64,8 +66,8 @@ struct Member {
 }
 
 /// Converts one captured frame per tick and shares the immutable result with every subscribed
-/// preset whose output dimensions match this group's — one `SwsConverter`/`FrameConverter` per
-/// distinct (width, height) per live, instead of one per preset. `FrameConverter::convert` lends a
+/// preset whose output dimensions and chroma match this group's — one
+/// `SwsConverter`/`FrameConverter` per distinct `GroupKey` per live, instead of one per preset. `FrameConverter::convert` lends a
 /// mutable scratch buffer the converter reuses on its next call, so a shared borrow can't survive
 /// past that call: this loop clones the converted frame into a fresh `Arc<RawFrame>` immediately,
 /// once per source frame, and hands that immutable clone to every member before converting again.
@@ -175,7 +177,7 @@ fn conversion_loop(group: Arc<ConversionGroup>, mut converter: Box<dyn FrameConv
 
 struct RunningEncoder {
     publisher: Publisher,
-    group_key: (u32, u32),
+    group_key: GroupKey,
     raw_slot: RawSlot,
     idle_since: Option<Instant>,
 }
@@ -191,9 +193,9 @@ struct OwnLive {
     session: Option<Box<dyn CaptureSession>>,
     fan: Arc<CaptureFan>,
     presets: BTreeMap<u32, PresetState>,
-    /// One converter per distinct subscribed (width, height); created on first subscribe, stopped
-    /// once its last member preset stops.
-    groups: BTreeMap<(u32, u32), Arc<ConversionGroup>>,
+    /// One converter per distinct subscribed `GroupKey`; created on first subscribe, stopped once
+    /// its last member preset stops.
+    groups: BTreeMap<GroupKey, Arc<ConversionGroup>>,
 }
 
 struct RunningAudio {
@@ -739,7 +741,7 @@ impl LiveRegistry {
     }
 }
 
-/// Opens (or reuses) the conversion group for `preset`'s output dimensions and starts its encoder
+/// Opens (or reuses) the conversion group for `preset`'s output shape and starts its encoder
 /// and publisher. On encoder failure, a group newly created for this call is torn down immediately:
 /// a preset that fails to subscribe must not leave conversion work running for nobody.
 fn start_preset_encoder(
@@ -751,11 +753,12 @@ fn start_preset_encoder(
     format: PixelFormat,
     preset: &Preset,
 ) -> Result<RunningEncoder, CodecError> {
-    let group_key = (preset.width, preset.height);
+    let group_key = (preset.width, preset.height, preset.quality().chroma());
     let group = match live.groups.get(&group_key) {
         Some(group) => group.clone(),
         None => {
-            let converter = encoders.open_converter(source, format, group_key.0, group_key.1)?;
+            let (width, height, chroma) = group_key;
+            let converter = encoders.open_converter(source, format, width, height, chroma)?;
             let group = ConversionGroup::start(&live.fan, converter);
             live.groups.insert(group_key, group.clone());
             group
@@ -789,7 +792,7 @@ fn start_preset_encoder(
 
 fn stop_encoder(
     fan: &CaptureFan,
-    groups: &mut BTreeMap<(u32, u32), Arc<ConversionGroup>>,
+    groups: &mut BTreeMap<GroupKey, Arc<ConversionGroup>>,
     state: &mut PresetState,
 ) {
     if let Some(running) = state.running.take() {

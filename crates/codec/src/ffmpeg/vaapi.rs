@@ -187,6 +187,12 @@ impl VideoEncoder for VaapiEncoder {
         force_keyframe: bool,
     ) -> Result<Vec<EncodedFrame>, CodecError> {
         frame.validate()?;
+        // `upload` copies `chroma_rows` rows into a half-height NV12 plane.
+        if frame.chroma != brp_proto::ChromaLayout::Half {
+            return Err(CodecError::InvalidFrame(
+                "this encoder only takes 4:2:0 frames".into(),
+            ));
+        }
         if (frame.width, frame.height) != (self.cfg.width, self.cfg.height) {
             return Err(CodecError::InvalidFrame(
                 "encoder and frame dimensions differ".into(),

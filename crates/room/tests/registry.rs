@@ -11,9 +11,12 @@ use brp_capture::{CaptureBackend, CaptureSession, SourceInfo, SourceRequest, Syn
 use brp_codec::fake::FakeDecoder;
 use brp_codec::{AudioEncoder, CodecError, FrameConverter, RawFrame, VideoDecoder, VideoEncoder};
 use brp_net::{LiveSource, SubscribeRejected};
-use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID};
+use brp_proto::constants::{
+    CHROMA_444_PRESET_ID, LOSSLESS_PRESET_ID, MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID,
+};
 use brp_proto::{
-    Codec, CodecParams, EncodedFrame, PixelFormat, Preset, SourceKind, template_presets,
+    ChromaLayout, Codec, CodecParams, EncodedFrame, PixelFormat, Preset, SourceKind,
+    quality_presets, template_presets,
 };
 use brp_room::AudioCaptureState;
 use brp_room::codecs::EncoderFactory;
@@ -540,9 +543,11 @@ impl EncoderFactory for CountingCodecs {
         format: PixelFormat,
         width: u32,
         height: u32,
+        chroma: ChromaLayout,
     ) -> Result<Box<dyn FrameConverter>, CodecError> {
         self.converter_opens.fetch_add(1, Ordering::SeqCst);
-        self.inner.open_converter(source, format, width, height)
+        self.inner
+            .open_converter(source, format, width, height, chroma)
     }
 
     fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError> {
@@ -621,6 +626,39 @@ async fn compatible_presets_share_one_conversion() {
         codecs.converter_opens.load(Ordering::SeqCst),
         1,
         "both presets share the same 32x16 converter"
+    );
+}
+
+#[tokio::test]
+async fn a_full_chroma_preset_does_not_share_a_converter_with_its_half_chroma_twin() {
+    let codecs = Arc::new(CountingCodecs::new());
+    let registry = LiveRegistry::new(
+        codecs.clone(),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let mut presets = template_presets(64, 32, 30, Codec::H264);
+    presets.extend(quality_presets(64, 32, 30, Codec::H264));
+    let live = synthetic_live_with_presets(&registry, "desk", presets).await;
+
+    let mut standard = registry.subscribe(live, SOURCE_PRESET_ID).unwrap();
+    let mut chroma = registry.subscribe(live, CHROMA_444_PRESET_ID).unwrap();
+    let mut lossless = registry.subscribe(live, LOSSLESS_PRESET_ID).unwrap();
+    for subscription in [&mut standard, &mut chroma, &mut lossless] {
+        tokio::time::timeout(Duration::from_secs(2), subscription.frames.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(
+        codecs.converter_opens.load(Ordering::SeqCst),
+        2,
+        "4:4:4 and lossless share one converter; 4:2:0 cannot use it"
     );
 }
 

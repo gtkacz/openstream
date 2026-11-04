@@ -3,7 +3,7 @@
 
 use brp_audio::AudioSelection;
 use brp_proto::constants::{MAX_BITRATE_KBPS, MAX_LIVES_PER_PARTICIPANT, MIN_BITRATE_KBPS};
-use brp_proto::{Codec, LiveInfo, Preset, SourceKind};
+use brp_proto::{Codec, LiveInfo, Preset, SourceKind, VideoQuality};
 use brp_room::{AudioCaptureState, OwnLiveView, PresetView, RoomSnapshot};
 
 use super::applications::selection_summary;
@@ -442,7 +442,8 @@ fn quality_details(
                 toggled = ui.add_enabled(!locked, check).changed();
             },
             |ui| {
-                if let Some(view) = view {
+                // Lossless has no bitrate to choose: it takes what the picture needs.
+                if let Some(view) = view.filter(|v| v.preset.quality() != VideoQuality::Lossless) {
                     bitrate_field(ui, info, &view.preset, state, commands);
                 }
             },

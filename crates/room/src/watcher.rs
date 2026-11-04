@@ -695,14 +695,14 @@ mod tests {
         handle.set_pool(Some(pool.clone()));
 
         // Stands in for `FfmpegDecoder` acquiring a buffer for a decoded frame.
-        let frame = pool.acquire(8, 4, 1);
+        let frame = pool.acquire(brp_proto::ChromaLayout::Half, 8, 4, 1);
         let y_ptr = frame.y.as_ptr();
 
         // Stands in for `RoomView::upload_frames` recycling a frame it actually displayed (not
         // merely one `LatestSlot::put` superseded before display, which is covered separately).
         handle.recycle(frame);
 
-        let next = pool.acquire(8, 4, 2);
+        let next = pool.acquire(brp_proto::ChromaLayout::Half, 8, 4, 2);
         assert_eq!(
             next.y.as_ptr(),
             y_ptr,

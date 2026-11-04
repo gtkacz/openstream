@@ -4,7 +4,7 @@ use crate::ffmpeg::ffi::{
 };
 use crate::raw::{RawFrame, RawFramePool};
 use crate::traits::VideoDecoder;
-use brp_proto::{Codec, CodecParams, EncodedFrame};
+use brp_proto::{ChromaLayout, Codec, CodecParams, EncodedFrame};
 use ffmpeg_sys_next as ff;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -262,9 +262,29 @@ impl VideoDecoder for FfmpegDecoder {
     }
 }
 fn raw_from_avframe(frame: &ff::AVFrame, pool: &RawFramePool) -> Result<RawFrame, CodecError> {
+    let format = frame.format;
+    let is = |candidate: ff::AVPixelFormat| format == candidate as c_int;
+    let semi_planar =
+        is(ff::AVPixelFormat::AV_PIX_FMT_NV12) || is(ff::AVPixelFormat::AV_PIX_FMT_NV24);
+    let chroma = if is(ff::AVPixelFormat::AV_PIX_FMT_NV12)
+        || is(ff::AVPixelFormat::AV_PIX_FMT_YUV420P)
+        || is(ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P)
+    {
+        ChromaLayout::Half
+    } else if is(ff::AVPixelFormat::AV_PIX_FMT_NV24)
+        || is(ff::AVPixelFormat::AV_PIX_FMT_YUV444P)
+        || is(ff::AVPixelFormat::AV_PIX_FMT_YUVJ444P)
+    {
+        ChromaLayout::Full
+    } else {
+        return Err(CodecError::InvalidFrame(format!(
+            "decoder produced unsupported pixel format {format}"
+        )));
+    };
     let (width, height) = (frame.width as u32, frame.height as u32);
-    let mut output = pool.acquire(width, height, frame.pts.max(0) as u64);
+    let mut output = pool.acquire(chroma, width, height, frame.pts.max(0) as u64);
     let rows = output.chroma_rows();
+    let uv_bytes = output.chroma_width() * 2;
     let width = width as usize;
     unsafe {
         for row in 0..height as usize {
@@ -274,31 +294,24 @@ fn raw_from_avframe(frame: &ff::AVFrame, pool: &RawFramePool) -> Result<RawFrame
                 width,
             );
         }
-        if frame.format == ff::AVPixelFormat::AV_PIX_FMT_NV12 as c_int {
+        if semi_planar {
             for row in 0..rows {
                 ptr::copy_nonoverlapping(
                     frame.data[1].add(row * frame.linesize[1] as usize),
                     output.uv.as_mut_ptr().add(row * output.uv_stride),
-                    width,
+                    uv_bytes,
                 );
             }
-        } else if frame.format == ff::AVPixelFormat::AV_PIX_FMT_YUV420P as c_int
-            || frame.format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as c_int
-        {
+        } else {
             for row in 0..rows {
                 let u = frame.data[1].add(row * frame.linesize[1] as usize);
                 let v = frame.data[2].add(row * frame.linesize[2] as usize);
-                let dst = &mut output.uv[row * output.uv_stride..row * output.uv_stride + width];
+                let dst = &mut output.uv[row * output.uv_stride..row * output.uv_stride + uv_bytes];
                 for (index, pair) in dst.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                     pair[0] = *u.add(index);
                     pair[1] = *v.add(index);
                 }
             }
-        } else {
-            return Err(CodecError::InvalidFrame(format!(
-                "decoder produced unsupported pixel format {}",
-                frame.format
-            )));
         }
     }
     Ok(output)

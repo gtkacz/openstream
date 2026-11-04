@@ -3,7 +3,7 @@ use std::ffi::c_int;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use brp_proto::{CodecParams, EncodedFrame};
+use brp_proto::{ChromaLayout, CodecParams, EncodedFrame, VideoQuality};
 use ffmpeg_sys_next as ff;
 
 use crate::error::CodecError;
@@ -17,6 +17,7 @@ use crate::traits::{EncoderConfig, VideoEncoder};
 enum InputLayout {
     Nv12,
     I420,
+    I444,
 }
 
 /// Sum of the `lp` (logical processors) values currently committed to open `libsvtav1` instances
@@ -104,10 +105,10 @@ impl FfmpegEncoder {
         if codec.is_null() {
             return Err(CodecError::EncoderMissing(name));
         }
-        let layout = if name == "libsvtav1" {
-            InputLayout::I420
-        } else {
-            InputLayout::Nv12
+        let layout = match (cfg.quality.chroma(), name) {
+            (ChromaLayout::Full, _) => InputLayout::I444,
+            (ChromaLayout::Half, "libsvtav1") => InputLayout::I420,
+            (ChromaLayout::Half, _) => InputLayout::Nv12,
         };
         // Reserved before the config is built so the claim is committed up front; dropping
         // `software_slot` on any later `?` failure releases it again.
@@ -126,21 +127,26 @@ impl FfmpegEncoder {
                 num: cfg.fps as c_int,
                 den: 1,
             };
-            c.pix_fmt = if layout == InputLayout::Nv12 {
-                ff::AVPixelFormat::AV_PIX_FMT_NV12
-            } else {
-                ff::AVPixelFormat::AV_PIX_FMT_YUV420P
+            c.pix_fmt = match layout {
+                InputLayout::Nv12 => ff::AVPixelFormat::AV_PIX_FMT_NV12,
+                InputLayout::I420 => ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                InputLayout::I444 => ff::AVPixelFormat::AV_PIX_FMT_YUV444P,
             };
             c.bit_rate = i64::from(cfg.bitrate_kbps) * 1000;
             c.rc_buffer_size = (c.bit_rate / i64::from(cfg.fps.max(1))) as c_int;
             c.gop_size = c_int::MAX;
             c.max_b_frames = 0;
             c.flags |= ff::AV_CODEC_FLAG_LOW_DELAY as c_int;
-            if layout == InputLayout::Nv12 {
+            if layout != InputLayout::I420 {
                 c.rc_max_rate = c.bit_rate;
             }
         }
         apply_low_latency_options(name, &ctx, software_lp)?;
+        // Set after the table so it replaces the table's `tune`. NVENC then runs constant QP zero
+        // whatever rate control and bitrate it was also given.
+        if cfg.quality == VideoQuality::Lossless {
+            set_opt(&ctx, "tune", "lossless")?;
+        }
         ctx.open(codec)?;
         let frame = Frame::new()?;
         unsafe {
@@ -188,9 +194,10 @@ impl FfmpegEncoder {
                         );
                     }
                 }
-                InputLayout::I420 => {
+                InputLayout::I420 | InputLayout::I444 => {
+                    let uv_bytes = src.chroma_width() * 2;
                     for row in 0..src.chroma_rows() {
-                        let uv = &src.uv[row * src.uv_stride..row * src.uv_stride + width];
+                        let uv = &src.uv[row * src.uv_stride..row * src.uv_stride + uv_bytes];
                         let u = f.data[1].add(row * f.linesize[1] as usize);
                         let v = f.data[2].add(row * f.linesize[2] as usize);
                         for (i, pair) in uv.as_chunks::<2>().0.iter().enumerate() {
@@ -322,6 +329,11 @@ impl VideoEncoder for FfmpegEncoder {
         if (frame.width, frame.height) != (self.cfg.width, self.cfg.height) {
             return Err(CodecError::InvalidFrame(
                 "encoder and frame dimensions differ".into(),
+            ));
+        }
+        if frame.chroma != self.cfg.quality.chroma() {
+            return Err(CodecError::InvalidFrame(
+                "encoder and frame chroma layouts differ".into(),
             ));
         }
         self.fill_frame(frame)?;

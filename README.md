@@ -88,7 +88,12 @@ launch runs the new version.
 
 In the window, the room rail lists you and every member, with a direct-or-relayed
 badge and their lives; switch on a live to watch it and pick its preset, and hover
-a tile for the preset selector and the stats overlay. Your own lives sit under your
+a tile for the preset selector and the stats overlay. Under "Quality & encoding",
+a publisher can also offer "Source 4:4:4", which keeps full-resolution colour for
+text and thin lines, and "Source lossless". Both need NVENC with H.264 or HEVC; a
+machine without it reports that when a viewer picks one. Lossless means no loss
+after the conversion from RGB to limited-range YUV, and takes as much bandwidth as
+the picture needs. Your own lives sit under your
 name with a frame-rate control, a codec selector, template checkboxes (untick
 Source to cap what viewers can ask for), a bitrate per preset, the measured encode
 rate, and a stop button; Stop sharing in the dock ends every live at once. Below

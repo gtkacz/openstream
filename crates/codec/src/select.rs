@@ -6,7 +6,7 @@ use crate::ffmpeg::decoder::{FfmpegDecoder, HwDecode};
 use crate::ffmpeg::encoder::FfmpegEncoder;
 use crate::ffmpeg::opus::{OpusDecoder, OpusEncoder};
 use crate::traits::{EncoderConfig, VideoDecoder, VideoEncoder};
-use brp_proto::{AudioParams, Codec, CodecParams};
+use brp_proto::{AudioParams, ChromaLayout, Codec, CodecParams};
 
 pub const PROBE_ORDER: &[(&str, Codec)] = &[
     ("hevc_nvenc", Codec::Hevc),
@@ -35,8 +35,18 @@ pub fn is_software_encoder(name: &str) -> bool {
     name == "libsvtav1"
 }
 
+/// Whether the encoder called `name` is worth opening at `chroma`. Of the encoders probed only
+/// NVENC takes planar 4:4:4 and a lossless tune; the rest would fail, or quietly send 4:2:0.
+fn offers(name: &str, chroma: ChromaLayout) -> bool {
+    chroma == ChromaLayout::Half || matches!(name, "hevc_nvenc" | "h264_nvenc")
+}
+
 pub fn open_encoder(cfg: &EncoderConfig) -> Result<Box<dyn VideoEncoder>, CodecError> {
-    for &(name, _) in PROBE_ORDER.iter().filter(|(_, codec)| *codec == cfg.codec) {
+    let chroma = cfg.quality.chroma();
+    for &(name, _) in PROBE_ORDER
+        .iter()
+        .filter(|(name, codec)| *codec == cfg.codec && offers(name, chroma))
+    {
         match open_named(name, cfg) {
             Ok(encoder) => {
                 tracing::info!(encoder = name, codec = ?cfg.codec, "encoder opened");
@@ -45,7 +55,10 @@ pub fn open_encoder(cfg: &EncoderConfig) -> Result<Box<dyn VideoEncoder>, CodecE
             Err(error) => tracing::debug!(encoder = name, error = %error, "encoder unavailable"),
         }
     }
-    Err(CodecError::NoEncoder(cfg.codec))
+    Err(match chroma {
+        ChromaLayout::Half => CodecError::NoEncoder(cfg.codec),
+        ChromaLayout::Full => CodecError::NoFullChromaEncoder(cfg.codec),
+    })
 }
 
 pub fn open_encoder_auto(
@@ -105,13 +118,28 @@ pub fn open_audio_decoder(params: &AudioParams) -> Result<Box<dyn AudioDecoder>,
 
 #[cfg(test)]
 mod tests {
-    use super::PROBE_ORDER;
+    use super::{ChromaLayout, PROBE_ORDER, offers};
 
     fn position(name: &str) -> usize {
         PROBE_ORDER
             .iter()
             .position(|(candidate, _)| *candidate == name)
             .unwrap_or_else(|| panic!("{name} is not in the probe order"))
+    }
+
+    #[test]
+    fn full_chroma_is_only_asked_of_encoders_that_offer_it() {
+        let full: Vec<&str> = PROBE_ORDER
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| offers(name, ChromaLayout::Full))
+            .collect();
+        assert_eq!(full, ["hevc_nvenc", "h264_nvenc"]);
+        assert!(
+            PROBE_ORDER
+                .iter()
+                .all(|(name, _)| offers(name, ChromaLayout::Half))
+        );
     }
 
     #[test]

@@ -37,6 +37,11 @@ pub const NICKNAME_MAX_LEN: usize = 32;
 /// QUIC application close code the media server uses for callers outside the room.
 pub const REFUSED_NOT_MEMBER: u32 = 1;
 pub const SOURCE_PRESET_ID: u32 = 1;
+/// Stable ids for the full-chroma presets, after the ids `TEMPLATE_HEIGHTS` takes. A preset's
+/// quality travels as its id because postcard has no optional fields: a new `Preset` field would
+/// make every older peer fail to decode the whole presence.
+pub const CHROMA_444_PRESET_ID: u32 = 5;
+pub const LOSSLESS_PRESET_ID: u32 = 6;
 /// Compositor capture timestamps jitter by well under a millisecond; a frame this close to its
 /// slot is treated as on time rather than skipped.
 pub const PACER_JITTER_TOLERANCE: Duration = Duration::from_millis(1);

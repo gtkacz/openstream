@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use brp_codec::RawFrame;
+use brp_proto::ChromaLayout;
 use bytemuck::{Pod, Zeroable};
 use iroh::PublicKey;
 use wgpu::util::DeviceExt;
@@ -29,6 +30,7 @@ struct Fit {
 struct Tile {
     width: u32,
     height: u32,
+    chroma: ChromaLayout,
     y: wgpu::Texture,
     uv: wgpu::Texture,
     fit: wgpu::Buffer,
@@ -147,12 +149,11 @@ impl TileRenderer {
         key: TileKey,
         frame: &RawFrame,
     ) {
-        let needs_alloc = self
-            .tiles
-            .get(&key)
-            .is_none_or(|t| (t.width, t.height) != (frame.width, frame.height));
+        let needs_alloc = self.tiles.get(&key).is_none_or(|t| {
+            (t.width, t.height, t.chroma) != (frame.width, frame.height, frame.chroma)
+        });
         if needs_alloc {
-            let tile = self.allocate(device, frame.width, frame.height);
+            let tile = self.allocate(device, frame.width, frame.height, frame.chroma);
             self.tiles.insert(key, tile);
         }
         let Some(tile) = self.tiles.get(&key) else {
@@ -187,7 +188,7 @@ impl TileRenderer {
                 rows_per_image: Some(frame.chroma_rows() as u32),
             },
             wgpu::Extent3d {
-                width: frame.width / 2,
+                width: frame.chroma_width() as u32,
                 height: frame.chroma_rows() as u32,
                 depth_or_array_layers: 1,
             },
@@ -233,7 +234,13 @@ impl TileRenderer {
         }
     }
 
-    fn allocate(&self, device: &wgpu::Device, width: u32, height: u32) -> Tile {
+    fn allocate(
+        &self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        chroma: ChromaLayout,
+    ) -> Tile {
         let make = |label, w, h, format| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -251,10 +258,15 @@ impl TileRenderer {
             })
         };
         let y = make("nv12-y", width, height, wgpu::TextureFormat::R8Unorm);
+        // The shader samples in normalised coordinates, so a full-size UV plane needs nothing else.
+        let (uv_width, uv_height) = match chroma {
+            ChromaLayout::Half => (width / 2, height.div_ceil(2)),
+            ChromaLayout::Full => (width, height),
+        };
         let uv = make(
             "nv12-uv",
-            width / 2,
-            height.div_ceil(2),
+            uv_width,
+            uv_height,
             wgpu::TextureFormat::Rg8Unorm,
         );
         let fit = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -293,6 +305,7 @@ impl TileRenderer {
         Tile {
             width,
             height,
+            chroma,
             y,
             uv,
             fit,

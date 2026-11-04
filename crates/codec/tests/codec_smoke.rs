@@ -1,8 +1,9 @@
 //! Gated checks for the codecs installed on the host.
 
+use brp_codec::ffmpeg::{FfmpegDecoder, HwDecode};
 use brp_codec::select::{open_encoder, open_encoder_auto};
-use brp_codec::{CodecError, EncoderConfig, RawFrame, VideoEncoder};
-use brp_proto::Codec;
+use brp_codec::{CodecError, EncoderConfig, RawFrame, VideoDecoder, VideoEncoder};
+use brp_proto::{ChromaLayout, Codec, VideoQuality};
 
 fn cfg(codec: Codec) -> EncoderConfig {
     EncoderConfig {
@@ -11,6 +12,7 @@ fn cfg(codec: Codec) -> EncoderConfig {
         fps: 30,
         bitrate_kbps: 2_000,
         codec,
+        quality: brp_proto::VideoQuality::Standard,
     }
 }
 fn gated() -> bool {
@@ -166,4 +168,115 @@ fn macos_encodes_and_decodes_hevc_and_h264_on_videotoolbox() {
         eprintln!("{expected}: {decoded} frames decoded on videotoolbox");
         assert!(decoded >= 8, "{expected} decoded only {decoded} frames");
     }
+}
+
+/// A frame whose chroma changes every column, so a round trip that averaged it would show.
+fn colourful(index: u64) -> RawFrame {
+    let mut frame = RawFrame::black_with(ChromaLayout::Full, 320, 240, index * 33_333);
+    for row in 0..240 {
+        for column in 0..320 {
+            let shift = column + row + index as usize;
+            frame.y[row * 320 + column] = 16 + (shift % 200) as u8;
+            frame.uv[row * 640 + column * 2] = if column % 2 == 0 { 60 } else { 200 };
+            frame.uv[row * 640 + column * 2 + 1] = if column % 2 == 0 { 200 } else { 60 };
+        }
+    }
+    frame
+}
+
+fn round_trip(codec: Codec, quality: VideoQuality, hw: HwDecode) -> Option<(RawFrame, RawFrame)> {
+    let config = EncoderConfig {
+        quality,
+        ..cfg(codec)
+    };
+    let mut encoder = match open_encoder(&config) {
+        Ok(encoder) => encoder,
+        Err(CodecError::NoFullChromaEncoder(found)) => {
+            assert_eq!(found, codec);
+            return None;
+        }
+        Err(error) => panic!("unexpected error {error}"),
+    };
+    let mut decoder = FfmpegDecoder::open(&encoder.params(), hw).unwrap();
+    let mut sent = Vec::new();
+    let mut received = Vec::new();
+    for index in 0..10 {
+        let frame = colourful(index);
+        for packet in encoder.encode(&frame, index == 0).unwrap() {
+            received.extend(decoder.decode(&packet).unwrap());
+        }
+        sent.push(frame);
+    }
+    let last = received.pop()?;
+    let matching = sent
+        .into_iter()
+        .find(|frame| frame.capture_ts_us == last.capture_ts_us)
+        .expect("the decoder only reports timestamps it was given");
+    Some((matching, last))
+}
+
+#[test]
+fn full_chroma_survives_the_encoder_and_decoder() {
+    if !gated() {
+        return;
+    }
+    for codec in [Codec::Hevc, Codec::H264] {
+        let Some((sent, got)) = round_trip(codec, VideoQuality::Chroma444, HwDecode::Software)
+        else {
+            eprintln!("{codec:?}: no 4:4:4 encoder here");
+            continue;
+        };
+        assert_eq!(got.chroma, ChromaLayout::Full, "{codec:?}");
+        got.validate().unwrap();
+        let (u_even, u_odd) = (got.uv[0], got.uv[2]);
+        assert!(
+            u_even < 110 && u_odd > 150,
+            "{codec:?}: neighbouring columns must keep their own chroma, got {u_even} and {u_odd}"
+        );
+        assert_eq!(sent.uv.len(), got.uv.len());
+    }
+}
+
+#[test]
+fn lossless_returns_the_exact_samples_on_every_decode_path() {
+    if !gated() {
+        return;
+    }
+    for codec in [Codec::Hevc, Codec::H264] {
+        for hw in [HwDecode::Software, HwDecode::Auto] {
+            let Some((sent, got)) = round_trip(codec, VideoQuality::Lossless, hw) else {
+                eprintln!("{codec:?}: no lossless encoder here");
+                continue;
+            };
+            assert_eq!(got.chroma, ChromaLayout::Full, "{codec:?} {hw:?}");
+            assert!(got.y == sent.y, "{codec:?} {hw:?}: luma differs");
+            assert!(got.uv == sent.uv, "{codec:?} {hw:?}: chroma differs");
+        }
+    }
+}
+
+#[test]
+fn an_encoder_refuses_a_frame_of_the_wrong_chroma() {
+    if !gated() {
+        return;
+    }
+    let Ok(mut encoder) = open_encoder(&cfg(Codec::H264)) else {
+        return;
+    };
+    assert!(matches!(
+        encoder.encode(&colourful(0), false),
+        Err(CodecError::InvalidFrame(_))
+    ));
+}
+
+#[test]
+fn av1_at_full_chroma_says_so_instead_of_falling_back() {
+    let config = EncoderConfig {
+        quality: VideoQuality::Chroma444,
+        ..cfg(Codec::Av1)
+    };
+    assert!(matches!(
+        open_encoder(&config),
+        Err(CodecError::NoFullChromaEncoder(Codec::Av1))
+    ));
 }

@@ -8,17 +8,19 @@ use brp_codec::{
     AudioDecoder, AudioEncoder, CodecError, EncoderConfig, FrameConverter, VideoDecoder,
     VideoEncoder, open_audio_decoder, open_audio_encoder, open_decoder, open_encoder,
 };
-use brp_proto::{AudioParams, Codec, CodecParams, PixelFormat, Preset};
+use brp_proto::{AudioParams, ChromaLayout, Codec, CodecParams, PixelFormat, Preset, VideoQuality};
 
 pub trait EncoderFactory: Send + Sync + 'static {
     /// Builds the converter a group of subscribed presets shares: every preset whose output
-    /// `width`/`height` matches converts through this one instance instead of each opening its own.
+    /// `width`/`height` and chroma match converts through this one instance instead of each opening
+    /// its own.
     fn open_converter(
         &self,
         source: SourceInfo,
         source_format: PixelFormat,
         width: u32,
         height: u32,
+        chroma: ChromaLayout,
     ) -> Result<Box<dyn FrameConverter>, CodecError>;
 
     /// Opens the encoder for one preset. Always per-preset: fps, bitrate, and codec can differ even
@@ -51,6 +53,7 @@ fn config_for(preset: &Preset) -> EncoderConfig {
         fps: preset.fps,
         bitrate_kbps: preset.bitrate_kbps,
         codec: preset.codec,
+        quality: preset.quality(),
     }
 }
 
@@ -68,6 +71,7 @@ impl EncoderFactory for FfmpegCodecs {
         source_format: PixelFormat,
         width: u32,
         height: u32,
+        chroma: ChromaLayout,
     ) -> Result<Box<dyn FrameConverter>, CodecError> {
         Ok(Box::new(SwsConverter::new(
             source.width,
@@ -75,6 +79,7 @@ impl EncoderFactory for FfmpegCodecs {
             source_format,
             width,
             height,
+            chroma,
         )?))
     }
 
@@ -90,6 +95,7 @@ impl EncoderFactory for FfmpegCodecs {
                 fps: 30,
                 bitrate_kbps: 1_000,
                 codec: Codec::Hevc,
+                quality: VideoQuality::Standard,
             };
             brp_codec::open_encoder_auto(probe, None)
                 .map(|e| e.params().codec)
@@ -132,8 +138,9 @@ pub mod fake {
             _format: PixelFormat,
             width: u32,
             height: u32,
+            chroma: ChromaLayout,
         ) -> Result<Box<dyn FrameConverter>, CodecError> {
-            Ok(Box::new(SolidConverter::new(width, height)))
+            Ok(Box::new(SolidConverter::with_chroma(chroma, width, height)))
         }
 
         fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError> {

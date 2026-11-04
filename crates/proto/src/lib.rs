@@ -15,9 +15,9 @@ pub use error::ProtoError;
 pub use frame::{EncodedFrame, FrameHeader, FrameKind};
 pub use messages::{
     AudioParams, Codec, CodecParams, Preset, PresetError, PublisherMessage, SourceKind,
-    ViewerMessage, decode, encode,
+    VideoQuality, ViewerMessage, decode, encode,
 };
-pub use pixel::PixelFormat;
+pub use pixel::{ChromaLayout, PixelFormat};
 pub use presence::{LiveInfo, Presence, Signed};
-pub use templates::template_presets;
+pub use templates::{quality_presets, template_presets};
 pub use ticket::RoomTicket;
