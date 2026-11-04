@@ -9,7 +9,8 @@ URL schemes, wire protocols, and release machinery.
 A control room under deep water: exact, calm, quick. Live video is the richest thing on screen, so
 tiles sit on a black canvas and everything else stays in dark sea tones. The one hue is sky blue
 (`#5CC8FF`): it marks a live signal, the primary action, and whatever is switched on or focused.
-Amber and red mean warnings and errors. No glows, glass, or decorative gradients.
+Amber and red mean warnings and errors. No glows, glass, or decorative gradients, with one exception:
+the start wall dissolves toward the form, because a hard edge beside the form reads as a mistake.
 
 Every window is one ground (`#0A1017`) with tone steps for depth, and lines only between the rail,
 the dock, and the canvas. Spacing sits on a 4-point grid. Main controls are 36 points tall, with
@@ -46,11 +47,9 @@ the S. Files and how to regenerate them: [crates/app/assets/icon](crates/app/ass
 
 ## Layout
 
-- **Start.** The brand, the form, the diagram, and the Settings button share one column of at most
-  1200 points, so they stay on two common edges on a wide window. The form and the diagram are
-  centred on the same axis. At 960 points and wider, the diagram shows what a room is: one picture on
-  everyone's screen, joined directly or through a relay. The picture is the mark itself, and the
-  viewers end on the sharer's edges.
+- **Start.** The brand, the form, and the Settings button share one column of at most 1200 points, so
+  they stay on two common edges on a wide window. At 960 points and wider, a wall of still frames
+  runs from the form's gap to the window's top, right, and bottom edges, passing under Settings.
 - **Room.** The rail lists everyone, you first, with the streams they offer; your own streams carry
   their controls there, in the same shape as everyone else's. The dock holds what you do to the
   room: share, audio, upload, mute, Settings. Sharing no longer costs the video any height.
@@ -79,10 +78,11 @@ the S. Files and how to regenerate them: [crates/app/assets/icon](crates/app/ass
   slides up over the bottom of the video, which keeps playing above it. A sheet is only as tall as
   what it holds, up to 60% of the window, past which it scrolls.
 - **Signature.** A small line between two nodes says how a person's video reaches you: straight for
-  direct, a node in the middle for relayed, dashes while the path is unknown. The rail, the start
-  diagram, and a tile waiting for its video draw it with one function.
-- **Start diagram.** It answers the form. The name being typed is on the screen that person will
-  have, ringed in the accent: the sharer's, until an invite in the form makes them a viewer.
+  direct, a node in the middle for relayed, dashes while the path is unknown. The rail and a tile
+  waiting for its video draw it with one function.
+- **Start wall.** Frames of the things people share, tilted in perspective, say what the product is
+  for. It is atmosphere rather than a control, so clicking a tile does nothing. The stills are embedded
+  and are not covered by the MIT licence: see [crates/app/assets/stills](crates/app/assets/stills/README.md).
 
 ## Alignment
 
@@ -133,11 +133,17 @@ thrown. No input is ever locked out for an animation to finish.
 - **The connection line.** A path that resolves is watched doing it: the dashes close into a line and
   a relay's node grows out of it. A tile waiting for video shows the same line with a pulse crossing
   it from the publisher, blue while connecting and amber while reconnecting.
+- **The start wall.** Columns drift at their own speeds in alternating directions. Hovering a tile
+  lifts and brightens it and pauses its column, and the wall leans slightly toward the pointer. Each
+  still fades in as it finishes loading, and all of them are released when a room opens.
 - **At rest, nothing moves.** A settled spring asks for no frames, so an idle window sleeps. Pulses
-  and spinners run only while something is in flight, capped at 20 frames a second.
+  and spinners run only while something is in flight, capped at 20 frames a second. The one standing
+  motion is the start wall, which drifts at about 60 frames a second, only while the window has
+  focus, and settles to a stop without it.
 
-egui has no reduced-motion signal, so travel is kept to a few points everywhere. Reading the
-operating system's setting directly is on the [roadmap](docs/ROADMAP.md).
+egui has no reduced-motion signal, so travel is kept to a few points everywhere except the start wall,
+which reads the operating system's setting itself and stays still when asked. Applying that setting
+to every other spring is on the [roadmap](docs/ROADMAP.md).
 
 ## References
 

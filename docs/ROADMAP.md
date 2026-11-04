@@ -10,13 +10,15 @@ it was deferred rather than rejected.
 
 - **Why:** `DESIGN.md` keeps travel to a few points everywhere because egui exposes no signal. That
   limits the problem without solving it for someone who needs motion gone.
-- **How:** read the setting directly: `SPI_GETCLIENTAREAANIMATION` on Windows, and on Linux
-  `org.gnome.desktop.interface enable-animations`, plus the desktop portal's setting if it offers one.
-  Check what the portal exposes before relying on it.
+- **How:** reuse `crates/app/src/reduced_motion.rs`, which only the start wall uses so far. It reads
+  `SPI_GETCLIENTAREAANIMATION` on Windows. On Linux it reads the desktop portal's
+  `org.freedesktop.appearance reduced-motion`, then `org.gnome.desktop.interface enable-animations`.
+  It reads once per launch. KDE's portal returns both keys, but whether KDE's animation setting
+  changes them is untested; if it does not, add `org.kde.kdeglobals.KDE AnimationDurationFactor`.
 - **Where:** every spring goes through `drive` in `crates/app/src/ui/motion.rs`, so there is one place
   to apply it. `flowing_rect` would return its target and `rise` would return nothing, while opacity
   changes stay, because reduced motion means gentler rather than none.
-- **Size:** small, plus the platform lookups.
+- **Size:** small.
 - **Done when:** with the setting on, a tile and a dialog arrive by fading with no travel, and a test
   holds it through a stubbed signal. Check on Windows and on a Linux desktop.
 
