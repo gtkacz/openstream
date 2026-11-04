@@ -20,6 +20,8 @@ pub const PROBE_ORDER: &[(&str, Codec)] = &[
     ("av1_qsv", Codec::Av1),
     ("hevc_mf", Codec::Hevc),
     ("h264_mf", Codec::H264),
+    ("hevc_videotoolbox", Codec::Hevc),
+    ("h264_videotoolbox", Codec::H264),
     ("hevc_vaapi", Codec::Hevc),
     ("h264_vaapi", Codec::H264),
     ("av1_vaapi", Codec::Av1),
@@ -102,6 +104,15 @@ mod tests {
             .iter()
             .position(|(candidate, _)| *candidate == name)
             .unwrap_or_else(|| panic!("{name} is not in the probe order"))
+    }
+
+    #[test]
+    fn videotoolbox_is_probed_after_media_foundation_and_before_the_software_fallback() {
+        assert!(position("h264_mf") < position("hevc_videotoolbox"));
+        assert!(position("hevc_videotoolbox") < position("h264_videotoolbox"));
+        assert!(position("h264_videotoolbox") < position("libsvtav1"));
+        assert!(!super::is_software_encoder("hevc_videotoolbox"));
+        assert!(!super::is_software_encoder("h264_videotoolbox"));
     }
 
     #[test]
