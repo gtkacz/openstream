@@ -1,6 +1,7 @@
 //! Where encoders and decoders come from. The room only knows these traits, so tests swap in fakes.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use brp_capture::SourceInfo;
 use brp_codec::ffmpeg::SwsConverter;
@@ -68,7 +69,7 @@ fn config_for(preset: &Preset) -> EncoderConfig {
 #[derive(Debug, Default)]
 pub struct FfmpegCodecs {
     probed_codec: OnceLock<Codec>,
-    probed_full_chroma: OnceLock<bool>,
+    full_chroma_confirmed: AtomicBool,
 }
 
 impl EncoderFactory for FfmpegCodecs {
@@ -111,19 +112,24 @@ impl EncoderFactory for FfmpegCodecs {
     }
 
     fn offers_full_chroma(&self) -> bool {
-        *self.probed_full_chroma.get_or_init(|| {
-            [Codec::Hevc, Codec::H264].into_iter().any(|codec| {
-                open_encoder(&EncoderConfig {
-                    width: PROBE_WIDTH,
-                    height: PROBE_HEIGHT,
-                    fps: 30,
-                    bitrate_kbps: 1_000,
-                    codec,
-                    quality: VideoQuality::Chroma444,
-                })
-                .is_ok()
+        // Only a yes is remembered: a no can be a passing shortage of NVENC sessions, and asking
+        // again costs one failed open per share.
+        if self.full_chroma_confirmed.load(Ordering::Relaxed) {
+            return true;
+        }
+        let offered = [Codec::Hevc, Codec::H264].into_iter().any(|codec| {
+            open_encoder(&EncoderConfig {
+                width: PROBE_WIDTH,
+                height: PROBE_HEIGHT,
+                fps: 30,
+                bitrate_kbps: 1_000,
+                codec,
+                quality: VideoQuality::Chroma444,
             })
-        })
+            .is_ok()
+        });
+        self.full_chroma_confirmed.store(offered, Ordering::Relaxed);
+        offered
     }
 
     fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
