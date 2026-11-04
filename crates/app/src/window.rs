@@ -29,9 +29,9 @@ use crate::link::{LinkRoute, new_window_args, route_link};
 use crate::popouts::PopOuts;
 use crate::relaunch::Relaunch;
 use crate::render::GpuContext;
-use crate::render::grid::{self, PixelRect};
+use crate::render::grid;
 use crate::render::surface::WindowSurface;
-use crate::render::tiles::{TileKey, TileRenderer};
+use crate::render::tiles::{TileKey, TilePlacement, TileRenderer};
 use crate::render::ui::UiFrame;
 use crate::repaint::RepaintSchedule;
 use crate::room_view::RoomView;
@@ -490,6 +490,10 @@ impl App {
         });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
         let presented = present(gpu, tiles, main, &mut ui_frame, &placements);
+        if !self.state.gone_tiles.is_empty() {
+            let gone = std::mem::take(&mut self.state.gone_tiles);
+            tiles.retain(|key| !gone.contains(key));
+        }
         let repaint_delay = ui_frame.repaint_delay;
         if repaint_delay.is_zero() {
             if presented {
@@ -946,16 +950,24 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
-/// The egui-point rects of one pass as pixel viewports on a surface of `size`.
+/// The egui-point rects of one pass as pixel viewports on a surface of `size`. Leaving tiles go
+/// first, which draws them under the neighbours moving into their space.
 fn pixel_placements(
     output: &UiOutput,
     pixels_per_point: f32,
     size: (u32, u32),
-) -> Vec<(TileKey, PixelRect)> {
+) -> Vec<TilePlacement> {
+    let pixels = |rect| grid::to_pixels(rect, pixels_per_point, size);
     output
-        .tile_rects
+        .leaving_tiles
         .iter()
-        .map(|(key, rect)| (*key, grid::to_pixels(*rect, pixels_per_point, size)))
+        .map(|(key, rect, shown)| (*key, pixels(*rect), *shown))
+        .chain(
+            output
+                .tile_rects
+                .iter()
+                .map(|(key, rect)| (*key, pixels(*rect), 1.0)),
+        )
         .collect()
 }
 
@@ -968,7 +980,7 @@ fn present(
     tiles: &TileRenderer,
     surface: &mut WindowSurface,
     ui_frame: &mut UiFrame,
-    placements: &[(TileKey, PixelRect)],
+    placements: &[TilePlacement],
 ) -> bool {
     let Some(texture) = surface.acquire() else {
         // The frame's texture deltas must still be applied and freed or they assert on drop.

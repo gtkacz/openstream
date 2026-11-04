@@ -35,6 +35,8 @@ pub struct UiOutput {
     pub update_clicked: bool,
     /// Where the video renderer draws each watched live, in egui points.
     pub tile_rects: Vec<(TileKey, egui::Rect)>,
+    /// Tiles on their way out: where they stand and how shown they still are.
+    pub leaving_tiles: Vec<(TileKey, egui::Rect, f32)>,
 }
 
 /// Panels are declared outermost first; the central panel takes what remains.
@@ -76,9 +78,10 @@ pub fn draw(
     if compact {
         compact_sheet(ui, snapshot, ticket, state, &mut commands);
     }
-    let tile_rects = tiles::draw(
+    let grid = tiles::draw(
         ui,
         snapshot,
+        ticket,
         state,
         popped,
         &mut commands,
@@ -90,11 +93,14 @@ pub fn draw(
         window_commands,
         open_settings,
         update_clicked,
-        tile_rects,
+        tile_rects: grid.placements,
+        leaving_tiles: grid.leaving,
     }
 }
 
 /// Slides up over the bottom of the video, which keeps playing above it while a stream is chosen.
+/// It is only as tall as what it holds, because any more would come out of the video, up to a limit
+/// past which what it holds scrolls.
 fn compact_sheet(
     ui: &mut egui::Ui,
     snapshot: &RoomSnapshot,
@@ -102,7 +108,7 @@ fn compact_sheet(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    let height = (ui.ctx().content_rect().height() * 0.6).max(160.0);
+    let limit = (ui.ctx().content_rect().height() * 0.6).max(160.0);
     // Sized by a spring rather than slid, so the video above tracks the sheet's edge on every
     // frame, and a second tap reverses it from wherever it has reached.
     let shown = motion::follow(
@@ -114,13 +120,33 @@ fn compact_sheet(
     if shown <= 0.0 {
         return;
     }
-    egui::Panel::bottom("sheet")
+    let measured_id = egui::Id::new(("sheet-content", state.sheet));
+    let measured = ui.ctx().data(|data| data.get_temp::<f32>(measured_id));
+    // Nothing to ease from until the first measure: starting at the limit would shrink on opening.
+    let height = measured.map_or(limit, |content| {
+        motion::glide(
+            ui.ctx(),
+            egui::Id::new("sheet-height"),
+            content.min(limit),
+            motion::SURFACE,
+        )
+    });
+    let margins = theme::rail().total_margin().sum().y;
+    let content = egui::Panel::bottom("sheet")
         .exact_size(height * shown)
         .frame(theme::rail())
         .show(ui, |ui| match state.sheet {
             state::CompactSheet::Room => members::contents(ui, snapshot, ticket, state, commands),
             state::CompactSheet::Share => own_lives::share_sheet(ui, snapshot, state, commands),
-        });
+        })
+        .inner
+        + margins;
+    if measured.is_none_or(|known| (known - content).abs() > 0.5) {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(measured_id, content));
+        ui.ctx()
+            .request_discard("the sheet's contents changed height");
+    }
 }
 
 /// A volume slider with a mute toggle. Returns the new gain when the user changed it. Mute sets
@@ -141,7 +167,12 @@ pub fn volume_control(
         if theme::icon_toggle(ui, &mut muted, glyph, "Mute").changed() {
             value = toggled_gain(muted);
         }
-        ui.add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(false));
+        ui.scope(|ui| {
+            // The thumb is sized from the row's height, which is a control's and far too tall for it.
+            ui.spacing_mut().interact_size.y = 18.0;
+            ui.visuals_mut().selection.bg_fill = theme::ACCENT;
+            ui.add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(false));
+        });
     });
     (value != gain).then_some(value)
 }

@@ -106,43 +106,121 @@ pub fn arrive(ctx: &Context, id: Id, response: f32) -> f32 {
     drive(ctx, id, 1.0, 0.0, response, true)
 }
 
+/// Goes down to nothing from fully shown, each time something starts leaving.
+pub fn leave(ctx: &Context, id: Id, response: f32) -> f32 {
+    drive(ctx, id, 0.0, 1.0, response, true)
+}
+
+/// Travels to `target` from wherever it has got to, for a position rather than an on/off state.
+pub fn glide(ctx: &Context, id: Id, target: f32, response: f32) -> f32 {
+    drive(ctx, id, target, target, response, false)
+}
+
 /// Goes down fast enough to land on the frame of the press, and comes back slowly enough to be seen.
 pub fn press(ctx: &Context, id: Id, down: bool) -> f32 {
     follow(ctx, id, down, if down { PRESS_DOWN } else { PRESS_UP })
 }
 
-/// Moves a rect toward `target` when its place in `area` changes. Springing in fractions of the
-/// area means a resized window or a sliding sheet moves it 1:1, with no lag behind the pointer. X
-/// and Y run independently, and a new rect grows out of its own place.
-pub fn flowing_rect(ctx: &Context, id: Id, area: Rect, target: Rect) -> Rect {
-    const GROW_FROM: f32 = 0.03;
+/// How much smaller than its place a tile is on the first frame of arriving and the last of leaving.
+pub const GROW_FROM: f32 = 0.03;
+
+#[derive(Clone, Copy)]
+struct Flow {
+    place: Id,
+    target: Rect,
+    frame: u64,
+}
+
+/// A rect at `target` plus an offset that decays to nothing, on four independent edges. Only a change
+/// of `place` adds to the offset, which keeps the rect where it is on screen and lets it travel from
+/// there, at the velocity it already has. Any other change of `target`, such as a resized window or a
+/// sliding sheet, moves it 1:1 with no lag behind the pointer. A new rect starts at `origin`, or
+/// grows out of its own place. Offsets are held in fractions of `area`, the unit rest is judged in.
+pub fn flowing_rect(
+    ctx: &Context,
+    id: Id,
+    area: Rect,
+    target: Rect,
+    place: Id,
+    origin: Option<Rect>,
+) -> Rect {
     if area.width() <= 0.0 || area.height() <= 0.0 {
         return target;
     }
-    let start = target.shrink2(target.size() * GROW_FROM);
-    let fraction = |at: f32, from: f32, span: f32| (at - from) / span;
-    let edge = |salt: &str, to: f32, from: f32, origin: f32, span: f32| {
-        let value = drive(
-            ctx,
-            id.with(salt),
-            fraction(to, origin, span),
-            fraction(from, origin, span),
-            REFLOW,
-            true,
+    let flow_id = id.with("flow");
+    let frame = ctx.cumulative_frame_nr();
+    let stored = ctx.data(|data| data.get_temp::<Flow>(flow_id));
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            flow_id,
+            Flow {
+                place,
+                target,
+                frame,
+            },
         );
-        origin + value * span
+    });
+    // Frames count only while the window draws, so a gap means this rect was not on screen.
+    let moved_from = stored
+        .filter(|flow| frame <= flow.frame + 1 && flow.place != place)
+        .map(|flow| flow.target);
+    let start = origin.unwrap_or_else(|| target.shrink2(target.size() * GROW_FROM));
+    let edge = |salt: &str, to: f32, from: f32, was: Option<f32>, span: f32| {
+        let spring = id.with(salt);
+        if let Some(was) = was {
+            shift(ctx, spring, (was - to) / span);
+        }
+        to + drive(ctx, spring, 0.0, (from - to) / span, REFLOW, true) * span
     };
-    let (x, y, w, h) = (area.min.x, area.min.y, area.width(), area.height());
+    let (w, h) = (area.width(), area.height());
     Rect::from_min_max(
         egui::pos2(
-            edge("left", target.min.x, start.min.x, x, w),
-            edge("top", target.min.y, start.min.y, y, h),
+            edge(
+                "left",
+                target.min.x,
+                start.min.x,
+                moved_from.map(|r| r.min.x),
+                w,
+            ),
+            edge(
+                "top",
+                target.min.y,
+                start.min.y,
+                moved_from.map(|r| r.min.y),
+                h,
+            ),
         ),
         egui::pos2(
-            edge("right", target.max.x, start.max.x, x, w),
-            edge("bottom", target.max.y, start.max.y, y, h),
+            edge(
+                "right",
+                target.max.x,
+                start.max.x,
+                moved_from.map(|r| r.max.x),
+                w,
+            ),
+            edge(
+                "bottom",
+                target.max.y,
+                start.max.y,
+                moved_from.map(|r| r.max.y),
+                h,
+            ),
         ),
     )
+}
+
+fn shift(ctx: &Context, id: Id, by: f32) {
+    ctx.data_mut(|data| {
+        if let Some(spring) = data.get_temp::<Spring>(id) {
+            data.insert_temp(
+                id,
+                Spring {
+                    value: spring.value + by,
+                    ..spring
+                },
+            );
+        }
+    });
 }
 
 /// Draws `add`, growing its height and fading it in the first time it appears, so what is below
@@ -152,9 +230,30 @@ pub fn reveal<R>(
     salt: impl std::hash::Hash + std::fmt::Debug + Copy,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    let id = ui.id().with(("reveal", salt));
-    let shown = arrive(ui.ctx(), id, SURFACE);
-    let measured_id = id.with("height");
+    let shown = arrive(ui.ctx(), ui.id().with(("reveal", salt)), SURFACE);
+    grow(ui, salt, shown, true, add)
+}
+
+/// Like [`reveal`], for something that opens and closes: its height and opacity follow `open` from
+/// wherever they have got to. Draws nothing once fully shut.
+pub fn unfold<R>(
+    ui: &mut Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug + Copy,
+    open: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let shown = follow(ui.ctx(), ui.id().with(("reveal", salt)), open, SURFACE);
+    (shown > 0.0).then(|| grow(ui, salt, shown, open, add))
+}
+
+fn grow<R>(
+    ui: &mut Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug + Copy,
+    shown: f32,
+    remeasure: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let measured_id = ui.id().with(("reveal", salt)).with("height");
     let measured = ui
         .ctx()
         .data(|data| data.get_temp::<f32>(measured_id))
@@ -173,7 +272,9 @@ pub fn reveal<R>(
         child.set_opacity(shown);
     }
     let output = add(&mut child);
-    let height = child.min_rect().height();
+    let content = child.min_rect().height();
+    // While shutting, what it holds may already be gone; the height it had is what has to ease away.
+    let height = if remeasure { content } else { measured };
     ui.ctx()
         .data_mut(|data| data.insert_temp(measured_id, height));
     ui.advance_cursor_after_rect(Rect::from_min_size(origin, vec2(width, height * shown)));
@@ -256,7 +357,7 @@ mod tests {
         assert!(spring.value.is_finite() && (spring.value - 1.0).abs() < 0.001);
     }
 
-    fn pass(ctx: &Context, time: f64, read: impl Fn(&Context) -> f32) -> (f32, bool) {
+    fn pass(ctx: &Context, time: f64, mut read: impl FnMut(&Context) -> f32) -> (f32, bool) {
         let mut value = 0.0;
         let mut output = ctx.run_ui(
             egui::RawInput {
@@ -292,6 +393,101 @@ mod tests {
         pass(&ctx, 0.0, |ctx| follow(ctx, id, false, SURFACE));
         let (first, _) = pass(&ctx, 600.0, |ctx| follow(ctx, id, true, SURFACE));
         assert!(first > 0.0 && first < 0.2, "first frame reached {first}");
+    }
+
+    fn flowing(ctx: &Context, time: f64, target: Rect, place: &str) -> (Rect, bool) {
+        let area = Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1000.0, 800.0));
+        let mut rect = target;
+        let (_, moving) = pass(ctx, time, |ctx| {
+            rect = flowing_rect(ctx, Id::new("tile"), area, target, Id::new(place), None);
+            0.0
+        });
+        (rect, moving)
+    }
+
+    fn at(left: f32, width: f32) -> Rect {
+        Rect::from_min_size(egui::pos2(left, 0.0), vec2(width, width * 0.5))
+    }
+
+    fn settled_at(ctx: &Context, target: Rect, place: &str) -> f64 {
+        for frame in 0..120 {
+            flowing(ctx, f64::from(frame) / 60.0, target, place);
+        }
+        2.0
+    }
+
+    #[test]
+    fn a_flowing_rect_grows_into_a_new_place_and_then_rests_exactly_on_it() {
+        let ctx = Context::default();
+        let target = at(100.0, 400.0);
+        let (first, _) = flowing(&ctx, 0.0, target, "a");
+        assert!(first.width() < target.width() && first.width() > target.width() * 0.9);
+        let time = settled_at(&ctx, target, "a");
+        assert_eq!(flowing(&ctx, time, target, "a"), (target, false));
+    }
+
+    #[test]
+    fn a_target_that_moves_within_its_place_is_followed_on_the_same_frame() {
+        let ctx = Context::default();
+        let time = settled_at(&ctx, at(100.0, 400.0), "a");
+        // A tile keeping its picture's shape changes fractions of the area as the window resizes,
+        // which is why position cannot simply be sprung in fractions.
+        let resized = at(180.0, 520.0);
+        assert_eq!(flowing(&ctx, time, resized, "a"), (resized, false));
+    }
+
+    #[test]
+    fn a_new_place_starts_from_where_the_rect_is_on_screen_and_travels_there() {
+        let ctx = Context::default();
+        let old = at(100.0, 400.0);
+        let time = settled_at(&ctx, old, "a");
+        let new = at(600.0, 200.0);
+        let (first, moving) = flowing(&ctx, time, new, "b");
+        assert!(moving);
+        assert!(
+            (first.left() - old.left()).abs() < 60.0 && (first.width() - old.width()).abs() < 60.0,
+            "jumped to {first:?}"
+        );
+        let mut last = first;
+        for frame in 1..120 {
+            (last, _) = flowing(&ctx, time + f64::from(frame) / 60.0, new, "b");
+        }
+        assert_eq!(last, new);
+    }
+
+    #[test]
+    fn a_second_change_of_place_mid_flight_keeps_position_and_velocity() {
+        let ctx = Context::default();
+        let time = settled_at(&ctx, at(0.0, 200.0), "a");
+        let mut rect = at(0.0, 200.0);
+        let mut previous = rect;
+        for frame in 0..6 {
+            previous = rect;
+            (rect, _) = flowing(&ctx, time + f64::from(frame) / 60.0, at(800.0, 200.0), "b");
+        }
+        let step = rect.left() - previous.left();
+        assert!(step > 0.0);
+        // Heading back the other way: the very next frame must still be carried forward by the
+        // velocity it had, rather than starting back from a standstill.
+        let (next, _) = flowing(&ctx, time + 6.0 / 60.0, at(0.0, 200.0), "c");
+        assert!(
+            next.left() > rect.left() + step * 0.25,
+            "moved {} after a step of {step}",
+            next.left() - rect.left()
+        );
+    }
+
+    #[test]
+    fn leaving_starts_fully_shown_and_goes_all_the_way_to_nothing() {
+        let ctx = Context::default();
+        let id = Id::new("exit");
+        let (first, wants_frame) = pass(&ctx, 0.0, |ctx| leave(ctx, id, SURFACE));
+        assert!(first > 0.9 && wants_frame, "started at {first}");
+        let mut value = first;
+        for frame in 1..120 {
+            (value, _) = pass(&ctx, f64::from(frame) / 60.0, |ctx| leave(ctx, id, SURFACE));
+        }
+        assert_eq!(value, 0.0);
     }
 
     #[test]

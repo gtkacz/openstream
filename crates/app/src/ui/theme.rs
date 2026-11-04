@@ -2,8 +2,8 @@
 use std::sync::Arc;
 
 use egui::{
-    Atom, Color32, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Margin, Response,
-    RichText, Sense, Stroke, TextStyle, Vec2, WidgetInfo, WidgetText, WidgetType,
+    AtomExt as _, Color32, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Margin,
+    Response, RichText, Sense, Stroke, TextStyle, Vec2, WidgetInfo, WidgetText, WidgetType,
 };
 
 use super::motion;
@@ -34,6 +34,12 @@ pub const WARNING: Color32 = Color32::from_rgb(239, 192, 110);
 /// Below this window width the room rail folds into the dock's sheets.
 pub const COMPACT_WIDTH: f32 = 800.0;
 pub const CONTROL_HEIGHT: f32 = 36.0;
+/// The start screen's fields and buttons, where a few large controls are all there is.
+pub const FORM_HEIGHT: f32 = 40.0;
+pub const RADIUS_CHIP: u8 = 6;
+pub const RADIUS_CONTROL: u8 = 8;
+pub const RADIUS_CARD: u8 = 12;
+pub const RADIUS_DIALOG: u8 = 16;
 const ICON_SIZE: f32 = 16.0;
 const MEDIUM_FAMILY: &str = "medium";
 const SEMIBOLD_FAMILY: &str = "semibold";
@@ -43,7 +49,7 @@ const ICON_FAMILY: &str = "icons";
 pub mod icons {
     pub const SHARE_MONITOR: &str = "\u{e422}";
     pub const SHARE_WINDOW: &str = "\u{e426}";
-    pub const STOP: &str = "\u{e167}";
+    pub const STOP: &str = "\u{e486}";
     pub const COPIED: &str = "\u{e06c}";
     pub const LINK: &str = "\u{e102}";
     pub const TICKET: &str = "\u{e20f}";
@@ -61,6 +67,7 @@ pub mod icons {
     pub const CREATE: &str = "\u{e13d}";
     pub const JOIN: &str = "\u{e10d}";
     pub const REFRESH: &str = "\u{e145}";
+    pub const APPLICATIONS: &str = "\u{e55a}";
 }
 
 pub fn install(ctx: &egui::Context) {
@@ -69,8 +76,9 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_global_style(style());
 }
 
-/// Chakra Petch leads each family; egui's bundled faces stay behind it as the fallback for scripts
-/// it lacks, such as Cyrillic nicknames.
+/// IBM Plex Sans leads each family; egui's bundled faces stay behind it as the fallback for scripts
+/// it lacks. Its digits all share one width, so a figure that changes while it is watched holds still
+/// without a second face.
 fn fonts() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let fallback = fonts
@@ -78,26 +86,27 @@ fn fonts() -> FontDefinitions {
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    // Chakra Petch's line box is centred on its capitals, so mixed-case text reads about 0.04em low
-    // against anything centred with it, such as an icon or the middle of a button.
+    // Measured on rendered controls rather than derived from the metrics, which leave out the
+    // rounding of a row onto whole pixels: this puts the middle of a label's capitals on the middle
+    // of its button, and on the middle of an icon beside it.
     let optical_centre = FontTweak {
-        y_offset_factor: -0.04,
+        y_offset_factor: -0.02,
         ..Default::default()
     };
     let faces: [(&str, &'static [u8], FontFamily); 3] = [
         (
-            "chakra-petch-regular",
-            include_bytes!("../../assets/fonts/ChakraPetch-Regular.ttf"),
+            "ibm-plex-sans-regular",
+            include_bytes!("../../assets/fonts/IBMPlexSans-Regular.ttf"),
             FontFamily::Proportional,
         ),
         (
-            "chakra-petch-medium",
-            include_bytes!("../../assets/fonts/ChakraPetch-Medium.ttf"),
+            "ibm-plex-sans-medium",
+            include_bytes!("../../assets/fonts/IBMPlexSans-Medium.ttf"),
             FontFamily::Name(MEDIUM_FAMILY.into()),
         ),
         (
-            "chakra-petch-semibold",
-            include_bytes!("../../assets/fonts/ChakraPetch-SemiBold.ttf"),
+            "ibm-plex-sans-semibold",
+            include_bytes!("../../assets/fonts/IBMPlexSans-SemiBold.ttf"),
             FontFamily::Name(SEMIBOLD_FAMILY.into()),
         ),
     ];
@@ -113,15 +122,9 @@ fn fonts() -> FontDefinitions {
     }
     fonts.font_data.insert(
         ICON_FAMILY.to_owned(),
-        Arc::new(
-            FontData::from_static(include_bytes!("../../assets/fonts/Lucide-subset.ttf"))
-                // Lucide's glyphs sit high against Chakra Petch on egui's shared baseline. Match the
-                // text family's optical correction so paired icon and label ink share a visual centre.
-                .tweak(FontTweak {
-                    y_offset_factor: 0.04,
-                    ..Default::default()
-                }),
-        ),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../../assets/fonts/Lucide-subset.ttf"
+        ))),
     );
     fonts.families.insert(
         FontFamily::Name(ICON_FAMILY.into()),
@@ -133,7 +136,7 @@ fn fonts() -> FontDefinitions {
 fn style() -> egui::Style {
     let mut style = egui::Style {
         text_styles: [
-            (TextStyle::Heading, semibold(18.0)),
+            (TextStyle::Heading, semibold(16.0)),
             (TextStyle::Body, FontId::proportional(14.0)),
             (TextStyle::Button, medium(14.0)),
             (TextStyle::Small, FontId::proportional(12.0)),
@@ -147,11 +150,15 @@ fn style() -> egui::Style {
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
     style.spacing.button_padding = Vec2::new(12.0, 8.0);
     style.spacing.interact_size = Vec2::new(36.0, 24.0);
+    style.spacing.icon_spacing = 8.0;
     style.spacing.window_margin = Margin::same(24);
-    style.spacing.menu_margin = Margin::same(4);
+    style.spacing.menu_margin = Margin::same(6);
     style.spacing.slider_width = 88.0;
     style.spacing.combo_width = 104.0;
     style.spacing.indent = 16.0;
+    // Floats over the content rather than taking a column from it, so a rail that starts to scroll
+    // keeps its cards on the same right edge as the buttons above them.
+    style.spacing.scroll = egui::style::ScrollStyle::floating();
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = GROUND;
     visuals.window_fill = SURFACE;
@@ -161,8 +168,8 @@ fn style() -> egui::Style {
     visuals.code_bg_color = RAISED;
     visuals.weak_text_color = Some(SECONDARY);
     visuals.window_highlight_topmost = false;
-    visuals.window_corner_radius = 12.into();
-    visuals.menu_corner_radius = 8.into();
+    visuals.window_corner_radius = RADIUS_DIALOG.into();
+    visuals.menu_corner_radius = RADIUS_CARD.into();
     visuals.window_stroke = Stroke::new(1.0, RULE);
     visuals.window_shadow = egui::epaint::Shadow {
         offset: [0, 12],
@@ -182,6 +189,8 @@ fn style() -> egui::Style {
     visuals.slider_trailing_fill = true;
     visuals.selection.bg_fill = SELECTED;
     visuals.selection.stroke = Stroke::new(1.0, ACCENT);
+    visuals.text_cursor.stroke = Stroke::new(1.5, ACCENT);
+    visuals.handle_shape = egui::style::HandleShape::Circle;
     for (widget, fill, border, ink, expansion) in [
         (
             &mut visuals.widgets.noninteractive,
@@ -206,7 +215,7 @@ fn style() -> egui::Style {
         widget.weak_bg_fill = fill;
         widget.bg_stroke = Stroke::new(1.0, border);
         widget.fg_stroke = Stroke::new(1.5, ink);
-        widget.corner_radius = 6.into();
+        widget.corner_radius = RADIUS_CONTROL.into();
         widget.expansion = expansion;
     }
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
@@ -229,9 +238,14 @@ pub fn icon(glyph: &str) -> RichText {
     RichText::new(glyph).font(FontId::new(ICON_SIZE, FontFamily::Name(ICON_FAMILY.into())))
 }
 
-/// Chakra Petch's digits have different widths, so a figure that changes while it is watched would
-/// jitter. Those figures use the bundled monospace face instead.
+/// A figure that changes while it is watched. Plex's digits share one width, so it does not jitter.
 pub fn figure(text: impl Into<String>) -> RichText {
+    RichText::new(text).small().color(SECONDARY)
+}
+
+/// A room ticket, in the one place the interface uses a monospace: characters are the data here,
+/// and two tickets are told apart by comparing them column by column.
+pub fn ticket_text(text: impl Into<String>) -> RichText {
     RichText::new(text).monospace().color(SECONDARY)
 }
 
@@ -246,7 +260,7 @@ pub fn rail() -> egui::Frame {
 pub fn card() -> egui::Frame {
     egui::Frame::NONE
         .fill(SURFACE)
-        .corner_radius(10)
+        .corner_radius(RADIUS_CARD)
         .inner_margin(12)
 }
 
@@ -280,17 +294,92 @@ pub fn uniform_controls(ui: &mut egui::Ui) {
     spacing.button_padding.y = 8.0;
 }
 
-/// A chevron in place of egui's filled triangle, in the ink of the control it sits on.
-pub fn chevron(ui: &egui::Ui, rect: egui::Rect, visuals: &egui::style::WidgetVisuals, _open: bool) {
-    let center = rect.center();
-    let (half_width, half_height) = (rect.width().min(8.0) / 2.0, 2.5);
-    ui.painter().add(egui::Shape::line(
+/// A setting: its label on one fixed column and its control on another, so a stack of these reads
+/// as two clean edges. Where the columns would crush the control the label goes above it instead.
+pub fn form_row<R>(ui: &mut egui::Ui, label: &str, control: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    const LABEL_COLUMN: f32 = 152.0;
+    const STACK_BELOW: f32 = 400.0;
+    let body = |ui: &mut egui::Ui| {
+        uniform_controls(ui);
+        ui.spacing_mut().item_spacing.y = 4.0;
+        control(ui)
+    };
+    if ui.available_width() < STACK_BELOW {
+        section_heading(ui, label);
+        return body(ui);
+    }
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(LABEL_COLUMN - ui.spacing().item_spacing.x, CONTROL_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_size(ui.available_size());
+                ui.label(RichText::new(label).color(SECONDARY));
+            },
+        );
+        ui.vertical(body).inner
+    })
+    .inner
+}
+
+/// Centres what `add` draws on the height left in `ui`. egui places things before it knows how tall
+/// they are, so this uses the height measured last pass and asks for another pass when that changes,
+/// which keeps every frame that reaches the screen correct.
+pub fn vertically_centred<R>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let id = ui.id().with(("vertically-centred", id_salt));
+    let measured = ui
+        .ctx()
+        .data(|data| data.get_temp::<f32>(id))
+        .unwrap_or(0.0);
+    ui.add_space(((ui.available_height() - measured) / 2.0).max(0.0));
+    let scope = ui.scope(add);
+    let height = scope.response.rect.height();
+    if (height - measured).abs() > 0.5 {
+        ui.ctx().data_mut(|data| data.insert_temp(id, height));
+        ui.ctx().request_discard("centred content changed height");
+    }
+    scope.inner
+}
+
+/// A chevron in place of egui's filled triangle, in the ink of the control it sits on. It points
+/// down shut and up open, turning over on a spring. `id` belongs to its dropdown, because the `ui`
+/// egui hands an icon has the same id for every sibling.
+fn chevron(
+    ui: &egui::Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    visuals: &egui::style::WidgetVisuals,
+    open: bool,
+) {
+    let turned = motion::follow(ui.ctx(), id, open, motion::HOVER);
+    paint_chevron(
+        ui.painter(),
+        rect.center(),
+        rect.width().min(8.0) / 2.0,
+        (1.0 - 2.0 * turned) * 2.5,
+        visuals.fg_stroke.color,
+    );
+}
+
+/// `rise` is how far the tip sits below the arms, negative for pointing up.
+fn paint_chevron(
+    painter: &egui::Painter,
+    centre: egui::Pos2,
+    half_width: f32,
+    rise: f32,
+    ink: Color32,
+) {
+    painter.add(egui::Shape::line(
         vec![
-            center + egui::vec2(-half_width, -half_height),
-            center + egui::vec2(0.0, half_height),
-            center + egui::vec2(half_width, -half_height),
+            centre + egui::vec2(-half_width, -rise),
+            centre + egui::vec2(0.0, rise),
+            centre + egui::vec2(half_width, -rise),
         ],
-        Stroke::new(1.5, visuals.fg_stroke.color),
+        Stroke::new(1.5, ink),
     ));
 }
 
@@ -316,7 +405,13 @@ pub fn tactile(
 ) -> Response {
     const PRESS_INSET: f32 = 1.0;
     let backing = ui.painter().add(egui::Shape::Noop);
-    let accent_ink = tone == Tone::Primary && enabled;
+    // Read before the scope takes the next id: a control's tone can change while it stays put.
+    let accent = motion::follow(
+        ui.ctx(),
+        ui.next_auto_id().with("accent"),
+        tone == Tone::Primary,
+        motion::TRAVEL,
+    );
     let response = ui
         .scope(|ui| {
             if !enabled {
@@ -336,8 +431,9 @@ pub fn tactile(
                 widget.weak_bg_fill = Color32::TRANSPARENT;
                 widget.bg_stroke = Stroke::NONE;
                 widget.expansion = 0.0;
-                if accent_ink {
-                    widget.fg_stroke.color = ON_ACCENT;
+                if enabled {
+                    widget.fg_stroke.color =
+                        widget.fg_stroke.color.lerp_to_gamma(ON_ACCENT, accent);
                 }
             }
             add(ui)
@@ -350,8 +446,11 @@ pub fn tactile(
     let live = motion::follow(&ctx, id.with("enabled"), enabled, motion::TRAVEL);
     let focus = motion::follow(&ctx, id.with("focus"), response.has_focus(), motion::HOVER);
     let (rest, over, down) = match tone {
-        Tone::Primary => (ACCENT, ACCENT_HOVER, ACCENT_PRESSED),
-        Tone::Neutral => (RAISED, HIGHLIGHT, PRESSED),
+        Tone::Primary | Tone::Neutral => (
+            RAISED.lerp_to_gamma(ACCENT, accent),
+            HIGHLIGHT.lerp_to_gamma(ACCENT_HOVER, accent),
+            PRESSED.lerp_to_gamma(ACCENT_PRESSED, accent),
+        ),
         Tone::Quiet => (Color32::TRANSPARENT, HIGHLIGHT, PRESSED),
     };
     let fill = SURFACE
@@ -360,16 +459,46 @@ pub fn tactile(
         .lerp_to_gamma(over.lerp_to_gamma(SELECTED_HOVER, chosen), hover)
         .lerp_to_gamma(down, held);
     let surface = response.rect.shrink(held * PRESS_INSET);
-    let mut shapes = vec![egui::Shape::rect_filled(surface, 6.0, fill)];
+    let mut shapes = vec![egui::Shape::rect_filled(surface, RADIUS_CONTROL, fill)];
     if focus > 0.0 {
         shapes.push(egui::Shape::rect_stroke(
             response.rect,
-            6.0,
+            RADIUS_CONTROL,
             Stroke::new(1.0, ACCENT.gamma_multiply(focus)),
             egui::StrokeKind::Outside,
         ));
     }
     ui.painter().set(backing, egui::Shape::Vec(shapes));
+    response
+}
+
+/// A text field in the same material as every other control. Its own frame is switched off and
+/// drawn here, so its focus ring eases in the way a button's does.
+pub fn field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>, height: f32) -> Response {
+    let backing = ui.painter().add(egui::Shape::Noop);
+    // A single-line field takes its height from one row of text plus its margin alone.
+    let margin_y = ((height - ui.text_style_height(&TextStyle::Body)) / 2.0).round() as i8;
+    let response = ui.add(
+        edit.frame(egui::Frame::new().inner_margin(Margin::symmetric(12, margin_y)))
+            .vertical_align(egui::Align::Center)
+            .desired_width(f32::INFINITY),
+    );
+    let (ctx, id) = (ui.ctx().clone(), response.id);
+    let hover = motion::follow(&ctx, id.with("hover"), response.hovered(), motion::HOVER);
+    let focus = motion::follow(&ctx, id.with("focus"), response.has_focus(), motion::HOVER);
+    let border = HIGHLIGHT
+        .lerp_to_gamma(PRESSED, hover)
+        .lerp_to_gamma(ACCENT, focus);
+    ui.painter().set(
+        backing,
+        egui::epaint::RectShape::new(
+            response.rect,
+            RADIUS_CONTROL,
+            GROUND,
+            Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        ),
+    );
     response
 }
 
@@ -399,8 +528,16 @@ pub fn wide_action(
     enabled: bool,
     size: Vec2,
 ) -> Response {
+    // Each side grows towards the other, because separate spacer atoms would each take a gap too
+    // and widen the button past the column it was sized for.
+    let atoms = (
+        icon(glyph)
+            .atom_grow(true)
+            .atom_align(egui::Align2::RIGHT_CENTER),
+        text.atom_grow(true).atom_align(egui::Align2::LEFT_CENTER),
+    );
     tactile(ui, tone, false, enabled, |ui| {
-        ui.add(egui::Button::new((Atom::grow(), icon(glyph), text, Atom::grow())).min_size(size))
+        ui.add(egui::Button::new(atoms).min_size(size))
     })
 }
 
@@ -416,9 +553,25 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response 
     })
 }
 
+/// A label's padding would make an icon button wider than it is tall.
+fn square_padding(ui: &mut egui::Ui) {
+    ui.spacing_mut().button_padding.x = (CONTROL_HEIGHT - ICON_SIZE) / 2.0;
+}
+
 /// An icon with no visible label still has to name itself, to the pointer and to a screen reader.
 pub fn icon_button(ui: &mut egui::Ui, glyph: &str, name: &str, enabled: bool) -> Response {
-    let response = tactile(ui, Tone::Neutral, false, enabled, |ui| {
+    toned_icon_button(ui, Tone::Neutral, glyph, name, enabled)
+}
+
+pub fn toned_icon_button(
+    ui: &mut egui::Ui,
+    tone: Tone,
+    glyph: &str,
+    name: &str,
+    enabled: bool,
+) -> Response {
+    let response = tactile(ui, tone, false, enabled, |ui| {
+        square_padding(ui);
         ui.add(egui::Button::new(icon(glyph)).min_size(Vec2::splat(CONTROL_HEIGHT)))
     });
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
@@ -441,6 +594,7 @@ pub fn toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, text: &str) -> Resp
 pub fn icon_toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, name: &str) -> Response {
     let selected = *on;
     let mut response = tactile(ui, Tone::Neutral, selected, true, |ui| {
+        square_padding(ui);
         ui.add(
             egui::Button::new(icon(glyph))
                 .selected(selected)
@@ -463,10 +617,11 @@ pub fn dropdown(
     width: Option<f32>,
     items: impl FnOnce(&mut egui::Ui),
 ) -> Response {
+    let chevron_id = egui::Id::new(("dropdown-chevron", &id_salt));
     tactile(ui, Tone::Neutral, false, true, |ui| {
         uniform_controls(ui);
         let mut combo = egui::ComboBox::from_id_salt(id_salt)
-            .icon(chevron)
+            .icon(move |ui, rect, visuals, open| chevron(ui, chevron_id, rect, visuals, open))
             .selected_text(text);
         if let Some(width) = width {
             combo = combo.width(width);
@@ -483,6 +638,249 @@ pub fn drag_value(ui: &mut egui::Ui, value: egui::DragValue<'_>) -> Response {
     })
 }
 
+/// Exclusive choices sharing one track, with the selection as a thumb that travels between them,
+/// retargeting from wherever it has got to. Returns the choice clicked.
+pub fn segmented<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    options: &[(T, &str)],
+    selected: T,
+    segment_width: f32,
+) -> Option<T> {
+    const THUMB_INSET: f32 = 3.0;
+    let size = egui::vec2(segment_width * options.len() as f32, CONTROL_HEIGHT);
+    let (track, _) = ui.allocate_exact_size(size, Sense::hover());
+    let id = ui.id().with(("segmented", id_salt));
+    let ctx = ui.ctx().clone();
+    let index = options.iter().position(|(value, _)| *value == selected);
+    let at = motion::glide(
+        &ctx,
+        id.with("thumb"),
+        index.unwrap_or_default() as f32,
+        motion::TRAVEL,
+    );
+    let segment = |at: f32| {
+        egui::Rect::from_min_size(
+            track.min + egui::vec2(at * segment_width, 0.0),
+            egui::vec2(segment_width, track.height()),
+        )
+    };
+    ui.painter().rect_filled(track, RADIUS_CONTROL, RAISED);
+    if index.is_some() {
+        ui.painter().rect_filled(
+            segment(at).shrink(THUMB_INSET),
+            RADIUS_CONTROL - THUMB_INSET as u8,
+            SELECTED,
+        );
+    }
+    let mut clicked = None;
+    for (position, (value, text)) in options.iter().enumerate() {
+        let rect = segment(position as f32);
+        let response = ui.interact(rect, id.with(position), Sense::click());
+        let chosen = index == Some(position);
+        response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, chosen, *text));
+        let lit = motion::follow(
+            &ctx,
+            response.id.with("lit"),
+            chosen || response.hovered(),
+            motion::HOVER,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            *text,
+            medium(14.0),
+            SECONDARY.lerp_to_gamma(TEXT, lit),
+        );
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect.shrink(1.0),
+                RADIUS_CONTROL - 1,
+                Stroke::new(1.0, ACCENT),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if response.clicked() {
+            clicked = Some(*value);
+        }
+    }
+    clicked
+}
+
+/// Allocates a drawn indicator and its label as one clickable row, returning where to draw the
+/// indicator. A label too long for the row is cut with an ellipsis and offered whole in a tooltip.
+fn indicator_row(ui: &mut egui::Ui, indicator: Vec2, text: &str) -> (Response, egui::Rect) {
+    const GAP: f32 = 8.0;
+    // The row's whole width rather than what is left of it: in a wrapped row an item that does not
+    // fit moves to the next line, and must not be cut short before it gets there.
+    let room = (ui.max_rect().width() - indicator.x - GAP).max(0.0);
+    let galley = WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        room,
+        TextStyle::Body,
+    );
+    let elided = galley.elided;
+    let size = egui::vec2(
+        indicator.x + GAP + galley.size().x,
+        ui.spacing().interact_size.y.max(indicator.y),
+    );
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let glyph = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), rect.center().y - indicator.y / 2.0),
+        indicator,
+    );
+    if ui.is_rect_visible(rect) {
+        let ink = if ui.is_enabled() { TEXT } else { MUTED };
+        ui.painter().galley(
+            egui::pos2(glyph.right() + GAP, rect.center().y - galley.size().y / 2.0),
+            galley,
+            ink,
+        );
+    }
+    let response = if elided {
+        response.on_hover_text(text)
+    } else {
+        response
+    };
+    (response, glyph)
+}
+
+/// The fill an off/on indicator takes, shared so a radio, a check and a switch read as one family.
+fn indicator_fill(hover: f32, on: f32) -> Color32 {
+    HIGHLIGHT
+        .lerp_to_gamma(PRESSED, hover)
+        .lerp_to_gamma(ACCENT.lerp_to_gamma(ACCENT_HOVER, hover), on)
+}
+
+/// One choice of several, whose dot grows out of the middle when chosen. Sets `current` and reports
+/// the change.
+pub fn radio<T: PartialEq>(ui: &mut egui::Ui, current: &mut T, value: T, text: &str) -> Response {
+    const SIZE: f32 = 16.0;
+    const DOT_RADIUS: f32 = 3.0;
+    let (mut response, glyph) = indicator_row(ui, Vec2::splat(SIZE), text);
+    let mut selected = *current == value;
+    if response.clicked() && !selected {
+        *current = value;
+        response.mark_changed();
+        selected = true;
+    }
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, enabled, selected, text));
+    let ctx = ui.ctx().clone();
+    let on = motion::follow(&ctx, response.id, selected, motion::TRAVEL);
+    let hover = motion::follow(
+        &ctx,
+        response.id.with("hover"),
+        response.hovered(),
+        motion::HOVER,
+    );
+    let fade = if enabled { 1.0 } else { 0.5 };
+    let painter = ui.painter();
+    painter.circle_filled(
+        glyph.center(),
+        SIZE / 2.0,
+        indicator_fill(hover, on).gamma_multiply(fade),
+    );
+    if on > 0.0 {
+        painter.circle_filled(glyph.center(), DOT_RADIUS * on, ON_ACCENT);
+    }
+    if response.has_focus() {
+        painter.circle_stroke(glyph.center(), SIZE / 2.0 + 2.0, Stroke::new(1.0, ACCENT));
+    }
+    response
+}
+
+/// One option that can be on alongside others. Flips `on` and reports the change.
+pub fn check(ui: &mut egui::Ui, on: &mut bool, text: &str) -> Response {
+    const SIZE: f32 = 16.0;
+    const RADIUS: f32 = 4.0;
+    let (mut response, glyph) = indicator_row(ui, Vec2::splat(SIZE), text);
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, *on, text));
+    let ctx = ui.ctx().clone();
+    let shown = motion::follow(&ctx, response.id, *on, motion::TRAVEL);
+    let hover = motion::follow(
+        &ctx,
+        response.id.with("hover"),
+        response.hovered(),
+        motion::HOVER,
+    );
+    let fade = if enabled { 1.0 } else { 0.5 };
+    let painter = ui.painter();
+    painter.rect_filled(
+        glyph,
+        RADIUS,
+        indicator_fill(hover, shown).gamma_multiply(fade),
+    );
+    if shown > 0.0 {
+        let centre = glyph.center();
+        painter.add(egui::Shape::line(
+            vec![
+                centre + egui::vec2(-3.5, 0.0),
+                centre + egui::vec2(-1.0, 2.5),
+                centre + egui::vec2(3.5, -2.5),
+            ],
+            Stroke::new(1.5, ON_ACCENT.gamma_multiply(shown)),
+        ));
+    }
+    if response.has_focus() {
+        painter.rect_stroke(
+            glyph.expand(2.0),
+            RADIUS + 2.0,
+            Stroke::new(1.0, ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response
+}
+
+/// A section that folds: its name on the left edge and a chevron on the right that turns over as it
+/// opens. The caller holds whether it is open and draws the content with [`motion::unfold`].
+pub fn disclosure(ui: &mut egui::Ui, text: &str, open: bool) -> Response {
+    const HEIGHT: f32 = 28.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), HEIGHT), Sense::click());
+    response.widget_info(|| WidgetInfo::selected(WidgetType::CollapsingHeader, true, open, text));
+    let ctx = ui.ctx().clone();
+    let turned = motion::follow(&ctx, response.id, open, motion::TRAVEL);
+    let hover = motion::follow(
+        &ctx,
+        response.id.with("hover"),
+        response.hovered(),
+        motion::HOVER,
+    );
+    let ink = SECONDARY.lerp_to_gamma(TEXT, hover);
+    let painter = ui.painter();
+    painter.text(
+        rect.left_center(),
+        egui::Align2::LEFT_CENTER,
+        text,
+        medium(13.0),
+        ink,
+    );
+    paint_chevron(
+        painter,
+        rect.right_center() - egui::vec2(8.0, 0.0),
+        4.0,
+        (1.0 - 2.0 * turned) * 2.5,
+        ink,
+    );
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect.expand(2.0),
+            RADIUS_CHIP,
+            Stroke::new(1.0, ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response
+}
+
 /// An on/off switch whose thumb travels when flipped and stretches while held. The flip retargets
 /// from wherever the thumb is, so a second click mid-travel reverses it without a jump.
 pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> Response {
@@ -490,25 +888,14 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> Response {
     const THUMB_RADIUS: f32 = 6.0;
     const THUMB_INSET: f32 = 3.0;
     const HELD_STRETCH: f32 = 3.0;
-    let galley = WidgetText::from(text).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        TextStyle::Body,
-    );
-    let gap = ui.spacing().item_spacing.x;
-    let size = egui::vec2(
-        TRACK.x + gap + galley.size().x,
-        ui.spacing().interact_size.y,
-    );
-    let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
+    let (mut response, track) = indicator_row(ui, TRACK, text);
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
     }
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, *on, text));
-    if ui.is_rect_visible(rect) {
+    if ui.is_rect_visible(response.rect) {
         let ctx = ui.ctx().clone();
         let t = motion::follow(&ctx, response.id, *on, motion::TRAVEL);
         let hover = motion::follow(
@@ -522,13 +909,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> Response {
             response.id.with("held"),
             response.is_pointer_button_down_on(),
         );
-        let track = egui::Rect::from_min_size(
-            egui::pos2(rect.left(), rect.center().y - TRACK.y / 2.0),
-            TRACK,
-        );
-        let fill = HIGHLIGHT
-            .lerp_to_gamma(PRESSED, hover)
-            .lerp_to_gamma(ACCENT.lerp_to_gamma(ACCENT_HOVER, hover), t);
+        let fill = indicator_fill(hover, t);
         let thumb_fill = SECONDARY.lerp_to_gamma(ON_ACCENT, t);
         let painter = ui.painter();
         painter.rect_filled(track, TRACK.y / 2.0, fill);
@@ -550,12 +931,6 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> Response {
             egui::vec2(2.0 * THUMB_RADIUS + stretch, 2.0 * THUMB_RADIUS),
         );
         painter.rect_filled(thumb, THUMB_RADIUS, thumb_fill);
-        let ink = if enabled { TEXT } else { MUTED };
-        painter.galley(
-            egui::pos2(track.right() + gap, rect.center().y - galley.size().y / 2.0),
-            galley,
-            ink,
-        );
     }
     response
 }
@@ -626,9 +1001,9 @@ pub fn dialog<T>(
     content: impl FnOnce(&mut egui::Ui) -> T,
 ) -> Option<(T, bool)> {
     const RISE: f32 = 12.0;
-    const WIDTH: f32 = 448.0;
+    const WIDTH: f32 = 480.0;
     const WINDOW_MARGIN: f32 = 16.0;
-    const PADDING: f32 = 20.0;
+    const PADDING: f32 = 24.0;
     let id = egui::Id::new(id);
     let shown = motion::appear(ctx, id.with("presence"), visible, motion::SURFACE);
     if !visible && shown <= 0.0 {
@@ -640,7 +1015,7 @@ pub fn dialog<T>(
     let width = WIDTH.min(ctx.content_rect().width() - 2.0 * WINDOW_MARGIN);
     let inner_width = (width - 2.0 * PADDING).max(0.0);
     let frame = egui::Frame::popup(&ctx.global_style())
-        .corner_radius(12)
+        .corner_radius(RADIUS_DIALOG)
         .inner_margin(PADDING as i8)
         .multiply_with_opacity(shown);
     let scrim = Color32::from_black_alpha(170).gamma_multiply(shown);
@@ -658,10 +1033,10 @@ pub fn dialog<T>(
                 ui.label(RichText::new(title).font(semibold(18.0)));
             },
             |ui| {
-                closed = icon_button(ui, icons::CLOSE, "Close", true).clicked();
+                closed = toned_icon_button(ui, Tone::Quiet, icons::CLOSE, "Close", true).clicked();
             },
         );
-        ui.add_space(4.0);
+        ui.add_space(12.0);
         content(ui)
     };
     if !visible {
@@ -683,6 +1058,18 @@ pub fn dialog<T>(
     let escape =
         response.is_top_modal && !popup_open && ctx.input(|i| i.key_pressed(egui::Key::Escape));
     Some((response.inner, closed || escape))
+}
+
+/// The row that ends a dialog: its actions end on the content's right edge with the main one last,
+/// and anything secondary sits on the left. `actions` is laid out from the right, so it adds the main
+/// action first.
+pub fn dialog_footer(
+    ui: &mut egui::Ui,
+    secondary: impl FnOnce(&mut egui::Ui),
+    actions: impl FnOnce(&mut egui::Ui),
+) {
+    ui.add_space(12.0);
+    split_row(ui, CONTROL_HEIGHT, secondary, actions);
 }
 
 #[cfg(test)]
@@ -726,11 +1113,29 @@ mod tests {
     }
 
     #[test]
-    fn the_interface_font_is_chakra_petch_with_the_bundled_faces_as_fallback() {
+    fn the_interface_font_is_ibm_plex_sans_with_the_bundled_faces_as_fallback() {
         let fonts = fonts();
         let proportional = &fonts.families[&FontFamily::Proportional];
-        assert_eq!(proportional[0], "chakra-petch-regular");
+        assert_eq!(proportional[0], "ibm-plex-sans-regular");
         assert!(proportional.len() > 1, "scripts it lacks need a fallback");
+    }
+
+    #[test]
+    fn every_digit_is_one_width_so_live_figures_cannot_jitter() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for font in [FontId::proportional(12.0), medium(14.0), semibold(16.0)] {
+                let widths: Vec<f32> = ('0'..='9')
+                    .map(|digit| ui.fonts_mut(|fonts| fonts.glyph_width(&font, digit)))
+                    .collect();
+                assert!(
+                    widths.iter().all(|width| *width == widths[0]),
+                    "{font:?} digits differ: {widths:?}"
+                );
+            }
+        });
+        output.textures_delta.clear();
     }
 
     #[test]
@@ -759,6 +1164,7 @@ mod tests {
                 icons::CREATE,
                 icons::JOIN,
                 icons::REFRESH,
+                icons::APPLICATIONS,
             ] {
                 let font = FontId::new(ICON_SIZE, FontFamily::Name(ICON_FAMILY.into()));
                 let has_glyph = ui.fonts_mut(|fonts| fonts.has_glyphs(&font, glyph));
