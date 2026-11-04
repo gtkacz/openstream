@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 /// The identity a selection is stored under: an executable basename, normalised lowercase on
-/// Windows. Never a pid — pids do not survive a restart, and one application often owns several
+/// Windows, or a bundle identifier, lowercase, on macOS. Never a pid — pids do not survive a restart, and one application often owns several
 /// audio streams and several processes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AppKey(String);
@@ -21,8 +21,9 @@ impl AppKey {
     }
 }
 
-/// Windows accepts either separator and ignores case in file names; Linux does neither, so the
-/// same settings file behaves like the platform that reads it.
+/// Windows accepts either separator and ignores case in file names; Linux does neither, and macOS
+/// ignores case in bundle identifiers, so the same settings file behaves like the platform that
+/// reads it.
 #[cfg(windows)]
 fn normalised(name: &str) -> String {
     name.rsplit(['/', '\\'])
@@ -31,9 +32,22 @@ fn normalised(name: &str) -> String {
         .to_lowercase()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn normalised(name: &str) -> String {
+    macos_normalised(name)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn normalised(name: &str) -> String {
     name.rsplit('/').next().unwrap_or(name).to_string()
+}
+
+/// macOS keys are bundle identifiers, which the system compares without case; a path, as a
+/// hand-edited settings file may hold, keeps its last component. Compiled everywhere so the rule
+/// is tested on every runner.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_normalised(name: &str) -> String {
+    name.rsplit('/').next().unwrap_or(name).to_lowercase()
 }
 
 /// One application the platform reports as producing audio right now.
@@ -83,6 +97,29 @@ mod tests {
     fn linux_matches_a_basename_exactly() {
         assert_eq!(AppKey::new("Firefox").as_str(), "Firefox");
         assert_ne!(AppKey::new("Firefox"), AppKey::new("firefox"));
+    }
+
+    #[test]
+    fn macos_keys_are_bundle_identifiers_compared_without_case() {
+        assert_eq!(
+            macos_normalised("com.Apple.Safari"),
+            macos_normalised("com.apple.safari")
+        );
+        assert_eq!(macos_normalised("com.apple.Safari"), "com.apple.safari");
+        assert_eq!(
+            macos_normalised("/Applications/Spotify.app/Contents/MacOS/Spotify"),
+            "spotify"
+        );
+        assert_eq!(macos_normalised(""), "");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_builds_use_the_macos_rule() {
+        assert_eq!(
+            AppKey::new("COM.SPOTIFY.client"),
+            AppKey::new("com.spotify.client")
+        );
     }
 
     #[cfg(windows)]
