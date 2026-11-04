@@ -3,7 +3,7 @@
 
 use brp_audio::AudioSelection;
 use brp_proto::constants::{MAX_BITRATE_KBPS, MAX_LIVES_PER_PARTICIPANT, MIN_BITRATE_KBPS};
-use brp_proto::{Codec, LiveInfo, Preset, SourceKind};
+use brp_proto::{Codec, LiveInfo, Preset, SourceKind, VideoQuality};
 use brp_room::{AudioCaptureState, OwnLiveView, PresetView, RoomSnapshot};
 
 use super::applications::selection_summary;
@@ -226,16 +226,18 @@ fn audio_status(snapshot: &RoomSnapshot) -> Option<String> {
     match &snapshot.own_audio.state {
         AudioCaptureState::Off | AudioCaptureState::Failed(_) => None,
         AudioCaptureState::Idle => Some("Waiting for a listener".to_string()),
-        AudioCaptureState::Capturing => match &snapshot.own_audio.selection {
-            AudioSelection::Only(keys) if keys.is_empty() => {
-                Some("No applications selected".to_string())
+        AudioCaptureState::Capturing | AudioCaptureState::Limited(_) => {
+            match &snapshot.own_audio.selection {
+                AudioSelection::Only(keys) if keys.is_empty() => {
+                    Some("No applications selected".to_string())
+                }
+                _ => {
+                    let n = snapshot.own_audio.subscribers;
+                    let plural = if n == 1 { "" } else { "s" };
+                    Some(format!("{n} listener{plural}"))
+                }
             }
-            _ => {
-                let n = snapshot.own_audio.subscribers;
-                let plural = if n == 1 { "" } else { "s" };
-                Some(format!("{n} listener{plural}"))
-            }
-        },
+        }
     }
 }
 
@@ -427,7 +429,7 @@ fn quality_details(
 ) {
     let info = &live.info;
     let last_one = info.presets.len() == 1;
-    for template in presets::templates_for(info) {
+    for template in presets::templates_offered(info, live.full_chroma) {
         let view = live.presets.iter().find(|v| v.preset.id == template.id);
         let mut toggled = false;
         ui.add_space(4.0);
@@ -442,7 +444,11 @@ fn quality_details(
                 toggled = ui.add_enabled(!locked, check).changed();
             },
             |ui| {
-                if let Some(view) = view {
+                // Lossless has no bitrate to choose: it takes what the picture needs.
+                if template.quality() == VideoQuality::Lossless {
+                    let hint = egui::RichText::new("Fast link only");
+                    ui.label(hint.small().color(theme::SECONDARY));
+                } else if let Some(view) = view {
                     bitrate_field(ui, info, &view.preset, state, commands);
                 }
             },

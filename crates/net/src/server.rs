@@ -1,5 +1,6 @@
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
 use brp_proto::constants::{AUDIO_PRESET_ID, MAX_CONTROL_BYTES, REFUSED_NOT_MEMBER};
 use brp_proto::{EncodedFrame, FrameHeader, FrameKind, PublisherMessage, ViewerMessage};
@@ -11,7 +12,7 @@ use tokio::task::JoinHandle;
 use crate::error::NetError;
 use crate::framing::{read_msg, write_msg};
 use crate::policy::ConnectionPolicy;
-use crate::source::LiveSource;
+use crate::source::{KeyframeLimit, LiveSource};
 
 /// Audio streams outrank video: a late video frame is dropped by the pacer, a late audio packet is
 /// a dropout.
@@ -129,9 +130,16 @@ async fn serve_subscription(
     ));
     let audio_sender = audio.map(|audio| tokio::spawn(send_audio(conn, live_id, audio.packets)));
 
+    // Held here rather than trusted to the viewer: a viewer that keeps asking keeps being refused,
+    // and one that has fallen behind asks again a moment later anyway.
+    let mut keyframes = KeyframeLimit::default();
     loop {
         match read_msg::<ViewerMessage>(&mut recv, MAX_CONTROL_BYTES).await {
-            Ok(ViewerMessage::RequestKeyframe) => source.request_keyframe(live_id, preset_id),
+            Ok(ViewerMessage::RequestKeyframe) => {
+                if keyframes.allow(Instant::now()) {
+                    source.request_keyframe(live_id, preset_id);
+                }
+            }
             Ok(ViewerMessage::Unsubscribe) | Err(_) => break,
             Ok(ViewerMessage::Stats {
                 frames_received,

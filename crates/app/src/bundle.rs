@@ -147,6 +147,7 @@ mod tests {
         assert!(crate::link::SCHEME_JOIN_PREFIX.starts_with(&format!("{URL_SCHEME}://")));
     }
 
+    #[cfg(unix)]
     fn line(step: &Step) -> String {
         std::iter::once(step.program.to_string())
             .chain(step.args.iter().map(|a| a.to_string_lossy().into_owned()))
@@ -154,6 +155,8 @@ mod tests {
             .join(" ")
     }
 
+    // Paths joined on Windows would carry backslashes, and only macOS ever runs these steps.
+    #[cfg(unix)]
     #[test]
     fn an_updated_bundle_takes_the_new_version_then_is_signed_inside_out_and_verified() {
         let bundle = Path::new("/Applications/OpenStream.app");

@@ -7,6 +7,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use brp_proto::RoomTicket;
 use brp_room::Room;
 use brp_update::{Install, Release};
 use iroh::SecretKey;
@@ -36,7 +37,7 @@ use crate::render::tiles::{TileKey, TilePlacement, TileRenderer};
 use crate::render::ui::UiFrame;
 use crate::repaint::{NextFrame, RepaintSchedule, next_frame};
 use crate::room_view::RoomView;
-use crate::settings::{SettingsStore, normalised_nickname, now_unix};
+use crate::settings::{Settings, SettingsStore, normalised_nickname, now_unix};
 use crate::ui::applications::{self as applications_ui, PickerOutcome};
 use crate::ui::settings::{self as settings_ui, SettingsDialog};
 use crate::ui::start::{self, StartAction, StartState};
@@ -73,6 +74,8 @@ pub enum AppEvent {
     NewFrame,
     /// Periodic wake so counters refresh while nothing is watched.
     Tick,
+    /// What is playing audio now, for an open application picker.
+    ApplicationsListed(Vec<brp_audio::AudioSource>),
     /// The share task finished: the live started, or the error to show.
     ShareFinished(Result<(), String>),
     /// The open task finished: the room to show, or the error for the start screen.
@@ -133,6 +136,8 @@ pub struct App {
     /// The intent an open in flight was started with; a join remembers the ticket that got us in,
     /// a create remembers the room's own ticket.
     pending_intent: Option<Intent>,
+    /// The recent-rooms entry for the room open now, to replace with a better one on the way out.
+    remembered_ticket: Option<String>,
     /// Where this binary runs from, captured before any swap; `None` when it could not be
     /// determined, in which case updates are noticed but never applied.
     install: Option<Install>,
@@ -169,6 +174,7 @@ impl App {
         secret: SecretKey,
         nickname: String,
         intent: Option<Intent>,
+        invite: Option<RoomTicket>,
         start_error: Option<String>,
         store: SettingsStore,
         install: Option<Install>,
@@ -193,6 +199,7 @@ impl App {
             store,
             settings_dialog: SettingsDialog::default(),
             pending_intent: None,
+            remembered_ticket: None,
             update: UpdateState::new(install.as_ref().is_some_and(Install::is_release_layout)),
             install,
             relaunch: None,
@@ -203,6 +210,9 @@ impl App {
         }
         if let Some(message) = &start_error {
             app.start.show_error(message);
+        }
+        if let Some(ticket) = invite {
+            app.start.invite(ticket.to_string());
         }
         if let Some(intent) = intent {
             app.start.connecting = true;
@@ -216,7 +226,13 @@ impl App {
     /// Pop-out windows drop with the app; nothing in them outlives the loop.
     pub fn finish(self) -> Shutdown {
         let (room, tasks) = match self.phase {
-            Phase::Room(view) => (Some(view.room), view.pending_share.into_iter().collect()),
+            Phase::Room(view) => (
+                Some(view.room),
+                view.pending_share
+                    .into_iter()
+                    .chain(view.pending_listing)
+                    .collect(),
+            ),
             Phase::Start => (None, Vec::new()),
         };
         Shutdown {
@@ -261,10 +277,11 @@ impl App {
         let on_start_screen = matches!(self.phase, Phase::Start);
         match route_link(on_start_screen, self.pending_open.is_some()) {
             LinkRoute::Here => match crate::link::parse_ticket(link) {
-                Ok(ticket) => {
+                Ok(ticket) if self.store.settings.auto_join_links => {
                     self.start.connecting = true;
                     self.open(Intent::Join(ticket));
                 }
+                Ok(ticket) => self.start.invite(ticket.to_string()),
                 Err(error) => self
                     .start
                     .show_error(&crate::error::AppError::Ticket(error).to_string()),
@@ -332,6 +349,7 @@ impl App {
             Some(Intent::Create) | None => room.ticket().to_string(),
         };
         self.store.settings.remember_room(&ticket, now_unix());
+        self.remembered_ticket = Some(ticket);
         if self.args.nickname.is_none()
             && let Some(nickname) = normalised_nickname(&self.start.nickname)
         {
@@ -339,6 +357,25 @@ impl App {
         }
         if let Err(error) = self.store.save_unless_load_failed() {
             self.state.status = format!("settings not saved: {error}");
+        }
+    }
+
+    /// Whoever created a room is remembered by a ticket naming only themselves, which opens an empty
+    /// room however many people are still in the real one. Leaving is when the others are known.
+    fn remember_way_back(&mut self) {
+        let (Phase::Room(view), Some(old)) = (&self.phase, &self.remembered_ticket) else {
+            return;
+        };
+        let Some(ticket) = self.runtime.block_on(view.way_back()) else {
+            return;
+        };
+        // Read again first: another window may have remembered a room since this one loaded them.
+        if let Ok(on_disk) = Settings::load(&self.store.path) {
+            self.store.settings.recent_rooms = on_disk.recent_rooms;
+        }
+        self.store.settings.replace_room(old, &ticket, now_unix());
+        if let Err(error) = self.store.save_unless_load_failed() {
+            tracing::warn!(%error, "could not remember the way back into the room");
         }
     }
 
@@ -537,22 +574,31 @@ impl App {
         }
 
         if let Some(outcome) = picked {
-            let (command, persist) = match outcome {
-                PickerOutcome::Refresh => (RoomCommand::ChooseApplications, false),
+            let (commands, persist) = match outcome {
+                PickerOutcome::Refresh => (vec![RoomCommand::ChooseApplications], false),
                 PickerOutcome::Applied(applications) => {
-                    let command = RoomCommand::SetAudioApplications(applications.to_selection());
+                    let mut commands =
+                        vec![RoomCommand::SetAudioVolumes(applications.to_volumes())];
+                    if applications_ui::swaps_capture(
+                        &self.store.settings.audio.applications,
+                        &applications,
+                    ) {
+                        commands.push(RoomCommand::SetAudioApplications(
+                            applications.to_selection(),
+                        ));
+                    }
                     self.store.settings.audio.applications = applications.clone();
                     // Neither window is modal: if the Settings dialog is still open with a draft
                     // taken before this Done, a later Save would otherwise overwrite this choice
                     // on disk with the pre-edit one.
                     self.settings_dialog.draft.audio.applications = applications;
-                    (command, true)
+                    (commands, true)
                 }
             };
             let stored = self.store.settings.audio.applications.clone();
             if let Phase::Room(view) = &mut self.phase {
                 view.apply(
-                    vec![command],
+                    commands,
                     &self.runtime,
                     &self.proxy,
                     &mut self.state,
@@ -850,7 +896,21 @@ impl ApplicationHandler<AppEvent> for App {
             // A room-version bump and the statistics tick are the two relevant state changes:
             // the former reconciles watch membership promptly, the latter also catches a relay
             // address change and advances age labels even when nothing is watched.
-            AppEvent::RoomChanged | AppEvent::Tick => self.refresh_room(),
+            AppEvent::RoomChanged => self.refresh_room(),
+            AppEvent::Tick => {
+                self.refresh_room();
+                // On the tick rather than on every room change: each listing opens a connection to
+                // the audio daemon, and a busy room changes far more often than applications do.
+                if let Phase::Room(view) = &mut self.phase {
+                    view.keep_applications_current(&self.runtime, &self.proxy, &self.state);
+                }
+            }
+            // A listing that lands after Cancel or Done has nothing left to update.
+            AppEvent::ApplicationsListed(sources) => {
+                if let Some(picker) = &mut self.state.applications {
+                    picker.refresh(sources);
+                }
+            }
             AppEvent::NewFrame => {}
             AppEvent::MotionPreference { less } => {
                 if let Some(main) = &self.main {
@@ -859,6 +919,10 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
         self.request_redraw_all();
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.remember_way_back();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {

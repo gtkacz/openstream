@@ -2,7 +2,7 @@
 
 mod sessions;
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -22,17 +22,22 @@ use wasapi::{
 use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
 use crate::error::AudioError;
 use crate::mix::{CaptureMixer, CaptureSource};
-use crate::selection::{AppKey, AudioSelection, AudioSource};
+use crate::process_tree::held_back_notice;
+use crate::selection::{AppKey, AudioSelection, AudioSource, SendVolumeSupport, SendVolumes};
 
 const EVENT_TIMEOUT_MS: u32 = 1000;
 
 pub struct ProcessLoopbackCapture {
     process_id: u32,
+    volumes: SendVolumes,
 }
 
 impl ProcessLoopbackCapture {
     pub fn new(process_id: u32) -> Self {
-        Self { process_id }
+        Self {
+            process_id,
+            volumes: SendVolumes::default(),
+        }
     }
 
     fn start_all(&self, sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
@@ -58,7 +63,7 @@ impl ProcessLoopbackCapture {
             .map_err(|error| {
                 AudioError::Windows(format!("failed to spawn the WASAPI thread: {error}"))
             })?;
-        finish_start(stop, error, vec![thread], ready_rx)
+        finish_start(stop, error, Arc::default(), vec![thread], ready_rx)
     }
 
     fn start_selected(
@@ -68,12 +73,15 @@ impl ProcessLoopbackCapture {
     ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
         let stop = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
+        let notice = Arc::new(Mutex::new(None));
         let mixer = CaptureMixer::default();
         let (ready_tx, ready_rx) = mpsc::channel();
 
         let watch_stop = stop.clone();
         let watch_error = error.clone();
+        let watch_notice = notice.clone();
         let watch_mixer = mixer.clone();
+        let volumes = self.volumes.clone();
         let process_id = self.process_id;
         let watcher = thread::Builder::new()
             .name("brp-audio-wasapi-watch".into())
@@ -81,6 +89,8 @@ impl ProcessLoopbackCapture {
                 if let Err(capture_error) = watch_selected(
                     process_id,
                     selected,
+                    volumes,
+                    watch_notice,
                     watch_mixer,
                     watch_stop,
                     ready_tx.clone(),
@@ -109,13 +119,14 @@ impl ProcessLoopbackCapture {
             }
         };
 
-        finish_start(stop, error, vec![watcher, output], ready_rx)
+        finish_start(stop, error, notice, vec![watcher, output], ready_rx)
     }
 }
 
 struct Session {
     stop: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
+    notice: Arc<Mutex<Option<String>>>,
     threads: Vec<JoinHandle<()>>,
 }
 
@@ -134,11 +145,20 @@ impl AudioCapture for ProcessLoopbackCapture {
             AudioSelection::Only(selected) => self.start_selected(selected, sink),
         }
     }
+
+    fn send_volume_support(&self) -> SendVolumeSupport {
+        SendVolumeSupport::OnlySelected
+    }
+
+    fn set_send_volumes(&self, volumes: BTreeMap<AppKey, u8>) {
+        self.volumes.set(volumes);
+    }
 }
 
 fn finish_start(
     stop: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
+    notice: Arc<Mutex<Option<String>>>,
     threads: Vec<JoinHandle<()>>,
     ready: mpsc::Receiver<Result<(), AudioError>>,
 ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
@@ -147,6 +167,7 @@ fn finish_start(
             return Ok(Box::new(Session {
                 stop,
                 error,
+                notice,
                 threads,
             }));
         }
@@ -168,6 +189,8 @@ fn finish_start(
 fn watch_selected(
     process_id: u32,
     selected: BTreeSet<AppKey>,
+    volumes: SendVolumes,
+    notice: Arc<Mutex<Option<String>>>,
     mixer: CaptureMixer,
     stop: Arc<AtomicBool>,
     ready: mpsc::Sender<Result<(), AudioError>>,
@@ -183,7 +206,7 @@ fn watch_selected(
         .ok()
         .map_err(|error| AudioError::Windows(format!("CoInitializeEx: {error}")))?;
     let mut clients = SelectedClients::default();
-    clients.reconcile(process_id, &selected, &mixer, &stop)?;
+    clients.reconcile(process_id, &selected, &volumes, &notice, &mixer, &stop)?;
     let _ = ready.send(Ok(()));
 
     while !stop.load(Ordering::Relaxed) {
@@ -191,7 +214,9 @@ fn watch_selected(
         if stop.load(Ordering::Relaxed) {
             continue;
         }
-        if let Err(error) = clients.reconcile(process_id, &selected, &mixer, &stop) {
+        if let Err(error) =
+            clients.reconcile(process_id, &selected, &volumes, &notice, &mixer, &stop)
+        {
             tracing::warn!(%error, "could not reconcile selected Windows audio sessions");
         }
     }
@@ -210,38 +235,42 @@ impl SelectedClients {
         &mut self,
         process_id: u32,
         selected: &BTreeSet<AppKey>,
+        volumes: &SendVolumes,
+        notice: &Mutex<Option<String>>,
         mixer: &CaptureMixer,
         stop: &AtomicBool,
     ) -> Result<(), AudioError> {
-        let desired = sessions::selected_roots(process_id, selected)?;
+        let plan = sessions::selected_roots(process_id, selected)?;
+        *lock(notice) = held_back_notice(&plan.held_back);
+        let desired = plan.roots;
         let stopped: Vec<u32> = self
             .running
             .iter()
             .filter_map(|(root, client)| {
-                (!desired.contains(root) || client.is_finished()).then_some(*root)
+                (!desired.contains_key(root) || client.is_finished()).then_some(*root)
             })
             .collect();
         let stopped = stopped
             .into_iter()
             .filter_map(|root| self.running.remove(&root));
         stop_clients(stopped);
-        self.failed_roots.retain(|root| desired.contains(root));
+        self.failed_roots.retain(|root| desired.contains_key(root));
 
-        let missing: Vec<u32> = desired
+        let missing: Vec<(u32, AppKey)> = desired
             .into_iter()
-            .filter(|root| !self.running.contains_key(root))
+            .filter(|(root, _)| !self.running.contains_key(root))
             .collect();
-        for root in missing {
+        for (root, key) in missing {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            self.start(root, mixer);
+            self.start(root, key, volumes, mixer);
         }
         Ok(())
     }
 
-    fn start(&mut self, root: u32, mixer: &CaptureMixer) {
-        match ClientThread::start(root, mixer.add_source(root)) {
+    fn start(&mut self, root: u32, key: AppKey, volumes: &SendVolumes, mixer: &CaptureMixer) {
+        match ClientThread::start(root, key, volumes.clone(), mixer.add_source(root)) {
             Ok(client) => {
                 self.failed_roots.remove(&root);
                 self.running.insert(root, client);
@@ -265,11 +294,20 @@ struct ClientThread {
 }
 
 impl ClientThread {
-    fn start(process_id: u32, source: CaptureSource) -> Result<Self, AudioError> {
+    fn start(
+        process_id: u32,
+        key: AppKey,
+        volumes: SendVolumes,
+        source: CaptureSource,
+    ) -> Result<Self, AudioError> {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let (ready_tx, ready_rx) = mpsc::channel();
-        let sink: AudioSink = Box::new(move |chunk| source.push(chunk));
+        let sink: AudioSink = Box::new(move |mut chunk: AudioChunk| {
+            let gain = volumes.gain(Some(&key));
+            chunk.samples.iter_mut().for_each(|sample| *sample *= gain);
+            source.push(chunk);
+        });
         let thread = thread::Builder::new()
             .name(format!("brp-audio-wasapi-{process_id}"))
             .spawn(move || {
@@ -440,6 +478,10 @@ fn read_chunk(
 impl AudioCaptureSession for Session {
     fn error(&self) -> Option<String> {
         lock(&self.error).clone()
+    }
+
+    fn notice(&self) -> Option<String> {
+        lock(&self.notice).clone()
     }
 
     fn stop(mut self: Box<Self>) {

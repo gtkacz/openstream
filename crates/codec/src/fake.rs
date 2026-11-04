@@ -1,7 +1,7 @@
 use crate::audio::{AudioDecoder, AudioEncoder, AudioFrame};
 use crate::traits::*;
 use crate::{CodecError, RawFrame};
-use brp_proto::{AudioParams, CodecParams, EncodedFrame};
+use brp_proto::{AudioParams, ChromaLayout, CodecParams, EncodedFrame};
 pub struct FakeEncoder {
     cfg: EncoderConfig,
     next: u64,
@@ -51,8 +51,11 @@ pub struct SolidConverter {
 }
 impl SolidConverter {
     pub fn new(w: u32, h: u32) -> Self {
+        Self::with_chroma(ChromaLayout::Half, w, h)
+    }
+    pub fn with_chroma(chroma: ChromaLayout, w: u32, h: u32) -> Self {
         Self {
-            scratch: RawFrame::black(w, h, 0),
+            scratch: RawFrame::black_with(chroma, w, h, 0),
         }
     }
 }
@@ -127,6 +130,7 @@ mod tests {
             fps: 30,
             bitrate_kbps: 2_000,
             codec: Codec::H264,
+            quality: brp_proto::VideoQuality::Standard,
         }
     }
 

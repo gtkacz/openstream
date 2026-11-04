@@ -16,6 +16,7 @@ fn cfg() -> EncoderConfig {
         fps: 60,
         bitrate_kbps: 5_000,
         codec: Codec::H264,
+        quality: brp_proto::VideoQuality::Standard,
     }
 }
 

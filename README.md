@@ -46,8 +46,11 @@ are postcard-encoded on the versioned media ALPN `brp/media/1`.
 Run `brp` with no arguments, or double-click `brp.exe` on Windows, to open the
 start screen: pick a nickname, then Create room, or paste a ticket or a link and
 Join room. The room rail's Copy link button gives you an `https://` link that
-opens OpenStream into the room on a machine that has it and offers the download on one
-that does not; Copy ticket gives the bare ticket for the terminal. Each time
+opens OpenStream on a machine that has it and offers the download on one that does
+not; Copy ticket gives the bare ticket for the terminal. A link does not join by
+itself, because any web page can fire one: the window asks first and shows the name
+the room would see. "Join without asking" under Invite links in Settings turns that
+off. A pasted ticket, a recent room, and `brp join <ticket>` join straight away. Each time
 the window starts it registers OpenStream as the handler for `brp://` links, pointing
 at the binary that is running: a hidden `brp.desktop` under
 `~/.local/share/applications` on Linux, the `brp` class under
@@ -69,7 +72,8 @@ cargo build --release
 
 The Settings button on the start screen and in the dock opens a dialog
 for the nickname, the relay choice (public relays, a custom relay URL, or no
-relay), the capture frame rate ceiling, and the audio output device. Settings
+relay), whether links join without asking, the capture frame rate ceiling, and the
+audio output device. Settings
 apply when the next room opens. The start screen lists recent rooms with a Join
 button. Command line flags override the saved settings for that launch and are
 not saved.
@@ -88,7 +92,12 @@ launch runs the new version.
 
 In the window, the room rail lists you and every member, with a direct-or-relayed
 badge and their lives; switch on a live to watch it and pick its preset, and hover
-a tile for the preset selector and the stats overlay. Your own lives sit under your
+a tile for the preset selector and the stats overlay. Under "Quality & encoding",
+a publisher can also offer "Source 4:4:4", which keeps full-resolution colour for
+text and thin lines, and "Source lossless". Both need NVENC with H.264 or HEVC, and
+are not listed on a machine without it. Versions of OpenStream too old to decode
+them do not see them either. Lossless means no loss after the conversion from RGB
+to limited-range YUV, and takes as much bandwidth as the picture needs. Your own lives sit under your
 name with a frame-rate control, a codec selector, template checkboxes (untick
 Source to cap what viewers can ask for), a bitrate per preset, the measured encode
 rate, and a stop button; Stop sharing in the dock ends every live at once. Below
@@ -107,15 +116,24 @@ live back in the grid. A live is decoded once wherever it is shown.
 The dock also has a "Share audio" switch, on by default, beside an
 "Applications…" button. The button opens a dialog listing what is
 playing, with two radio buttons — all applications except OpenStream, or only the
-ones you tick — applied on Done and remembered in `settings.toml`. The tile
+ones you tick — applied on Done and remembered in `settings.toml`. The list
+follows applications as they start and stop while it is open. Where the platform
+keeps applications apart, each row also has a send volume, which changes what the
+room hears without touching your own speakers: always on Linux, only for ticked
+applications on Windows, and not on macOS, where ScreenCaptureKit hands over one
+finished mix. The room rail tells viewers what you share: "all applications", or
+the names of the ones you ticked. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
 that member in the room rail, and the dock has a "Mute all" for
 every publisher at once. On Linux, capture links to the selected applications'
 PipeWire output, always excluding OpenStream's own. On Windows, the default remains
 one WASAPI process-loopback client in exclude mode; a selection enumerates
 audio sessions and opens one include-tree client per selected application root,
-mixed into the same publisher stream. Requires Windows 10 version 2004. The
-Windows audio path is compiled and linted on CI but has not run on hardware.
+mixed into the same publisher stream. Windows can only include a process together
+with everything it started, so an application whose tree holds another application's
+audio is held back, and the dock says so. Requires Windows 10 version 2004. The
+Windows audio path is compiled and linted on CI but has not run on hardware;
+`crates/audio/tests/windows_hardware.rs` checks it on a real machine.
 
 On Windows the binary opens no console window. Started from a terminal with
 arguments it prints to that terminal, but the shell does not wait for it, so
@@ -185,12 +203,12 @@ on the GitHub Releases page, with a `SHA256SUMS` file.
 The FFmpeg build is BtbN's LGPL shared build, which keeps the project MIT and
 limits the software fallback to AV1 and VP9. To build on Windows yourself,
 install Visual Studio Build Tools with the C++ workload, LLVM (bindgen needs
-`libclang`), and the build CI pins, BtbN release `autobuild-2026-09-05-13-10`,
-asset `ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1.zip`. Extract it and
-set:
+`libclang`), and the build CI pins, which this repository mirrors because BtbN
+deletes old builds: the `ffmpeg-n8.1.3-32-g760d10603e` release, asset
+`ffmpeg-n8.1.3-32-g760d10603e-win64-lgpl-shared-8.1.zip`. Extract it and set:
 
 ```powershell
-$env:FFMPEG_DIR = "C:\path\to\ffmpeg-n8.1.2-50-g1a748fe2cd-win64-lgpl-shared-8.1"
+$env:FFMPEG_DIR = "C:\path\to\ffmpeg-n8.1.3-32-g760d10603e-win64-lgpl-shared-8.1"
 $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
 $env:PATH = "$env:FFMPEG_DIR\bin;$env:PATH"
 cargo build --release
@@ -266,7 +284,9 @@ same for `brp-audio`.
 On first run, `brp` creates a persistent iroh identity in the platform config
 directory (`brp/identity.key`). On Unix it is created with mode `0600`. The
 public key identifies the participant to the transport; the private key and
-tickets should be treated as sensitive, and neither is written to logs.
+tickets should be treated as sensitive, and neither is written to logs. A second
+window opened while the first runs uses a temporary identity of its own, because
+two processes on one key would compete for relayed traffic and count as one member.
 
 Possession of a ticket is the access mechanism. Membership travels as signed
 presence messages verified against the author identity, and the media server
@@ -276,8 +296,9 @@ sustain high bitrates, and the members panel shows direct versus relayed per
 member. Settings are saved beside the identity key in `brp/settings.toml`:
 nickname, relay choice, frame rate ceiling, audio output device, the tickets of
 recent rooms, and whether to check for updates. A stored ticket contains the
-addresses of the peer that issued it, so treat the file as you would the
-tickets themselves.
+addresses of the peer that issued it, or of the members present when you last
+left that room, so treat the file as you would the tickets themselves. On Unix it
+is written with mode `0600`.
 
 A share link carries the ticket in its fragment, which the browser never sends
 to the page's server, but browser history, chat logs, and clipboard managers
@@ -383,7 +404,7 @@ written to logs.
 
 ### Releasing
 
-Every push to `main` whose subject does not start with `fix:` automatically bumps
+Every push to `main` that passes CI and whose subject does not start with `fix:` bumps
 the workspace minor version, commits and tags it, builds the Linux tarball and
 Windows zip, and publishes a GitHub Release with checksums. Commits starting with
 `fix:` do not release; the generated `chore(release): ...` commit is ignored by

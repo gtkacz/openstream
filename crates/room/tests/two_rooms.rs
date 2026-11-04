@@ -114,9 +114,12 @@ async fn a_bad_ticket_times_out_instead_of_hanging() {
 }
 
 use brp_net::{MediaClient, RelaySetting as Relay, bind_endpoint};
-use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID};
-use brp_proto::{Codec, Preset};
-use brp_room::WatchState;
+use brp_proto::constants::{
+    CHROMA_444_PRESET_ID, LOSSLESS_PRESET_ID, MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID,
+};
+use brp_proto::{ChromaLayout, Codec, Preset, quality_presets};
+use brp_room::codecs::{EncoderFactory, FfmpegCodecs};
+use brp_room::{WatchHandle, WatchState};
 
 async fn joined_pair() -> (Room, Room) {
     let a = Room::create(config("alice")).await.unwrap();
@@ -167,6 +170,100 @@ async fn watching_starts_the_encoder_and_unwatching_stops_it_after_the_grace() {
 
     b.leave().await;
     a.leave().await;
+}
+
+/// Offers both quality presets on a fresh live, then has `b` switch through them and back.
+async fn switch_through_quality_presets(a: Room, b: Room) {
+    let live = a
+        .start_live(SourceKind::Monitor, None, "desk".into())
+        .await
+        .unwrap();
+    let info = a.snapshot().own_lives[0].info.clone();
+    let current = info.presets[0].clone();
+    let mut presets = info.presets.clone();
+    presets.extend(quality_presets(
+        info.source_width,
+        info.source_height,
+        current.fps,
+        current.codec,
+    ));
+    a.set_presets(live, presets).unwrap();
+    wait_until("the quality presets", Duration::from_secs(5), || {
+        b.snapshot()
+            .members
+            .first()
+            .and_then(|member| member.lives.first())
+            .is_some_and(|live| live.presets.iter().any(|p| p.id == LOSSLESS_PRESET_ID))
+    })
+    .await;
+
+    let shows = |handle: &WatchHandle, chroma| {
+        handle
+            .slot
+            .try_take()
+            .is_some_and(|frame| frame.validate().is_ok() && frame.chroma == chroma)
+    };
+    let handle = b.watch(a.id(), live, SOURCE_PRESET_ID).unwrap();
+    wait_until("a 4:2:0 frame", Duration::from_secs(15), || {
+        shows(&handle, ChromaLayout::Half)
+    })
+    .await;
+    for preset in [CHROMA_444_PRESET_ID, LOSSLESS_PRESET_ID] {
+        let handle = b.watch(a.id(), live, preset).unwrap();
+        wait_until("a 4:4:4 frame", Duration::from_secs(15), || {
+            shows(&handle, ChromaLayout::Full)
+        })
+        .await;
+    }
+    let handle = b.watch(a.id(), live, SOURCE_PRESET_ID).unwrap();
+    wait_until("4:2:0 again", Duration::from_secs(15), || {
+        shows(&handle, ChromaLayout::Half)
+    })
+    .await;
+    let failures: Vec<_> = a.snapshot().own_lives[0]
+        .presets
+        .iter()
+        .filter_map(|preset| preset.last_error.clone())
+        .collect();
+    assert!(failures.is_empty(), "{failures:?}");
+
+    b.leave().await;
+    a.leave().await;
+}
+
+#[tokio::test]
+async fn a_viewer_switches_between_half_and_full_chroma_presets() {
+    let (a, b) = joined_pair().await;
+    switch_through_quality_presets(a, b).await;
+}
+
+/// The same, through the real encoder and decoder. Gated like the codec crate's own hardware tests.
+#[tokio::test]
+async fn a_viewer_switches_between_half_and_full_chroma_presets_on_real_codecs() {
+    if std::env::var_os("BRP_CODEC_TESTS").is_none() {
+        return;
+    }
+    let real = |nickname| RoomConfig {
+        capture: Arc::new(SyntheticSource {
+            width: 640,
+            height: 360,
+            fps: 30,
+        }),
+        encoders: Arc::new(FfmpegCodecs::default()),
+        decoders: Arc::new(FfmpegCodecs::default()),
+        ..config(nickname)
+    };
+    if !FfmpegCodecs::default().offers_full_chroma() {
+        eprintln!("no 4:4:4 encoder on this machine");
+        return;
+    }
+    let a = Room::create(real("alice")).await.unwrap();
+    let b = Room::join(real("bob"), a.ticket()).await.unwrap();
+    wait_until("membership", Duration::from_secs(5), || {
+        !b.snapshot().members.is_empty()
+    })
+    .await;
+    switch_through_quality_presets(a, b).await;
 }
 
 #[tokio::test]
@@ -559,24 +656,22 @@ async fn turning_share_audio_off_ends_the_packets_and_the_flag_in_presence() {
         !b.snapshot().members[0].has_audio && a.snapshot().own_audio.subscribers == 0
     })
     .await;
-    // The jitter buffer can still hold real packets right when the flag clears, so wait for
-    // them to drain rather than assuming a fixed render count empties it.
-    wait_until("silence", Duration::from_secs(5), || {
-        !is_audible(&output.render(1024))
-    })
+    // The jitter buffer can still hold real packets right when the flag clears, and a track can
+    // run dry between them, so one silent render does not mean they have drained.
+    let mut silent = 0;
+    wait_until(
+        "ten silent renders in a row",
+        Duration::from_secs(5),
+        || {
+            silent = if is_audible(&output.render(1024)) {
+                0
+            } else {
+                silent + 1
+            };
+            silent >= 10
+        },
+    )
     .await;
-    let renders: Vec<bool> = {
-        let mut results = Vec::with_capacity(10);
-        for _ in 0..10 {
-            results.push(is_audible(&output.render(1024)));
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        results
-    };
-    assert!(
-        renders.iter().all(|audible| !audible),
-        "expected 10 consecutive silent renders, got {renders:?}"
-    );
 
     b.leave().await;
     a.leave().await;

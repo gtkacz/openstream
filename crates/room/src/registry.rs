@@ -6,13 +6,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use brp_audio::{AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSource};
+use brp_audio::{
+    AppKey, AudioCapture, AudioCaptureSession, AudioError, AudioSelection, AudioSource,
+    SendVolumeSupport,
+};
 use brp_capture::{CaptureFrame, CaptureSession, SourceInfo};
 use brp_codec::{CodecError, FrameConverter, InputImage, RawFrame};
 use brp_net::{AudioSubscription, LiveSource, SubscribeRejected, Subscription};
 use brp_pipeline::{AudioPublisher, LatestSlot, Pacer, Publisher, SlotWait};
-use brp_proto::constants::{IDLE_KEYFRAME_RETRY, MAX_LIVES_PER_PARTICIPANT, MAX_PRESETS_PER_LIVE};
-use brp_proto::{LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
+use brp_proto::constants::{
+    IDLE_KEYFRAME_RETRY, MAX_AUDIO_MIX_NAME_LEN, MAX_AUDIO_MIX_NAMES, MAX_LIVES_PER_PARTICIPANT,
+    MAX_PRESETS_PER_LIVE,
+};
+use brp_proto::{AudioMix, ChromaLayout, LiveInfo, PixelFormat, Preset, ProtoError, SourceKind};
 
 use crate::codecs::EncoderFactory;
 use crate::error::RoomError;
@@ -22,6 +28,8 @@ pub type ChangeNotify = Arc<dyn Fn() + Send + Sync>;
 
 type CaptureSlot = Arc<LatestSlot<Arc<CaptureFrame>>>;
 type RawSlot = Arc<LatestSlot<Arc<RawFrame>>>;
+/// What a conversion's output looks like; presets that agree on it share one converter.
+type GroupKey = (u32, u32, ChromaLayout);
 
 /// Delivers each captured frame to every running encoder of one live without copying pixels.
 #[derive(Default)]
@@ -64,8 +72,8 @@ struct Member {
 }
 
 /// Converts one captured frame per tick and shares the immutable result with every subscribed
-/// preset whose output dimensions match this group's — one `SwsConverter`/`FrameConverter` per
-/// distinct (width, height) per live, instead of one per preset. `FrameConverter::convert` lends a
+/// preset whose output dimensions and chroma match this group's — one
+/// `SwsConverter`/`FrameConverter` per distinct `GroupKey` per live, instead of one per preset. `FrameConverter::convert` lends a
 /// mutable scratch buffer the converter reuses on its next call, so a shared borrow can't survive
 /// past that call: this loop clones the converted frame into a fresh `Arc<RawFrame>` immediately,
 /// once per source frame, and hands that immutable clone to every member before converting again.
@@ -175,7 +183,7 @@ fn conversion_loop(group: Arc<ConversionGroup>, mut converter: Box<dyn FrameConv
 
 struct RunningEncoder {
     publisher: Publisher,
-    group_key: (u32, u32),
+    group_key: GroupKey,
     raw_slot: RawSlot,
     idle_since: Option<Instant>,
 }
@@ -191,9 +199,10 @@ struct OwnLive {
     session: Option<Box<dyn CaptureSession>>,
     fan: Arc<CaptureFan>,
     presets: BTreeMap<u32, PresetState>,
-    /// One converter per distinct subscribed (width, height); created on first subscribe, stopped
-    /// once its last member preset stops.
-    groups: BTreeMap<(u32, u32), Arc<ConversionGroup>>,
+    full_chroma: bool,
+    /// One converter per distinct subscribed `GroupKey`; created on first subscribe, stopped once
+    /// its last member preset stops.
+    groups: BTreeMap<GroupKey, Arc<ConversionGroup>>,
 }
 
 struct RunningAudio {
@@ -205,8 +214,12 @@ struct RunningAudio {
 struct AudioState {
     enabled: bool,
     selection: AudioSelection,
+    /// The names applications last listed under, for telling the room what the selection carries.
+    labels: BTreeMap<AppKey, String>,
     running: Option<RunningAudio>,
     last_error: Option<String>,
+    /// What the running capture last said it is leaving out, polled by housekeeping.
+    notice: Option<String>,
 }
 
 impl AudioState {
@@ -250,8 +263,10 @@ impl LiveRegistry {
                 audio: AudioState {
                     enabled: true,
                     selection,
+                    labels: BTreeMap::new(),
                     running: None,
                     last_error: None,
+                    notice: None,
                 },
             }),
             encoders,
@@ -271,6 +286,7 @@ impl LiveRegistry {
     ) -> Result<u32, RoomError> {
         let source = session.info();
         validate_presets(&presets, source.width, source.height, source.fps)?;
+        let full_chroma = self.encoders.offers_full_chroma();
         let mut inner = lock(&self.inner);
         if inner.lives.len() >= MAX_LIVES_PER_PARTICIPANT {
             return Err(RoomError::TooManyLives);
@@ -308,6 +324,7 @@ impl LiveRegistry {
                 session: Some(session),
                 fan,
                 presets,
+                full_chroma,
                 groups: BTreeMap::new(),
             },
         );
@@ -468,10 +485,50 @@ impl LiveRegistry {
         (self.on_change)();
     }
 
-    /// What the platform reports as playing audio now. Takes no registry lock: the backend's own
-    /// deadline is what bounds it.
+    /// How loud each application reaches the room, in percent. Applies to a running capture without
+    /// swapping it, so no one hears a gap.
+    pub fn set_audio_volumes(&self, volumes: BTreeMap<AppKey, u8>) {
+        self.audio_capture.set_send_volumes(volumes);
+    }
+
+    pub fn send_volume_support(&self) -> SendVolumeSupport {
+        self.audio_capture.send_volume_support()
+    }
+
+    /// What the platform reports as playing audio now. Lists with no registry lock held: the
+    /// backend's own deadline is what bounds it.
     pub fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
-        self.audio_capture.sources()
+        let sources = self.audio_capture.sources()?;
+        let labels = &mut lock(&self.inner).audio.labels;
+        for source in &sources {
+            labels.insert(source.key.clone(), source.label.clone());
+        }
+        Ok(sources)
+    }
+
+    /// What presence tells the room this participant's audio carries. An application not listed
+    /// yet this run, because it is closed, goes by its identity. A label is whatever the application
+    /// calls itself, so it is cut to size like any other name.
+    pub fn audio_mix(&self) -> AudioMix {
+        let inner = lock(&self.inner);
+        match &inner.audio.selection {
+            AudioSelection::All => AudioMix::All,
+            AudioSelection::Only(keys) => AudioMix::Only {
+                names: keys
+                    .iter()
+                    .take(MAX_AUDIO_MIX_NAMES)
+                    .map(|key| {
+                        let name = inner
+                            .audio
+                            .labels
+                            .get(key)
+                            .map_or(key.as_str(), String::as_str);
+                        name.chars().take(MAX_AUDIO_MIX_NAME_LEN).collect()
+                    })
+                    .collect(),
+                others: keys.len().saturating_sub(MAX_AUDIO_MIX_NAMES) as u32,
+            },
+        }
     }
 
     pub fn audio_enabled(&self) -> bool {
@@ -484,7 +541,10 @@ impl LiveRegistry {
         let state = match (&audio.last_error, &audio.running, audio.enabled) {
             (_, _, false) => AudioCaptureState::Off,
             (Some(error), _, true) => AudioCaptureState::Failed(error.clone()),
-            (None, Some(_), true) => AudioCaptureState::Capturing,
+            (None, Some(_), true) => match &audio.notice {
+                Some(notice) => AudioCaptureState::Limited(notice.clone()),
+                None => AudioCaptureState::Capturing,
+            },
             (None, None, true) => AudioCaptureState::Idle,
         };
         OwnAudioView {
@@ -511,6 +571,7 @@ impl LiveRegistry {
             .lives
             .values()
             .map(|live| OwnLiveView {
+                full_chroma: live.full_chroma,
                 info: LiveInfo {
                     has_audio,
                     ..live.info.clone()
@@ -546,7 +607,14 @@ impl LiveRegistry {
     pub fn housekeeping(&self, now: Instant) {
         let mut inner = lock(&self.inner);
         let stopped_audio = housekeep_audio(&mut inner.audio, now, self.grace);
-        let audio_changed = stopped_audio.is_some();
+        let notice = inner
+            .audio
+            .running
+            .as_ref()
+            .and_then(|running| running.session.notice());
+        let notice_changed = notice != inner.audio.notice;
+        inner.audio.notice = notice;
+        let audio_changed = stopped_audio.is_some() || notice_changed;
         let mut stopped_any = false;
         for live in inner.lives.values_mut() {
             for state in live.presets.values_mut() {
@@ -726,11 +794,18 @@ impl LiveRegistry {
         let encoder = self.encoders.open_audio().map_err(|e| e.to_string())?;
         let publisher = AudioPublisher::start(encoder);
         match self.audio_capture.start(selection, publisher.sink()) {
-            Ok(session) => Ok(RunningAudio {
-                session,
-                publisher,
-                idle_since: None,
-            }),
+            Ok(session) => {
+                // So the room gets names without the picker having been opened this run. A failed
+                // listing only leaves it with identities.
+                if let Err(error) = self.sources() {
+                    tracing::debug!(%error, "could not list applications for their names");
+                }
+                Ok(RunningAudio {
+                    session,
+                    publisher,
+                    idle_since: None,
+                })
+            }
             Err(error) => {
                 publisher.stop();
                 Err(error.to_string())
@@ -739,7 +814,7 @@ impl LiveRegistry {
     }
 }
 
-/// Opens (or reuses) the conversion group for `preset`'s output dimensions and starts its encoder
+/// Opens (or reuses) the conversion group for `preset`'s output shape and starts its encoder
 /// and publisher. On encoder failure, a group newly created for this call is torn down immediately:
 /// a preset that fails to subscribe must not leave conversion work running for nobody.
 fn start_preset_encoder(
@@ -751,11 +826,12 @@ fn start_preset_encoder(
     format: PixelFormat,
     preset: &Preset,
 ) -> Result<RunningEncoder, CodecError> {
-    let group_key = (preset.width, preset.height);
+    let group_key = (preset.width, preset.height, preset.quality().chroma());
     let group = match live.groups.get(&group_key) {
         Some(group) => group.clone(),
         None => {
-            let converter = encoders.open_converter(source, format, group_key.0, group_key.1)?;
+            let (width, height, chroma) = group_key;
+            let converter = encoders.open_converter(source, format, width, height, chroma)?;
             let group = ConversionGroup::start(&live.fan, converter);
             live.groups.insert(group_key, group.clone());
             group
@@ -789,7 +865,7 @@ fn start_preset_encoder(
 
 fn stop_encoder(
     fan: &CaptureFan,
-    groups: &mut BTreeMap<(u32, u32), Arc<ConversionGroup>>,
+    groups: &mut BTreeMap<GroupKey, Arc<ConversionGroup>>,
     state: &mut PresetState,
 ) {
     if let Some(running) = state.running.take() {

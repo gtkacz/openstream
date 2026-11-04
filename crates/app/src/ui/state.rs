@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use brp_audio::AudioSource;
+use brp_audio::{AudioSource, SendVolumeSupport};
 use brp_capture::{SourceDescriptor, SourceId};
 use brp_proto::SourceKind;
 use brp_proto::constants::STATS_LOG_INTERVAL;
@@ -144,10 +144,19 @@ impl UiState {
 
     /// Opens the application picker, or replaces the list of one already open — Refresh takes the
     /// same path, and the draft must survive it.
-    pub fn open_applications(&mut self, reported: Vec<AudioSource>, stored: &AudioApplications) {
+    pub fn open_applications(
+        &mut self,
+        reported: Vec<AudioSource>,
+        stored: &AudioApplications,
+        volume_support: SendVolumeSupport,
+    ) {
         match &mut self.applications {
             Some(picker) => picker.refresh(reported),
-            None => self.applications = Some(ApplicationPicker::new(reported, stored)),
+            None => {
+                let mut picker = ApplicationPicker::new(reported, stored);
+                picker.volume_support = volume_support;
+                self.applications = Some(picker);
+            }
         }
     }
 
@@ -332,6 +341,7 @@ mod tests {
             codec: Codec::H264,
         };
         OwnLiveView {
+            full_chroma: true,
             info: LiveInfo {
                 id: 7,
                 title: "desk".into(),
@@ -404,6 +414,7 @@ mod tests {
             seen_ago_ms: 0,
             path: PathKind::Unknown,
             has_audio: false,
+            audio_mix: None,
             gain: 1.0,
         }
     }
@@ -571,12 +582,20 @@ mod tests {
             }]
         };
         let mut state = UiState::new();
-        state.open_applications(listed("firefox"), &AudioApplications::default());
+        state.open_applications(
+            listed("firefox"),
+            &AudioApplications::default(),
+            SendVolumeSupport::Never,
+        );
         let picker = state.applications.as_mut().expect("opened");
         picker.only = true;
         picker.toggle(&AppKey::new("firefox"), true);
 
-        state.open_applications(listed("spotify"), &AudioApplications::default());
+        state.open_applications(
+            listed("spotify"),
+            &AudioApplications::default(),
+            SendVolumeSupport::Never,
+        );
         let picker = state.applications.as_ref().expect("still open");
         assert!(picker.only, "a refresh must not discard the edit");
         assert!(picker.is_chosen(&AppKey::new("firefox")));

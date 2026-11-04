@@ -4,10 +4,19 @@ pub const MEDIA_ALPN: &[u8] = b"brp/media/1";
 pub const TICKET_KIND: &str = "brp";
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CONTROL_BYTES: usize = 64 * 1024;
-/// Frames buffered between the QUIC reader and the decoder before back-pressure reaches the publisher.
-pub const RECEIVE_QUEUE_FRAMES: usize = 8;
+/// How much video may wait between the QUIC reader and the decoder. A time rather than a
+/// number of frames, so what a network hiccup delivers all at once fits at any frame rate. What
+/// arrives while it is full is dropped, so a decoder that falls behind costs picture, not memory.
+pub const RECEIVE_QUEUE_DURATION: Duration = Duration::from_millis(500);
+/// Enough for a keyframe and what follows it on a stream slow enough to need less than this.
+pub const RECEIVE_QUEUE_MIN_FRAMES: usize = 8;
+/// Half a second at 240 fps. The rate comes from the publisher, so it cannot set the size alone.
+pub const RECEIVE_QUEUE_MAX_FRAMES: usize = 120;
 pub const SENDER_BACKLOG_FRAMES: usize = 2;
 pub const FORCED_KEYFRAME_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// The longest a viewer that keeps falling behind waits between keyframe requests. Every viewer of
+/// a preset shares its keyframes, so one stuck viewer must not cost the others one every second.
+pub const STALLED_VIEWER_KEYFRAME_MAX_INTERVAL: Duration = Duration::from_secs(5);
 pub const REORDER_MAX_WAIT: Duration = Duration::from_millis(200);
 pub const RESUBSCRIBE_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 pub const RESUBSCRIBE_BACKOFF_MAX: Duration = Duration::from_secs(30);
@@ -37,6 +46,11 @@ pub const NICKNAME_MAX_LEN: usize = 32;
 /// QUIC application close code the media server uses for callers outside the room.
 pub const REFUSED_NOT_MEMBER: u32 = 1;
 pub const SOURCE_PRESET_ID: u32 = 1;
+/// Stable ids for the full-chroma presets, after the ids `TEMPLATE_HEIGHTS` takes. A preset's
+/// quality travels as its id because postcard has no optional fields: a new `Preset` field would
+/// make every older peer fail to decode the whole presence.
+pub const CHROMA_444_PRESET_ID: u32 = 5;
+pub const LOSSLESS_PRESET_ID: u32 = 6;
 /// Compositor capture timestamps jitter by well under a millisecond; a frame this close to its
 /// slot is treated as on time rather than skipped.
 pub const PACER_JITTER_TOLERANCE: Duration = Duration::from_millis(1);
@@ -73,6 +87,9 @@ pub const AUDIO_CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bounds one picker click. The enumeration runs on the window thread through the command-drain
 /// path, so borrowing capture's five seconds would freeze the UI on a sick daemon.
 pub const AUDIO_SOURCE_LIST_TIMEOUT: Duration = Duration::from_secs(1);
+/// Bounds what a presence spends naming mixed applications, against gossip's 4 KB message cap.
+pub const MAX_AUDIO_MIX_NAMES: usize = 8;
+pub const MAX_AUDIO_MIX_NAME_LEN: usize = 64;
 /// How often the Windows backend reconciles selected executable identities against live audio
 /// sessions. Session notifications are not reliable enough to make capture depend on them.
 pub const AUDIO_SESSION_POLL_INTERVAL: Duration = Duration::from_secs(1);

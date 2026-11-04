@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{CodecError, RawFrame, RawFramePool};
-use brp_proto::{Codec, CodecParams, EncodedFrame, PixelFormat};
+use brp_proto::{Codec, CodecParams, EncodedFrame, PixelFormat, VideoQuality};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderConfig {
     pub width: u32,
@@ -9,6 +9,7 @@ pub struct EncoderConfig {
     pub fps: u32,
     pub bitrate_kbps: u32,
     pub codec: Codec,
+    pub quality: VideoQuality,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct InputImage<'a> {

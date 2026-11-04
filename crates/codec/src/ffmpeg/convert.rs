@@ -1,7 +1,7 @@
 use std::ffi::c_int;
 use std::ptr;
 
-use brp_proto::PixelFormat;
+use brp_proto::{ChromaLayout, PixelFormat};
 use ffmpeg_sys_next as ff;
 
 use crate::error::CodecError;
@@ -9,12 +9,13 @@ use crate::ffmpeg::ffi::{check, init_logging};
 use crate::raw::RawFrame;
 use crate::traits::{FrameConverter, InputImage};
 
-/// Converts packed 32-bit RGB into limited-range BT.709 NV12 at the destination size.
+/// Converts packed 32-bit RGB into limited-range BT.709 NV12 or NV24 at the destination size.
 pub struct SwsConverter {
     ctx: *mut ff::SwsContext,
     src: (u32, u32, PixelFormat),
     dst_width: u32,
     dst_height: u32,
+    chroma: ChromaLayout,
     /// Reused across calls: the destination size never changes for this converter's lifetime, and
     /// each call fully overwrites it before returning, so there is no allocation (or redundant
     /// black-level initialization) on the steady-state path.
@@ -37,6 +38,7 @@ impl SwsConverter {
         src_format: PixelFormat,
         dst_width: u32,
         dst_height: u32,
+        chroma: ChromaLayout,
     ) -> Result<Self, CodecError> {
         init_logging();
         if src_width == 0
@@ -57,7 +59,10 @@ impl SwsConverter {
                 av_pix_fmt(src_format),
                 dst_width as c_int,
                 dst_height as c_int,
-                ff::AVPixelFormat::AV_PIX_FMT_NV12,
+                match chroma {
+                    ChromaLayout::Half => ff::AVPixelFormat::AV_PIX_FMT_NV12,
+                    ChromaLayout::Full => ff::AVPixelFormat::AV_PIX_FMT_NV24,
+                },
                 ff::SwsFlags::SWS_BILINEAR as c_int,
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -85,7 +90,8 @@ impl SwsConverter {
             src: (src_width, src_height, src_format),
             dst_width,
             dst_height,
-            scratch: RawFrame::black(dst_width, dst_height, 0),
+            chroma,
+            scratch: RawFrame::black_with(chroma, dst_width, dst_height, 0),
         })
     }
 }
@@ -117,6 +123,7 @@ impl FrameConverter for SwsConverter {
                 src.format,
                 self.dst_width,
                 self.dst_height,
+                self.chroma,
             )?;
         }
         self.scratch.capture_ts_us = src.capture_ts_us;
@@ -170,8 +177,15 @@ mod tests {
             .collect()
     }
     fn convert(width: u32, height: u32, pixels: &[u8], dst: (u32, u32)) -> RawFrame {
-        let mut converter =
-            SwsConverter::new(width, height, PixelFormat::Bgra, dst.0, dst.1).unwrap();
+        let mut converter = SwsConverter::new(
+            width,
+            height,
+            PixelFormat::Bgra,
+            dst.0,
+            dst.1,
+            ChromaLayout::Half,
+        )
+        .unwrap();
         let image = InputImage {
             width,
             height,
@@ -202,8 +216,85 @@ mod tests {
         assert!(output.validate().is_ok());
     }
     #[test]
+    fn full_chroma_keeps_a_colour_that_half_chroma_averages_away() {
+        // Alternating red and blue columns: 4:2:0 has one chroma sample for each pair of columns,
+        // so only full chroma can tell them apart.
+        let pixels: Vec<u8> = (0..8 * 4)
+            .flat_map(|i| {
+                if i % 2 == 0 {
+                    [0, 0, 255, 255]
+                } else {
+                    [255, 0, 0, 255]
+                }
+            })
+            .collect();
+        let image = InputImage {
+            width: 8,
+            height: 4,
+            stride: 32,
+            format: PixelFormat::Bgra,
+            data: &pixels,
+            capture_ts_us: 1,
+        };
+        let mut converter =
+            SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4, ChromaLayout::Full).unwrap();
+        let output = converter.convert(&image).unwrap();
+        output.validate().unwrap();
+        assert_eq!(output.chroma, ChromaLayout::Full);
+        assert_eq!(output.uv.len(), 8 * 4 * 2);
+        let (red, blue) = (output.uv[0..2].to_vec(), output.uv[2..4].to_vec());
+        assert!(
+            red[1] > 200 && blue[0] > 200,
+            "red {red:?} and blue {blue:?} must keep their own chroma"
+        );
+    }
+
+    #[test]
+    fn full_chroma_is_right_for_every_format_a_compositor_hands_over_at_any_stride() {
+        // Red, in each byte order, with rows padded the way real capture pads them.
+        let cases = [
+            (PixelFormat::Bgra, [0, 0, 255, 255]),
+            (PixelFormat::Bgrx, [0, 0, 255, 0]),
+            (PixelFormat::Rgba, [255, 0, 0, 255]),
+            (PixelFormat::Rgbx, [255, 0, 0, 0]),
+        ];
+        let (width, height, stride) = (8u32, 4u32, 64usize);
+        for (format, pixel) in cases {
+            let mut data = vec![0xAB; stride * height as usize];
+            for row in data.chunks_mut(stride) {
+                for out in row[..width as usize * 4].as_chunks_mut::<4>().0 {
+                    *out = pixel;
+                }
+            }
+            let image = InputImage {
+                width,
+                height,
+                stride,
+                format,
+                data: &data,
+                capture_ts_us: 1,
+            };
+            let mut converter =
+                SwsConverter::new(width, height, format, width, height, ChromaLayout::Full)
+                    .unwrap();
+            let output = converter.convert(&image).unwrap();
+            output.validate().unwrap();
+            // Limited-range BT.709 red is close to Y 63, U 102, V 240; the padding must not show.
+            for pair in output.uv.as_chunks::<2>().0 {
+                assert!((98..=106).contains(&pair[0]), "{format:?} U {}", pair[0]);
+                assert!((236..=244).contains(&pair[1]), "{format:?} V {}", pair[1]);
+            }
+            assert!(
+                output.y.iter().all(|y| (59..=67).contains(y)),
+                "{format:?} Y"
+            );
+        }
+    }
+
+    #[test]
     fn short_input_buffer_is_rejected() {
-        let mut converter = SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4).unwrap();
+        let mut converter =
+            SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4, ChromaLayout::Half).unwrap();
         let image = InputImage {
             width: 8,
             height: 4,
@@ -219,7 +310,8 @@ mod tests {
     }
     #[test]
     fn stable_output_size_reuses_the_same_scratch_allocation() {
-        let mut converter = SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4).unwrap();
+        let mut converter =
+            SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4, ChromaLayout::Half).unwrap();
         let pixels = solid(8, 4, [10; 4]);
         let image = InputImage {
             width: 8,
@@ -252,7 +344,8 @@ mod tests {
     }
     #[test]
     fn a_source_resolution_change_still_produces_a_correctly_shaped_frame() {
-        let mut converter = SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4).unwrap();
+        let mut converter =
+            SwsConverter::new(8, 4, PixelFormat::Bgra, 8, 4, ChromaLayout::Half).unwrap();
         let first_pixels = solid(8, 4, [255; 4]);
         let first = InputImage {
             width: 8,

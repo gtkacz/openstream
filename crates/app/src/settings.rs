@@ -1,6 +1,7 @@
 //! What persists across launches besides the identity key: one TOML file in the platform config
 //! directory, read once at startup and written whole after a room opens or the dialog saves.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::DEFAULT_FPS;
 use crate::error::AppError;
+use crate::identity::write_private;
 
 /// Beside `identity.key` in the platform config directory.
 pub const SETTINGS_FILE: &str = "settings.toml";
@@ -33,6 +35,9 @@ pub struct Settings {
     /// Ask GitHub for the latest release at launch. On by default and documented as a network
     /// request, which is why it can be turned off.
     pub check_updates: bool,
+    /// A `brp://` link joins its room at once instead of asking. Off by default because any web page
+    /// can fire one, and joining shows the room this person's name and IP address.
+    pub auto_join_links: bool,
 }
 
 impl Default for Settings {
@@ -44,6 +49,7 @@ impl Default for Settings {
             audio: AudioSettings::default(),
             recent_rooms: Vec::new(),
             check_updates: true,
+            auto_join_links: false,
         }
     }
 }
@@ -80,8 +86,9 @@ pub struct AudioSettings {
     pub applications: AudioApplications,
 }
 
-/// Serialised as `[audio.applications] mode = "all" | "only"` with `names`. Both fields are always
-/// written: flipping to every application for a film and back must not lose the set. This
+/// Serialised as `[audio.applications] mode = "all" | "only"` with `names` and, under
+/// `[audio.applications.volumes]`, the percent of any application not at full volume. `mode` and
+/// `names` are always written: flipping to every application for a film and back must not lose the set. This
 /// deliberately differs from [`RelayChoice`]'s adjacently-tagged shape, whose variants carry
 /// genuinely different data.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +96,7 @@ pub struct AudioSettings {
 pub struct AudioApplications {
     pub mode: AudioMode,
     pub names: Vec<String>,
+    pub volumes: BTreeMap<String, u8>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +108,15 @@ pub enum AudioMode {
 }
 
 impl AudioApplications {
+    /// How loud each application reaches the room. Names go through [`AppKey`] as in
+    /// [`Self::to_selection`].
+    pub fn to_volumes(&self) -> BTreeMap<AppKey, u8> {
+        self.volumes
+            .iter()
+            .map(|(name, percent)| (AppKey::new(name), *percent))
+            .collect()
+    }
+
     /// What the room captures with. Names go through [`AppKey`], so a hand-edited file with odd
     /// casing still matches on Windows; mirrors [`RelayChoice::to_relay_setting`].
     pub fn to_selection(&self) -> AudioSelection {
@@ -153,7 +170,10 @@ impl Settings {
         // Unique per process: two instances saving at once must not share a temp sibling, or one
         // instance's rename could pick up the other's still-being-written file.
         let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
-        fs::write(&tmp, text)
+        // Owner-only, because the file holds tickets and a ticket is all it takes to join. A leftover
+        // from a crashed run with this process id is cleared first, or the write would refuse it.
+        let _ = fs::remove_file(&tmp);
+        write_private(&tmp, text.as_bytes())
             .map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))?;
         fs::rename(&tmp, path)
             .map_err(|e| AppError::Settings(format!("{}: {e}", path.display())))?;
@@ -172,6 +192,12 @@ impl Settings {
             },
         );
         self.recent_rooms.truncate(RECENT_ROOMS_MAX);
+    }
+
+    /// Swaps a remembered room's ticket for a newer way into the same room, and puts it first.
+    pub fn replace_room(&mut self, old_ticket: &str, ticket: &str, now_unix: u64) {
+        self.recent_rooms.retain(|room| room.ticket != old_ticket);
+        self.remember_room(ticket, now_unix);
     }
 
     /// What Save refuses: a zero frame rate, or a custom relay URL that does not parse.
@@ -270,6 +296,7 @@ mod tests {
                 applications: AudioApplications {
                     mode: AudioMode::Only,
                     names: vec!["firefox".into(), "game.exe".into()],
+                    ..Default::default()
                 },
             },
             recent_rooms: vec![RecentRoom {
@@ -277,6 +304,7 @@ mod tests {
                 last_joined_unix: 1_788_000_000,
             }],
             check_updates: false,
+            auto_join_links: true,
         }
     }
 
@@ -321,6 +349,28 @@ mod tests {
         assert_eq!(settings.relay, RelayChoice::Disabled);
         assert_eq!(settings.nickname, None);
         assert!(settings.recent_rooms.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_leaves_the_file_readable_only_by_its_owner_even_over_a_more_open_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_path("private");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "fps = 30\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        Settings::default().save(&path).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "it holds tickets, and a ticket is enough to join"
+        );
+    }
+
+    #[test]
+    fn a_file_from_before_the_setting_still_asks_before_a_link_joins() {
+        let settings: Settings = toml::from_str("fps = 24\n").unwrap();
+        assert!(!settings.auto_join_links);
     }
 
     #[test]
@@ -405,6 +455,22 @@ mod tests {
         store.load_error = None;
         assert!(store.save_unless_load_failed().unwrap());
         assert_eq!(Settings::load(&path).unwrap(), store.settings);
+    }
+
+    #[test]
+    fn replacing_a_room_keeps_one_entry_for_it_and_leaves_the_others() {
+        let mut settings = Settings::default();
+        settings.remember_room("other", 1);
+        settings.remember_room("old", 2);
+        settings.remember_room("another", 3);
+        settings.replace_room("old", "new", 4);
+        let tickets: Vec<&str> = settings
+            .recent_rooms
+            .iter()
+            .map(|room| room.ticket.as_str())
+            .collect();
+        assert_eq!(tickets, ["new", "another", "other"]);
+        assert_eq!(settings.recent_rooms[0].last_joined_unix, 4);
     }
 
     #[test]
@@ -496,6 +562,7 @@ mod tests {
         let only = AudioApplications {
             mode: AudioMode::Only,
             names: vec!["firefox".into(), "game.exe".into()],
+            ..Default::default()
         };
         assert_eq!(
             only.to_selection(),
@@ -507,6 +574,7 @@ mod tests {
         let kept = AudioApplications {
             mode: AudioMode::All,
             names: vec!["firefox".into()],
+            ..Default::default()
         };
         assert_eq!(
             kept.to_selection(),
@@ -521,6 +589,7 @@ mod tests {
         let odd = AudioApplications {
             mode: AudioMode::Only,
             names: vec![r"C:\Games\GAME.EXE".into()],
+            ..Default::default()
         };
         assert_eq!(
             odd.to_selection(),

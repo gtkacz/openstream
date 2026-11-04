@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 use crate::CodecError;
+use brp_proto::ChromaLayout;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawFrame {
@@ -11,22 +12,41 @@ pub struct RawFrame {
     pub y: Vec<u8>,
     pub uv: Vec<u8>,
     pub capture_ts_us: u64,
+    pub chroma: ChromaLayout,
 }
 impl RawFrame {
     pub fn black(w: u32, h: u32, ts: u64) -> Self {
+        Self::black_with(ChromaLayout::Half, w, h, ts)
+    }
+    pub fn black_with(chroma: ChromaLayout, w: u32, h: u32, ts: u64) -> Self {
         let s = w as usize;
+        let (uv_stride, uv_rows) = match chroma {
+            ChromaLayout::Half => (s, (h as usize).div_ceil(2)),
+            ChromaLayout::Full => (s * 2, h as usize),
+        };
         Self {
             width: w,
             height: h,
             y_stride: s,
-            uv_stride: s,
+            uv_stride,
             y: vec![16; s * h as usize],
-            uv: vec![128; s * (h as usize).div_ceil(2)],
+            uv: vec![128; uv_stride * uv_rows],
             capture_ts_us: ts,
+            chroma,
         }
     }
     pub fn chroma_rows(&self) -> usize {
-        (self.height as usize).div_ceil(2)
+        match self.chroma {
+            ChromaLayout::Half => (self.height as usize).div_ceil(2),
+            ChromaLayout::Full => self.height as usize,
+        }
+    }
+    /// UV pairs per chroma row.
+    pub fn chroma_width(&self) -> usize {
+        match self.chroma {
+            ChromaLayout::Half => self.width as usize / 2,
+            ChromaLayout::Full => self.width as usize,
+        }
     }
     pub fn validate(&self) -> Result<(), CodecError> {
         if self.width == 0
@@ -38,7 +58,7 @@ impl RawFrame {
                 "dimensions must be even and non-zero".into(),
             ));
         }
-        if self.y_stride < self.width as usize || self.uv_stride < self.width as usize {
+        if self.y_stride < self.width as usize || self.uv_stride < self.chroma_width() * 2 {
             return Err(CodecError::InvalidFrame("stride shorter than width".into()));
         }
         if self.y.len() < self.y_stride * self.height as usize
@@ -80,12 +100,16 @@ impl RawFramePool {
 
     /// Reuses a pooled buffer matching `width`/`height` when one is free; otherwise allocates a
     /// fresh black frame.
-    pub fn acquire(&self, width: u32, height: u32, capture_ts_us: u64) -> RawFrame {
+    pub fn acquire(
+        &self,
+        chroma: ChromaLayout,
+        width: u32,
+        height: u32,
+        capture_ts_us: u64,
+    ) -> RawFrame {
         let mut free = self.lock();
-        if let Some(pos) = free
-            .iter()
-            .position(|f| f.width == width && f.height == height)
-        {
+        let matches = |f: &RawFrame| f.width == width && f.height == height && f.chroma == chroma;
+        if let Some(pos) = free.iter().position(matches) {
             let mut frame = free.swap_remove(pos);
             frame.capture_ts_us = capture_ts_us;
             frame
@@ -93,9 +117,9 @@ impl RawFramePool {
             // Evict stale-shape buffers so a resolution/preset change doesn't permanently pin
             // the free list full of buffers `acquire` can never match and `release` can never
             // replace (it only accepts new buffers while `free.len() < capacity`).
-            free.retain(|f| f.width == width && f.height == height);
+            free.retain(matches);
             drop(free);
-            RawFrame::black(width, height, capture_ts_us)
+            RawFrame::black_with(chroma, width, height, capture_ts_us)
         }
     }
 
@@ -132,6 +156,31 @@ mod tests {
     }
 
     #[test]
+    fn a_full_chroma_frame_has_one_uv_pair_per_luma_sample() {
+        let f = RawFrame::black_with(ChromaLayout::Full, 6, 4, 1);
+        assert_eq!((f.uv_stride, f.chroma_rows(), f.chroma_width()), (12, 4, 6));
+        assert_eq!(f.uv.len(), 48);
+        assert!(f.validate().is_ok());
+    }
+
+    #[test]
+    fn a_full_chroma_frame_with_a_half_chroma_stride_is_rejected() {
+        let mut f = RawFrame::black_with(ChromaLayout::Full, 6, 4, 1);
+        f.uv_stride = 6;
+        assert!(matches!(f.validate(), Err(CodecError::InvalidFrame(_))));
+    }
+
+    #[test]
+    fn pool_never_hands_a_half_chroma_buffer_to_a_full_chroma_frame() {
+        let pool = RawFramePool::new(2);
+        pool.release(RawFrame::black(6, 4, 0));
+        let out = pool.acquire(ChromaLayout::Full, 6, 4, 1);
+        assert_eq!(out.chroma, ChromaLayout::Full);
+        out.validate().unwrap();
+        assert!(pool.is_empty());
+    }
+
+    #[test]
     fn validate_rejects_short_buffers_and_odd_sizes() {
         let mut f = RawFrame::black(6, 4, 0);
         f.y.pop();
@@ -146,11 +195,11 @@ mod tests {
     #[test]
     fn pool_reuses_a_released_buffer_of_the_same_shape() {
         let pool = RawFramePool::new(2);
-        let a = pool.acquire(6, 4, 1);
+        let a = pool.acquire(ChromaLayout::Half, 6, 4, 1);
         let y_ptr = a.y.as_ptr();
         let uv_ptr = a.uv.as_ptr();
         pool.release(a);
-        let b = pool.acquire(6, 4, 2);
+        let b = pool.acquire(ChromaLayout::Half, 6, 4, 2);
         assert_eq!(
             b.y.as_ptr(),
             y_ptr,
@@ -182,7 +231,7 @@ mod tests {
         let pool = RawFramePool::new(2);
         pool.release(RawFrame::black(6, 4, 0));
         // Different width and height: a resolution/chroma-layout change, not a stable stream.
-        let out = pool.acquire(10, 6, 5);
+        let out = pool.acquire(ChromaLayout::Half, 10, 6, 5);
         assert_eq!((out.width, out.height, out.capture_ts_us), (10, 6, 5));
         out.validate().unwrap();
         assert_eq!(
@@ -198,12 +247,12 @@ mod tests {
         pool.release(RawFrame::black(6, 4, 0));
         // The mismatch eviction above must not disable pooling permanently: once a
         // new-shape buffer is released, later same-shape acquisitions reuse it.
-        let miss = pool.acquire(10, 6, 1);
+        let miss = pool.acquire(ChromaLayout::Half, 10, 6, 1);
         pool.release(miss);
-        let a = pool.acquire(10, 6, 2);
+        let a = pool.acquire(ChromaLayout::Half, 10, 6, 2);
         let y_ptr = a.y.as_ptr();
         pool.release(a);
-        let b = pool.acquire(10, 6, 3);
+        let b = pool.acquire(ChromaLayout::Half, 10, 6, 3);
         assert_eq!(
             b.y.as_ptr(),
             y_ptr,
@@ -214,7 +263,7 @@ mod tests {
     #[test]
     fn pool_falls_back_to_black_when_empty() {
         let pool = RawFramePool::new(2);
-        let out = pool.acquire(6, 4, 9);
+        let out = pool.acquire(ChromaLayout::Half, 6, 4, 9);
         assert!(out.y.iter().all(|&v| v == 16) && out.uv.iter().all(|&v| v == 128));
         assert!(out.validate().is_ok());
     }

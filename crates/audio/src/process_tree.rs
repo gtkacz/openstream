@@ -37,9 +37,172 @@ pub(crate) fn application_root(pid: u32, key: &AppKey, processes: &ProcessMap) -
     }
 }
 
+/// Which selected applications can be captured, and which have to be held back.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct CapturePlan {
+    pub roots: BTreeMap<u32, AppKey>,
+    pub held_back: BTreeSet<AppKey>,
+}
+
+/// WASAPI can only include a process together with everything it started, so a selected application
+/// is captured only when its tree holds no other application's audio and not this process. Anything
+/// else would reach the room unchosen, or twice when the other application is selected as well.
+///
+/// shortcut: a child that starts playing is heard until the next poll notices it, up to
+/// `AUDIO_SESSION_POLL_INTERVAL`, because Windows offers no way to capture a single process.
+pub(crate) fn capture_plan(
+    sessions: &[(u32, AppKey)],
+    own_process: u32,
+    selected: &BTreeSet<AppKey>,
+    processes: &ProcessMap,
+) -> CapturePlan {
+    let mut plan = CapturePlan::default();
+    for (pid, key) in sessions.iter().filter(|(_, key)| selected.contains(key)) {
+        let Some(root) = application_root(*pid, key, processes) else {
+            continue;
+        };
+        let shares_its_tree = in_tree(own_process, root, processes)
+            || sessions
+                .iter()
+                .any(|(other, other_key)| other_key != key && in_tree(*other, root, processes));
+        if shares_its_tree {
+            plan.held_back.insert(key.clone());
+        } else {
+            plan.roots.insert(root, key.clone());
+        }
+    }
+    plan
+}
+
+/// Whether `pid` is `root` or descends from it. A parent id can outlive its process and be reused,
+/// which at worst holds an application back rather than sharing too much.
+fn in_tree(pid: u32, root: u32, processes: &ProcessMap) -> bool {
+    let mut current = pid;
+    let mut seen = BTreeSet::new();
+    while seen.insert(current) {
+        if current == root {
+            return true;
+        }
+        match processes.get(&current) {
+            Some(info) => current = info.parent,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// What the user is told about the applications a plan holds back.
+pub(crate) fn held_back_notice(held_back: &BTreeSet<AppKey>) -> Option<String> {
+    if held_back.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = held_back.iter().map(AppKey::as_str).collect();
+    Some(format!(
+        "Not sharing {}: other audio it started would be shared too",
+        names.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_notice_names_what_was_held_back_and_says_nothing_otherwise() {
+        assert_eq!(held_back_notice(&BTreeSet::new()), None);
+        let notice = held_back_notice(&keys(&["launcher.exe", "other.exe"])).unwrap();
+        assert!(notice.contains("launcher.exe, other.exe"), "{notice}");
+    }
+
+    fn keys(names: &[&str]) -> BTreeSet<AppKey> {
+        names.iter().map(|name| AppKey::new(name)).collect()
+    }
+
+    fn session(pid: u32, name: &str) -> (u32, AppKey) {
+        (pid, AppKey::new(name))
+    }
+
+    /// A launcher that started a game, and a browser nothing else lives under.
+    fn desktop() -> ProcessMap {
+        BTreeMap::from([
+            (5, info(1, "launcher.exe")),
+            (10, info(5, "game.exe")),
+            (20, info(1, "browser.exe")),
+            (21, info(20, "browser.exe")),
+        ])
+    }
+
+    #[test]
+    fn a_tree_holding_only_the_selected_application_is_captured() {
+        let plan = capture_plan(
+            &[session(21, "browser.exe"), session(10, "game.exe")],
+            99,
+            &keys(&["browser.exe"]),
+            &desktop(),
+        );
+        assert_eq!(
+            plan.roots,
+            BTreeMap::from([(20, AppKey::new("browser.exe"))])
+        );
+        assert!(plan.held_back.is_empty());
+    }
+
+    #[test]
+    fn a_launcher_whose_child_plays_unselected_audio_is_held_back() {
+        let plan = capture_plan(
+            &[session(5, "launcher.exe"), session(10, "game.exe")],
+            99,
+            &keys(&["launcher.exe"]),
+            &desktop(),
+        );
+        assert!(plan.roots.is_empty(), "the game would reach the room");
+        assert_eq!(plan.held_back, keys(&["launcher.exe"]));
+    }
+
+    #[test]
+    fn a_child_selected_with_its_parent_is_captured_once_at_its_own_volume() {
+        let plan = capture_plan(
+            &[session(5, "launcher.exe"), session(10, "game.exe")],
+            99,
+            &keys(&["launcher.exe", "game.exe"]),
+            &desktop(),
+        );
+        assert_eq!(plan.roots, BTreeMap::from([(10, AppKey::new("game.exe"))]));
+        assert_eq!(plan.held_back, keys(&["launcher.exe"]));
+    }
+
+    #[test]
+    fn a_tree_this_process_descends_from_is_held_back() {
+        let mut processes = desktop();
+        processes.insert(30, info(5, "brp.exe"));
+        let plan = capture_plan(
+            &[session(5, "launcher.exe")],
+            30,
+            &keys(&["launcher.exe"]),
+            &processes,
+        );
+        assert!(plan.roots.is_empty());
+        assert_eq!(plan.held_back, keys(&["launcher.exe"]));
+    }
+
+    #[test]
+    fn another_openstream_window_under_a_selected_application_holds_it_back() {
+        let mut processes = desktop();
+        processes.insert(30, info(5, "brp.exe"));
+        let plan = capture_plan(
+            &[session(5, "launcher.exe"), session(30, "brp.exe")],
+            99,
+            &keys(&["launcher.exe"]),
+            &processes,
+        );
+        assert_eq!(plan.held_back, keys(&["launcher.exe"]));
+    }
+
+    #[test]
+    fn a_parent_id_loop_ends_the_walk() {
+        let processes = BTreeMap::from([(1, info(2, "a.exe")), (2, info(1, "b.exe"))]);
+        assert!(!in_tree(1, 3, &processes));
+    }
 
     fn info(parent: u32, name: &str) -> ProcessInfo {
         ProcessInfo {

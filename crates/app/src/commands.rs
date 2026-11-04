@@ -1,7 +1,9 @@
 //! What the panels ask the room to do. Panels only emit these; the window applies them after the
 //! egui pass, so widget code never holds the room.
 
-use brp_audio::AudioSelection;
+use std::collections::BTreeMap;
+
+use brp_audio::{AppKey, AudioSelection};
 use brp_capture::SourceId;
 use brp_proto::{Preset, SourceKind};
 use iroh::PublicKey;
@@ -33,6 +35,8 @@ pub enum RoomCommand {
     SetMasterMute(bool),
     /// Replaces which applications this participant's audio carries.
     SetAudioApplications(AudioSelection),
+    /// Replaces how loud each application reaches the room, in percent.
+    SetAudioVolumes(BTreeMap<AppKey, u8>),
     /// Lists what is playing audio and opens the application picker, or refreshes an open one.
     ChooseApplications,
 }

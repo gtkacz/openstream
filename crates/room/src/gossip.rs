@@ -80,12 +80,15 @@ impl PresenceLoop {
     }
 
     async fn broadcast(&self) {
-        let presence = Presence {
+        let mut presence = Presence {
             version: PROTOCOL_VERSION,
             ts_unix_ms: unix_ms(),
             nickname: self.nickname.clone(),
             lives: self.registry.live_infos(),
+            audio_mix: Some(self.registry.audio_mix()),
+            quality_presets: Vec::new(),
         };
+        presence.hide_quality_presets();
         let bytes = match Signed::sign(&self.secret, &presence).and_then(|signed| encode(&signed)) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -122,13 +125,14 @@ impl PresenceLoop {
                 return;
             }
         };
-        let presence: Presence = match signed.verify() {
+        let mut presence: Presence = match signed.verify() {
             Ok(presence) => presence,
             Err(error) => {
                 tracing::debug!(author = %signed.author.fmt_short(), %error, "dropping presence");
                 return;
             }
         };
+        presence.restore_quality_presets();
         if let Err(error) = presence.validate() {
             tracing::debug!(author = %signed.author.fmt_short(), %error, "dropping invalid presence");
             return;

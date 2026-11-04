@@ -18,6 +18,7 @@ fn encoded_frames(n: u64) -> Vec<EncodedFrame> {
             fps: 30,
             bitrate_kbps: 1_000,
             codec: Codec::H264,
+            quality: brp_proto::VideoQuality::Standard,
         },
         1_000,
     );

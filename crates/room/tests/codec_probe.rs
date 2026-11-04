@@ -19,6 +19,7 @@ fn preferred_codec_matches_what_a_720p_open_selects() {
         fps: 30,
         bitrate_kbps: 5_000,
         codec: Codec::Hevc,
+        quality: brp_proto::VideoQuality::Standard,
     };
     let expected = open_encoder_auto(real_size, None)
         .expect("an encoder should be available")

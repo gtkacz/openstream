@@ -1,6 +1,10 @@
 use crate::{
-    constants::{AUDIO_PRESET_ID, MAX_BITRATE_KBPS, MIN_BITRATE_KBPS},
+    constants::{
+        AUDIO_PRESET_ID, CHROMA_444_PRESET_ID, LOSSLESS_PRESET_ID, MAX_BITRATE_KBPS,
+        MIN_BITRATE_KBPS,
+    },
     error::ProtoError,
+    pixel::ChromaLayout,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -24,6 +28,41 @@ pub struct Preset {
     pub fps: u32,
     pub bitrate_kbps: u32,
     pub codec: Codec,
+}
+/// What a preset preserves of the picture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VideoQuality {
+    #[default]
+    Standard,
+    /// Full-resolution chroma, for coloured text and thin lines that 4:2:0 smears.
+    Chroma444,
+    /// 4:4:4 with no encoder loss. The picture is still converted from RGB to limited-range YUV
+    /// first, so this is lossless from that YUV onwards rather than bit-exact to the screen.
+    Lossless,
+}
+impl VideoQuality {
+    pub const fn chroma(self) -> ChromaLayout {
+        match self {
+            Self::Standard => ChromaLayout::Half,
+            Self::Chroma444 | Self::Lossless => ChromaLayout::Full,
+        }
+    }
+    /// The codec this quality can actually be sent in: no encoder brp probes offers AV1 at 4:4:4.
+    pub const fn codec_for(self, codec: Codec) -> Codec {
+        match (self, codec) {
+            (Self::Chroma444 | Self::Lossless, Codec::Av1) => Codec::Hevc,
+            _ => codec,
+        }
+    }
+}
+impl Preset {
+    pub const fn quality(&self) -> VideoQuality {
+        match self.id {
+            CHROMA_444_PRESET_ID => VideoQuality::Chroma444,
+            LOSSLESS_PRESET_ID => VideoQuality::Lossless,
+            _ => VideoQuality::Standard,
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum PresetError {

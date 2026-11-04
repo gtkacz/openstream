@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use brp_net::client::receive_queue_frames;
 use brp_net::{
     AllowAll, AudioSubscription, LiveSource, MediaClient, MediaServer, NetError, PathKind,
     RelaySetting, SubscribeRejected, Subscription, bind_endpoint,
@@ -408,4 +409,157 @@ async fn an_endpoint_binds_with_a_custom_relay_url() {
         .await
         .expect("bind with a custom relay map");
     endpoint.close().await;
+}
+
+#[tokio::test]
+async fn a_viewer_that_stops_reading_loses_frames_instead_of_holding_them_in_memory() {
+    let (tx, rx) = mpsc::channel(8);
+    let source = Arc::new(ScriptedSource {
+        params: params(),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::new()),
+        keyframe_requests: AtomicUsize::new(0),
+    });
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let router = Router::builder(server_ep.clone())
+        .accept(MEDIA_ALPN, MediaServer::new(source, Arc::new(AllowAll)))
+        .spawn();
+    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let client = MediaClient::connect(&client_ep, server_ep.addr())
+        .await
+        .unwrap();
+    let mut sub = client.subscribe(1, 1, false).await.unwrap();
+
+    let sent = receive_queue_frames(params().fps) * 8;
+    for seq in 0..sent as u64 {
+        let frame = EncodedFrame {
+            seq,
+            capture_ts_us: seq,
+            keyframe: seq == 0,
+            data: vec![0; 1024],
+        };
+        tx.send(Arc::new(frame)).await.unwrap();
+    }
+    drop(tx);
+    // The publisher reports the live ended only after it has written every frame.
+    let ended = tokio::time::timeout(Duration::from_secs(5), sub.events.recv())
+        .await
+        .expect("event in time");
+    assert!(matches!(
+        ended,
+        Some(brp_proto::PublisherMessage::LiveEnded)
+    ));
+
+    let mut delivered = 0;
+    while tokio::time::timeout(Duration::from_secs(5), sub.frames.recv())
+        .await
+        .expect("the stream ends once its route is gone")
+        .is_some()
+    {
+        delivered += 1;
+    }
+    assert!(
+        delivered * 2 < sent,
+        "{delivered} of {sent} frames were held for a viewer that read none of them"
+    );
+
+    client.close();
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_viewer_asking_for_keyframes_in_a_burst_reaches_the_publisher_once() {
+    let (tx, rx) = mpsc::channel(8);
+    let source = Arc::new(ScriptedSource {
+        params: params(),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::new()),
+        keyframe_requests: AtomicUsize::new(0),
+    });
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let router = Router::builder(server_ep.clone())
+        .accept(
+            MEDIA_ALPN,
+            MediaServer::new(source.clone(), Arc::new(AllowAll)),
+        )
+        .spawn();
+    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let client = MediaClient::connect(&client_ep, server_ep.addr())
+        .await
+        .unwrap();
+    let mut sub = client.subscribe(1, 1, false).await.unwrap();
+
+    for _ in 0..5 {
+        sub.control
+            .send(ViewerMessage::RequestKeyframe)
+            .await
+            .unwrap();
+    }
+    // Control messages are handled in order, so the stream ending means all five were seen.
+    sub.control.send(ViewerMessage::Unsubscribe).await.unwrap();
+    while tokio::time::timeout(Duration::from_secs(5), sub.events.recv())
+        .await
+        .expect("the stream ends")
+        .is_some()
+    {}
+    assert_eq!(source.keyframe_requests.load(Ordering::SeqCst), 1);
+
+    drop(tx);
+    client.close();
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn half_a_second_of_video_arriving_at_once_all_reaches_the_viewer() {
+    let (tx, rx) = mpsc::channel(8);
+    let source = Arc::new(ScriptedSource {
+        params: params(),
+        frames: Mutex::new(VecDeque::from([rx])),
+        audio: Mutex::new(VecDeque::new()),
+        keyframe_requests: AtomicUsize::new(0),
+    });
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let router = Router::builder(server_ep.clone())
+        .accept(MEDIA_ALPN, MediaServer::new(source, Arc::new(AllowAll)))
+        .spawn();
+    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let client = MediaClient::connect(&client_ep, server_ep.addr())
+        .await
+        .unwrap();
+    let sub = client.subscribe(1, 1, false).await.unwrap();
+
+    // What a network hiccup delivers all at once, to a healthy viewer that has not yet had a turn.
+    let burst = params().fps as u64 / 2;
+    for seq in 0..burst {
+        let frame = EncodedFrame {
+            seq,
+            capture_ts_us: seq,
+            keyframe: seq == 0,
+            data: vec![0; 1024],
+        };
+        tx.send(Arc::new(frame)).await.unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while (sub.frames.len() as u64) < burst {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("only {} of {burst} frames fit the queue", sub.frames.len()));
+
+    drop(tx);
+    client.close();
+    router.shutdown().await.unwrap();
 }

@@ -13,4 +13,6 @@ pub use endpoint::{RelaySetting, bind_endpoint};
 pub use error::NetError;
 pub use policy::{AllowAll, ConnectionPolicy};
 pub use server::MediaServer;
-pub use source::{AudioSubscription, LiveSource, ReceivedFrame, SubscribeRejected, Subscription};
+pub use source::{
+    AudioSubscription, KeyframeLimit, LiveSource, ReceivedFrame, SubscribeRejected, Subscription,
+};

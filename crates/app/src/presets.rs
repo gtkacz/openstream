@@ -2,20 +2,27 @@
 //! `Room::set_presets`, which validates and restarts the affected encoders.
 
 use brp_proto::constants::{MAX_BITRATE_KBPS, MIN_BITRATE_KBPS};
-use brp_proto::{Codec, LiveInfo, Preset, template_presets};
+use brp_proto::{Codec, LiveInfo, Preset, VideoQuality, quality_presets, template_presets};
 
-/// The presets the templates offer for this live, Source included, at the frame rate and codec
-/// of its current presets. Empty when the live offers nothing, which the registry refuses.
+/// The presets the templates offer for this live, Source and the full-chroma ones included, at the
+/// frame rate and codec of its current presets. Empty when the live offers nothing, which the
+/// registry refuses.
 pub fn templates_for(info: &LiveInfo) -> Vec<Preset> {
     let Some(current) = info.presets.first() else {
         return Vec::new();
     };
-    template_presets(
-        info.source_width,
-        info.source_height,
-        current.fps,
-        current.codec,
-    )
+    let size = (info.source_width, info.source_height);
+    let mut templates = template_presets(size.0, size.1, current.fps, current.codec);
+    templates.extend(quality_presets(size.0, size.1, current.fps, current.codec));
+    templates
+}
+
+/// What the stream card lists: every template, less the ones this machine could not encode.
+pub fn templates_offered(info: &LiveInfo, full_chroma: bool) -> Vec<Preset> {
+    templates_for(info)
+        .into_iter()
+        .filter(|preset| full_chroma || preset.quality() == VideoQuality::Standard)
+        .collect()
 }
 
 /// Adds the template when absent, removes it when present. The last preset stays, so a live
@@ -64,13 +71,13 @@ pub fn with_fps(info: &LiveInfo, fps: u32) -> Vec<Preset> {
         .collect()
 }
 
-/// Sets the codec on every preset of the live.
+/// Sets the codec on every preset of the live that can be sent in it.
 pub fn with_codec(info: &LiveInfo, codec: Codec) -> Vec<Preset> {
     info.presets
         .iter()
         .cloned()
         .map(|mut preset| {
-            preset.codec = codec;
+            preset.codec = preset.quality().codec_for(codec);
             preset
         })
         .collect()
@@ -80,7 +87,7 @@ pub fn with_codec(info: &LiveInfo, codec: Codec) -> Vec<Preset> {
 mod tests {
     use super::*;
     use brp_proto::SourceKind;
-    use brp_proto::constants::SOURCE_PRESET_ID;
+    use brp_proto::constants::{LOSSLESS_PRESET_ID, SOURCE_PRESET_ID};
 
     fn live() -> LiveInfo {
         let mut presets = template_presets(2560, 1440, 60, Codec::Hevc);
@@ -107,11 +114,12 @@ mod tests {
         }
         let templates = templates_for(&info);
         let ids: Vec<u32> = templates.iter().map(|p| p.id).collect();
-        assert_eq!(ids, [1, 2, 3, 4]);
+        assert_eq!(ids, [1, 2, 3, 4, 5, 6]);
+        assert!(templates.iter().all(|p| p.fps == 30));
+        assert!(templates[..4].iter().all(|p| p.codec == Codec::Av1));
         assert!(
-            templates
-                .iter()
-                .all(|p| p.fps == 30 && p.codec == Codec::Av1)
+            templates[4..].iter().all(|p| p.codec == Codec::Hevc),
+            "no encoder offers AV1 at 4:4:4"
         );
     }
 
@@ -175,6 +183,31 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_that_cannot_encode_full_chroma_is_not_offered_it() {
+        let info = live();
+        let ids = |offered: Vec<Preset>| offered.iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!(ids(templates_offered(&info, true)), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(ids(templates_offered(&info, false)), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_quality_preset_is_ticked_like_any_other_and_keeps_its_codec_through_a_switch_to_av1() {
+        let info = live();
+        let with_lossless = toggle_template(&info, LOSSLESS_PRESET_ID);
+        assert_eq!(
+            with_lossless.iter().map(|p| p.id).collect::<Vec<_>>(),
+            [1, 2, LOSSLESS_PRESET_ID]
+        );
+        let info = LiveInfo {
+            presets: with_lossless,
+            ..info
+        };
+        let switched = with_codec(&info, Codec::Av1);
+        assert_eq!(switched[0].codec, Codec::Av1);
+        assert_eq!(switched[2].codec, Codec::Hevc);
+    }
+
+    #[test]
     fn templates_follow_the_remaining_preset_when_source_is_absent() {
         let mut info = live();
         info.presets.retain(|p| p.id != SOURCE_PRESET_ID);
@@ -185,10 +218,10 @@ mod tests {
         let templates = templates_for(&info);
         assert_eq!(
             templates.iter().map(|p| p.id).collect::<Vec<_>>(),
-            [1, 2, 3, 4]
+            [1, 2, 3, 4, 5, 6]
         );
         assert!(
-            templates
+            templates[..4]
                 .iter()
                 .all(|p| p.fps == 30 && p.codec == Codec::Av1)
         );

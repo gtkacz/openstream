@@ -2,9 +2,11 @@
 //! own and applied on Done, because every apply swaps the capture session and gaps the room for
 //! the length of one backend start.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use brp_audio::{AppKey, AudioSelection, AudioSource};
+use brp_audio::{
+    AppKey, AudioSelection, AudioSource, MAX_SEPARATE_APPLICATIONS, SendVolumeSupport,
+};
 
 use super::state::UiState;
 use super::theme;
@@ -27,6 +29,10 @@ pub struct ApplicationPicker {
     pub only: bool,
     /// Draft set, kept in both modes so flipping to every application and back loses nothing.
     pub chosen: BTreeSet<AppKey>,
+    /// Draft volumes in percent; an application not named here is at full.
+    pub volumes: BTreeMap<AppKey, u8>,
+    /// What this platform's capture can do with them.
+    pub volume_support: SendVolumeSupport,
 }
 
 impl ApplicationPicker {
@@ -37,6 +43,8 @@ impl ApplicationPicker {
             reported,
             only: stored.mode == AudioMode::Only,
             chosen: stored.names.iter().map(|name| AppKey::new(name)).collect(),
+            volumes: stored.to_volumes(),
+            volume_support: SendVolumeSupport::Never,
         }
     }
 
@@ -86,6 +94,39 @@ impl ApplicationPicker {
         }
     }
 
+    /// Whether this row's volume can be edited in the draft's mode: an application the room will
+    /// not hear has nothing to turn down, and a backend mixing everything cannot tell them apart.
+    pub fn volume_editable(&self, key: &AppKey) -> bool {
+        match self.volume_support {
+            SendVolumeSupport::Never => false,
+            SendVolumeSupport::OnlySelected => self.only && self.chosen.contains(key),
+            SendVolumeSupport::Always => !self.only || self.chosen.contains(key),
+        }
+    }
+
+    /// Whether the room hears more applications than the capture can keep apart, so some sliders
+    /// may have no effect. Which ones is up to the order they started in, so only the count is known.
+    pub fn too_many_for_volumes(&self) -> bool {
+        let heard = self
+            .reported
+            .iter()
+            .filter(|source| !self.only || self.chosen.contains(&source.key))
+            .count();
+        self.volume_support == SendVolumeSupport::Always && heard > MAX_SEPARATE_APPLICATIONS
+    }
+
+    pub fn volume(&self, key: &AppKey) -> u8 {
+        self.volumes
+            .get(key)
+            .copied()
+            .unwrap_or(FULL_VOLUME)
+            .min(FULL_VOLUME)
+    }
+
+    pub fn set_volume(&mut self, key: &AppKey, percent: u8) {
+        self.volumes.insert(key.clone(), percent.min(FULL_VOLUME));
+    }
+
     /// What Done applies to the room and stores in the settings.
     pub fn applied(&self) -> AudioApplications {
         AudioApplications {
@@ -99,8 +140,22 @@ impl ApplicationPicker {
                 .iter()
                 .map(|key| key.as_str().to_string())
                 .collect(),
+            // Full is what an absent name means, so it is not written out.
+            volumes: self
+                .volumes
+                .iter()
+                .filter(|(_, percent)| **percent < FULL_VOLUME)
+                .map(|(key, percent)| (key.as_str().to_string(), *percent))
+                .collect(),
         }
     }
+}
+
+/// Whether Done has to swap the capture session. A swap gaps the room and a volume needs none, so a
+/// Done that only moved a slider skips it. A Done that changed nothing still swaps: that is the
+/// retry path after a capture failure.
+pub fn swaps_capture(before: &AudioApplications, after: &AudioApplications) -> bool {
+    after.to_selection() != before.to_selection() || after.volumes == before.volumes
 }
 
 /// The one-line summary beside the button: what the room hears.
@@ -115,6 +170,8 @@ pub fn selection_summary(selection: &AudioSelection) -> String {
     }
 }
 
+const FULL_VOLUME: u8 = 100;
+const VOLUME_FIGURE_WIDTH: f32 = 32.0;
 const MAX_LIST_HEIGHT: f32 = 400.0;
 const ROW_HEIGHT: f32 = 32.0;
 /// A radio's width and the gap after it.
@@ -166,10 +223,13 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                         ui.add_space(4.0);
                         ui.weak("No applications are playing audio");
                     }
+                    let list_height =
+                        (ctx.content_rect().height() - 280.0).clamp(120.0, MAX_LIST_HEIGHT);
                     egui::ScrollArea::vertical()
-                        .max_height(
-                            (ctx.content_rect().height() - 280.0).clamp(120.0, MAX_LIST_HEIGHT),
-                        )
+                        .max_height(list_height)
+                        // The surrounding row offers only one row's height, which would otherwise
+                        // shrink a long list to egui's two-row minimum. A short list still shrinks.
+                        .min_scrolled_height(list_height)
                         .show(ui, |ui| {
                             for row in &rows {
                                 let mut chosen = picker.is_chosen(&row.key);
@@ -182,13 +242,56 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                                 // is still there and a flip back loses nothing.
                                 let check =
                                     |ui: &mut egui::Ui| theme::check(ui, &mut chosen, &label);
-                                if ui.add_enabled(only, check).changed() {
+                                let mut toggled = false;
+                                let mut percent = picker.volume(&row.key);
+                                let editable = picker.volume_editable(&row.key);
+                                theme::split_row(
+                                    ui,
+                                    ROW_HEIGHT,
+                                    |ui| toggled = ui.add_enabled(only, check).changed(),
+                                    |ui| {
+                                        if editable {
+                                            // Right to left, so the figure comes first. A fixed
+                                            // width keeps the slider from shifting as it changes.
+                                            ui.add_sized(
+                                                [VOLUME_FIGURE_WIDTH, ROW_HEIGHT],
+                                                egui::Label::new(
+                                                    egui::RichText::new(format!("{percent}%"))
+                                                        .small()
+                                                        .color(theme::SECONDARY),
+                                                ),
+                                            );
+                                            // The thumb is sized from the row's height otherwise.
+                                            ui.spacing_mut().interact_size.y = 18.0;
+                                            ui.visuals_mut().selection.bg_fill = theme::ACCENT;
+                                            ui.add(
+                                                egui::Slider::new(&mut percent, 0..=FULL_VOLUME)
+                                                    .show_value(false),
+                                            )
+                                            .on_hover_text("How loud the room hears it");
+                                        }
+                                    },
+                                );
+                                if toggled {
                                     picker.toggle(&row.key, chosen);
+                                }
+                                if percent != picker.volume(&row.key) {
+                                    picker.set_volume(&row.key, percent);
                                 }
                             }
                         });
                 });
             });
+            if picker.too_many_for_volumes() {
+                ui.add_space(8.0);
+                ui.colored_label(
+                    theme::WARNING,
+                    format!(
+                        "Only {MAX_SEPARATE_APPLICATIONS} applications can have their own volume \
+                         at once. The rest stay at full."
+                    ),
+                );
+            }
             theme::dialog_footer(
                 ui,
                 |ui| {
@@ -232,7 +335,91 @@ mod tests {
         AudioApplications {
             mode,
             names: names.iter().map(|n| n.to_string()).collect(),
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_volume_only_applies_where_the_capture_can_tell_applications_apart() {
+        let key = AppKey::new("firefox");
+        let mut picker = ApplicationPicker::new(Vec::new(), &AudioApplications::default());
+
+        assert!(
+            !picker.volume_editable(&key),
+            "the default promises nothing"
+        );
+
+        picker.volume_support = SendVolumeSupport::Always;
+        assert!(picker.volume_editable(&key), "every application is heard");
+        picker.only = true;
+        assert!(!picker.volume_editable(&key), "not chosen, so not heard");
+        picker.toggle(&key, true);
+        assert!(picker.volume_editable(&key));
+
+        picker.volume_support = SendVolumeSupport::OnlySelected;
+        assert!(picker.volume_editable(&key));
+        picker.only = false;
+        assert!(!picker.volume_editable(&key), "the platform's finished mix");
+    }
+
+    #[test]
+    fn only_a_volume_below_full_is_stored_and_a_stored_one_comes_back() {
+        let mut picker = ApplicationPicker::new(Vec::new(), &AudioApplications::default());
+        let (game, music) = (AppKey::new("game"), AppKey::new("music"));
+        picker.set_volume(&game, 25);
+        picker.set_volume(&music, 100);
+        let applied = picker.applied();
+        assert_eq!(applied.volumes, BTreeMap::from([("game".to_string(), 25)]));
+
+        let reopened = ApplicationPicker::new(Vec::new(), &applied);
+        assert_eq!(reopened.volume(&game), 25);
+        assert_eq!(reopened.volume(&music), 100);
+    }
+
+    #[test]
+    fn done_swaps_the_capture_unless_only_a_volume_moved() {
+        let before = AudioApplications::default();
+        let quieter = AudioApplications {
+            volumes: BTreeMap::from([("game".to_string(), 25)]),
+            ..before.clone()
+        };
+        assert!(!swaps_capture(&before, &quieter), "no gap for a slider");
+        assert!(swaps_capture(&before, &before), "retry path");
+        let only = AudioApplications {
+            mode: AudioMode::Only,
+            ..quieter.clone()
+        };
+        assert!(swaps_capture(&before, &only), "the selection changed too");
+    }
+
+    #[test]
+    fn the_picker_warns_when_the_room_hears_more_than_the_capture_keeps_apart() {
+        let many: Vec<AudioSource> = (0..=MAX_SEPARATE_APPLICATIONS)
+            .map(|index| source(&format!("app{index}"), "App"))
+            .collect();
+        let mut picker = ApplicationPicker::new(many, &AudioApplications::default());
+        assert!(
+            !picker.too_many_for_volumes(),
+            "this capture has no sliders"
+        );
+
+        picker.volume_support = SendVolumeSupport::Always;
+        assert!(picker.too_many_for_volumes());
+
+        picker.only = true;
+        assert!(!picker.too_many_for_volumes(), "none of them is chosen");
+        for index in 0..=MAX_SEPARATE_APPLICATIONS {
+            picker.toggle(&AppKey::new(&format!("app{index}")), true);
+        }
+        assert!(picker.too_many_for_volumes());
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_volumes_being_edited() {
+        let mut picker = ApplicationPicker::new(Vec::new(), &AudioApplications::default());
+        picker.set_volume(&AppKey::new("game"), 25);
+        picker.refresh(vec![source("spotify", "Spotify")]);
+        assert_eq!(picker.volume(&AppKey::new("game")), 25);
     }
 
     #[test]
@@ -254,6 +441,7 @@ mod tests {
             &AudioApplications {
                 mode: AudioMode::Only,
                 names: vec!["game.exe".into(), "another.exe".into(), "firefox".into()],
+                ..Default::default()
             },
         );
         let rows: Vec<(String, bool)> = picker
@@ -315,6 +503,7 @@ mod tests {
             AudioApplications {
                 mode: AudioMode::Only,
                 names: vec!["firefox".into()],
+                ..Default::default()
             }
         );
         picker.only = false;
@@ -323,6 +512,7 @@ mod tests {
             AudioApplications {
                 mode: AudioMode::All,
                 names: vec!["firefox".into()],
+                ..Default::default()
             }
         );
     }

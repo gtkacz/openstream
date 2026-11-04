@@ -2,7 +2,7 @@
 
 use brp_audio::AudioSelection;
 use brp_net::PathKind;
-use brp_proto::{LiveInfo, Preset};
+use brp_proto::{AudioMix, LiveInfo, Preset};
 use iroh::PublicKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,8 @@ pub struct PresetView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnLiveView {
     pub info: LiveInfo,
+    /// Whether this machine can encode the 4:4:4 and lossless presets.
+    pub full_chroma: bool,
     pub presets: Vec<PresetView>,
 }
 
@@ -33,6 +35,8 @@ pub enum AudioCaptureState {
     /// Enabled, nobody listening: capture has not been started or was stopped after the grace.
     Idle,
     Capturing,
+    /// Capturing, but holding back something the user chose. Says what and why.
+    Limited(String),
     Failed(String),
 }
 
@@ -55,6 +59,8 @@ pub struct MemberView {
     pub seen_ago_ms: u64,
     pub path: PathKind,
     pub has_audio: bool,
+    /// `None` for a peer on a release that does not say.
+    pub audio_mix: Option<AudioMix>,
     pub gain: f32,
 }
 

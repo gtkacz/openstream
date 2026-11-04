@@ -11,9 +11,13 @@ use brp_capture::{CaptureBackend, CaptureSession, SourceInfo, SourceRequest, Syn
 use brp_codec::fake::FakeDecoder;
 use brp_codec::{AudioEncoder, CodecError, FrameConverter, RawFrame, VideoDecoder, VideoEncoder};
 use brp_net::{LiveSource, SubscribeRejected};
-use brp_proto::constants::{MAX_LIVES_PER_PARTICIPANT, SOURCE_PRESET_ID};
+use brp_proto::constants::{
+    CHROMA_444_PRESET_ID, LOSSLESS_PRESET_ID, MAX_AUDIO_MIX_NAME_LEN, MAX_AUDIO_MIX_NAMES,
+    MAX_LIVES_PER_PARTICIPANT, PROTOCOL_VERSION, SOURCE_PRESET_ID,
+};
 use brp_proto::{
-    Codec, CodecParams, EncodedFrame, PixelFormat, Preset, SourceKind, template_presets,
+    AudioMix, ChromaLayout, Codec, CodecParams, EncodedFrame, PixelFormat, Presence, Preset,
+    SourceKind, quality_presets, template_presets,
 };
 use brp_room::AudioCaptureState;
 use brp_room::codecs::EncoderFactory;
@@ -46,6 +50,16 @@ impl CaptureSession for DummySession {
         }
     }
     fn stop(self: Box<Self>) {}
+}
+
+/// A packet queued before capture stopped can still arrive first, so the stream has ended once the
+/// receiver drains to nothing, not necessarily on its very next read.
+async fn assert_ends(packets: &mut tokio::sync::mpsc::Receiver<Arc<EncodedFrame>>, why: &str) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while packets.recv().await.is_some() {}
+    })
+    .await
+    .expect(why);
 }
 
 async fn synthetic_live(registry: &LiveRegistry, title: &str) -> u32 {
@@ -433,13 +447,11 @@ async fn turning_audio_off_while_capturing_stops_it_and_views_agree() {
     assert_eq!(registry.audio_view().state, AudioCaptureState::Off);
     assert!(registry.views().iter().all(|v| !v.info.has_audio));
     assert!(registry.live_infos().iter().all(|l| !l.has_audio));
-    assert!(
-        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
-            .await
-            .unwrap()
-            .is_none(),
-        "packets receiver should end when capture stops"
-    );
+    assert_ends(
+        &mut audio.packets,
+        "packets receiver should end when capture stops",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -456,13 +468,11 @@ async fn stop_all_stops_running_audio() {
     // audio.enabled is untouched by stop_all; with no lives, no error, and nothing running,
     // that reads as Idle rather than Off.
     assert_eq!(registry.audio_view().state, AudioCaptureState::Idle);
-    assert!(
-        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
-            .await
-            .unwrap()
-            .is_none(),
-        "packets receiver should end when stop_all stops capture"
-    );
+    assert_ends(
+        &mut audio.packets,
+        "packets receiver should end when stop_all stops capture",
+    )
+    .await;
 }
 
 async fn synthetic_live_with_presets(
@@ -540,9 +550,11 @@ impl EncoderFactory for CountingCodecs {
         format: PixelFormat,
         width: u32,
         height: u32,
+        chroma: ChromaLayout,
     ) -> Result<Box<dyn FrameConverter>, CodecError> {
         self.converter_opens.fetch_add(1, Ordering::SeqCst);
-        self.inner.open_converter(source, format, width, height)
+        self.inner
+            .open_converter(source, format, width, height, chroma)
     }
 
     fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError> {
@@ -622,6 +634,123 @@ async fn compatible_presets_share_one_conversion() {
         1,
         "both presets share the same 32x16 converter"
     );
+}
+
+#[tokio::test]
+async fn a_full_chroma_preset_does_not_share_a_converter_with_its_half_chroma_twin() {
+    let codecs = Arc::new(CountingCodecs::new());
+    let registry = LiveRegistry::new(
+        codecs.clone(),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let mut presets = template_presets(64, 32, 30, Codec::H264);
+    presets.extend(quality_presets(64, 32, 30, Codec::H264));
+    let live = synthetic_live_with_presets(&registry, "desk", presets).await;
+
+    let mut standard = registry.subscribe(live, SOURCE_PRESET_ID).unwrap();
+    let mut chroma = registry.subscribe(live, CHROMA_444_PRESET_ID).unwrap();
+    let mut lossless = registry.subscribe(live, LOSSLESS_PRESET_ID).unwrap();
+    for subscription in [&mut standard, &mut chroma, &mut lossless] {
+        tokio::time::timeout(Duration::from_secs(2), subscription.frames.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(
+        codecs.converter_opens.load(Ordering::SeqCst),
+        2,
+        "4:4:4 and lossless share one converter; 4:2:0 cannot use it"
+    );
+}
+
+#[test]
+fn presence_names_a_selection_but_never_what_happens_to_be_playing() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    assert_eq!(registry.audio_mix(), AudioMix::All);
+
+    let many: BTreeSet<AppKey> = (0..MAX_AUDIO_MIX_NAMES + 2)
+        .map(|index| AppKey::new(&format!("app{index}")))
+        .collect();
+    registry.set_audio_applications(AudioSelection::Only(many));
+    let AudioMix::Only { names, others } = registry.audio_mix() else {
+        panic!("a selection is named");
+    };
+    assert_eq!(names.len(), MAX_AUDIO_MIX_NAMES);
+    assert_eq!(others, 2);
+}
+
+#[test]
+fn presence_uses_the_name_an_application_was_listed_under() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::Only(BTreeSet::from([
+            SyntheticTone::tone_key(),
+            AppKey::new("closed-application"),
+        ])),
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let names = |registry: &LiveRegistry| match registry.audio_mix() {
+        AudioMix::Only { names, .. } => names,
+        AudioMix::All => panic!("a selection is named"),
+    };
+    assert_eq!(names(&registry), ["closed-application", "tone"]);
+
+    let listed = registry.sources().unwrap();
+    let label = &listed
+        .iter()
+        .find(|source| source.key == SyntheticTone::tone_key())
+        .unwrap()
+        .label;
+    assert_ne!(
+        label, "tone",
+        "the test needs a label that differs from the key"
+    );
+    assert_eq!(names(&registry), ["closed-application", label.as_str()]);
+}
+
+#[test]
+fn an_overlong_application_name_is_cut_to_what_presence_accepts() {
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(|| {}),
+    );
+    let long = "x".repeat(MAX_AUDIO_MIX_NAME_LEN + 10);
+    registry.set_audio_applications(AudioSelection::Only(BTreeSet::from([AppKey::new(&long)])));
+    let presence = Presence {
+        version: PROTOCOL_VERSION,
+        ts_unix_ms: 1,
+        nickname: "gt".into(),
+        lives: vec![],
+        audio_mix: Some(registry.audio_mix()),
+        quality_presets: Vec::new(),
+    };
+    assert!(presence.validate().is_ok());
 }
 
 #[tokio::test]
@@ -859,13 +988,87 @@ async fn a_swap_that_fails_to_start_drops_has_audio_and_rejects_new_subscribers(
         registry.subscribe_audio(live),
         Err(SubscribeRejected::NoAudio)
     ));
-    assert!(
-        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
-            .await
-            .unwrap()
-            .is_none(),
-        "no fallback to the old session: the publisher stops and the subscription ends"
+    assert_ends(
+        &mut audio.packets,
+        "no fallback to the old session: the publisher stops and the subscription ends",
+    )
+    .await;
+}
+
+/// Wraps the synthetic tone with a notice the test can change while it runs.
+struct LimitedCapture(Arc<std::sync::Mutex<Option<String>>>);
+
+struct LimitedSession {
+    inner: Box<dyn AudioCaptureSession>,
+    notice: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl AudioCaptureSession for LimitedSession {
+    fn error(&self) -> Option<String> {
+        self.inner.error()
+    }
+    fn notice(&self) -> Option<String> {
+        self.notice.lock().unwrap().clone()
+    }
+    fn stop(self: Box<Self>) {
+        self.inner.stop();
+    }
+}
+
+impl AudioCapture for LimitedCapture {
+    fn sources(&self) -> Result<Vec<AudioSource>, AudioError> {
+        Ok(Vec::new())
+    }
+    fn start(
+        &self,
+        selection: AudioSelection,
+        sink: AudioSink,
+    ) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+        let inner = SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        }
+        .start(selection, sink)?;
+        Ok(Box::new(LimitedSession {
+            inner,
+            notice: self.0.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn what_a_running_capture_holds_back_reaches_the_view_and_clears() {
+    let notice = Arc::new(std::sync::Mutex::new(None));
+    let changes = Arc::new(AtomicUsize::new(0));
+    let counter = changes.clone();
+    let registry = LiveRegistry::new(
+        Arc::new(FakeCodecs),
+        Arc::new(LimitedCapture(notice.clone())),
+        AudioSelection::All,
+        GRACE,
+        Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }),
     );
+    let live = synthetic_live(&registry, "desk").await;
+    let _audio = registry.subscribe_audio(live).unwrap();
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Capturing);
+
+    *notice.lock().unwrap() = Some("Not sharing launcher.exe".to_string());
+    let before = changes.load(Ordering::SeqCst);
+    registry.housekeeping(Instant::now());
+    assert_eq!(
+        registry.audio_view().state,
+        AudioCaptureState::Limited("Not sharing launcher.exe".to_string())
+    );
+    assert!(
+        changes.load(Ordering::SeqCst) > before,
+        "the window only re-reads the room when told it changed"
+    );
+
+    *notice.lock().unwrap() = None;
+    registry.housekeeping(Instant::now());
+    assert_eq!(registry.audio_view().state, AudioCaptureState::Capturing);
 }
 
 #[tokio::test]

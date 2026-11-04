@@ -31,6 +31,8 @@ pub struct RoomView {
     handles: HashMap<TileKey, WatchHandle>,
     /// Holds an `Arc<Room>` clone; the shutdown path aborts and awaits it before the leave.
     pub pending_share: Option<JoinHandle<()>>,
+    /// The picker's background re-listing, while one runs.
+    pub pending_listing: Option<JoinHandle<()>>,
 }
 
 impl RoomView {
@@ -45,6 +47,7 @@ impl RoomView {
             last_ticket,
             handles: HashMap::new(),
             pending_share: None,
+            pending_listing: None,
         }
     }
 
@@ -80,6 +83,19 @@ impl RoomView {
         // without bumping the room version, so this compares the cheap `RoomTicket` on every
         // refresh rather than only on a version change.
         refresh_ticket_cache(&mut self.last_ticket, &mut self.ticket, self.room.ticket());
+    }
+
+    /// The ticket to keep for coming back later, naming the other members. `None` alone in the room,
+    /// where it could only name this participant, which leads nowhere: joining through yourself
+    /// opens an empty room. The ticket that got this participant in is the better guess then.
+    pub async fn way_back(&self) -> Option<String> {
+        let ticket = self.room.rejoin_ticket().await;
+        let me = self.room.id();
+        ticket
+            .bootstrap
+            .iter()
+            .any(|addr| addr.id != me)
+            .then(|| ticket.to_string())
     }
 
     /// Uploads the newest decoded frame of every watched live.
@@ -161,11 +177,15 @@ impl RoomView {
                     self.room.set_audio_applications(selection);
                     Ok(())
                 }
+                RoomCommand::SetAudioVolumes(volumes) => {
+                    self.room.set_audio_volumes(volumes);
+                    Ok(())
+                }
                 // Mirrors `Share { source: None }`: enumeration runs here on the command-drain
                 // path, so a platform listing failure reaches the user as a status line.
                 RoomCommand::ChooseApplications => match self.room.audio_sources() {
                     Ok(sources) => {
-                        state.open_applications(sources, stored);
+                        state.open_applications(sources, stored, self.room.send_volume_support());
                         Ok(())
                     }
                     Err(error) => Err(error),
@@ -175,6 +195,35 @@ impl RoomView {
                 state.status = error.to_string();
             }
         }
+    }
+
+    /// Re-lists what is playing while the application picker is open, so it follows applications
+    /// as they start and stop. Off the window thread, since a sick daemon can take a whole
+    /// `AUDIO_SOURCE_LIST_TIMEOUT` to answer, and never two at once. A failed listing keeps the
+    /// rows already shown: one bad poll is no reason to blank a list being edited, and the user
+    /// gets an error from Refresh if they ask.
+    pub fn keep_applications_current(
+        &mut self,
+        runtime: &Handle,
+        proxy: &EventLoopProxy<AppEvent>,
+        state: &UiState,
+    ) {
+        if state.applications.is_none()
+            || self
+                .pending_listing
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
+        {
+            return;
+        }
+        let room = self.room.clone();
+        let proxy = proxy.clone();
+        self.pending_listing = Some(runtime.spawn_blocking(move || match room.audio_sources() {
+            Ok(sources) => {
+                let _ = proxy.send_event(AppEvent::ApplicationsListed(sources));
+            }
+            Err(error) => tracing::debug!(%error, "could not re-list applications"),
+        }));
     }
 
     fn share(
@@ -292,6 +341,34 @@ mod tests {
         refresh_ticket_cache(&mut last, &mut cached, relayed.clone());
         assert_eq!(cached, relayed.to_string());
         assert_eq!(last, relayed);
+    }
+
+    #[tokio::test]
+    async fn the_way_back_names_the_others_and_is_nothing_when_alone() {
+        let room = Room::create(config("alice")).await.unwrap();
+        let ticket = room.ticket();
+        let alice = RoomView::new(Arc::new(room));
+        assert_eq!(alice.way_back().await, None);
+
+        let bob = Room::join(config("bob"), ticket).await.unwrap();
+        wait_until("alice to see bob", Duration::from_secs(10), || {
+            !alice.room.snapshot().members.is_empty()
+        })
+        .await;
+        let way_back: RoomTicket = alice
+            .way_back()
+            .await
+            .expect("bob is there to come back through")
+            .parse()
+            .unwrap();
+        assert!(way_back.bootstrap.iter().any(|addr| addr.id == bob.id()));
+        assert!(
+            way_back
+                .bootstrap
+                .iter()
+                .all(|addr| addr.id != alice.room.id())
+        );
+        bob.leave().await;
     }
 
     #[tokio::test]

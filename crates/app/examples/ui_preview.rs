@@ -2,7 +2,7 @@
 //! cargo run -p brp --example ui_preview -- /tmp/openstream start 1280 800
 //! A fifth argument captures that many 60 Hz frames in, to see motion part way through.
 //! A sixth sets the display scale; the width and height stay in physical pixels.
-//! Screens: start, recent, focus, room, quality, menu, watching, grid, sheet, sharesheet, empty,
+//! Screens: start, recent, invite, focus, room, quality, menu, watching, grid, sheet, sharesheet, empty,
 //! settings, custom, picker, applications.
 use std::{collections::HashSet, error::Error, io::Write};
 
@@ -28,6 +28,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     ui::theme::install(&ctx);
     ctx.set_zoom_factor(scale);
     let mut start = StartState::new("Alex".into());
+    if screen == "invite" {
+        start.invite("brproomticketexamplevaluethatrunslong".into());
+    }
     let mut state = UiState::new();
     if screen == "picker" {
         state.open_picker(
@@ -48,6 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 label: "Firefox".into(),
             }],
             &brp_app::settings::AudioApplications::default(),
+            brp_audio::SendVolumeSupport::Always,
         );
     }
     let mut settings = ui::settings::SettingsDialog::default();
@@ -118,6 +122,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             seen_ago_ms: 0,
             path: PathKind::Unknown,
             has_audio: false,
+            audio_mix: Some(brp_proto::AudioMix::Only {
+                names: vec!["firefox".into(), "spotify".into()],
+                others: 0,
+            }),
             gain: 1.0,
         });
     }
@@ -154,6 +162,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut info = snapshot.members[0].lives[0].clone();
         info.title = "Monitor 1".into();
         snapshot.own_lives.push(OwnLiveView {
+            full_chroma: true,
             presets: info
                 .presets
                 .iter()
@@ -256,7 +265,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            if matches!(screen, "start" | "recent" | "focus" | "settings" | "custom") {
+            if matches!(
+                screen,
+                "start" | "recent" | "invite" | "focus" | "settings" | "custom"
+            ) {
                 ui::start::draw(ui, &mut start, &recent, 7200, &UpdateState::new(false));
                 if matches!(screen, "settings" | "custom") {
                     ui::settings::draw(ui.ctx(), &mut settings, false);

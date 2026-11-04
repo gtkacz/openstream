@@ -1,6 +1,7 @@
 //! Where encoders and decoders come from. The room only knows these traits, so tests swap in fakes.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use brp_capture::SourceInfo;
 use brp_codec::ffmpeg::SwsConverter;
@@ -8,17 +9,19 @@ use brp_codec::{
     AudioDecoder, AudioEncoder, CodecError, EncoderConfig, FrameConverter, VideoDecoder,
     VideoEncoder, open_audio_decoder, open_audio_encoder, open_decoder, open_encoder,
 };
-use brp_proto::{AudioParams, Codec, CodecParams, PixelFormat, Preset};
+use brp_proto::{AudioParams, ChromaLayout, Codec, CodecParams, PixelFormat, Preset, VideoQuality};
 
 pub trait EncoderFactory: Send + Sync + 'static {
     /// Builds the converter a group of subscribed presets shares: every preset whose output
-    /// `width`/`height` matches converts through this one instance instead of each opening its own.
+    /// `width`/`height` and chroma match converts through this one instance instead of each opening
+    /// its own.
     fn open_converter(
         &self,
         source: SourceInfo,
         source_format: PixelFormat,
         width: u32,
         height: u32,
+        chroma: ChromaLayout,
     ) -> Result<Box<dyn FrameConverter>, CodecError>;
 
     /// Opens the encoder for one preset. Always per-preset: fps, bitrate, and codec can differ even
@@ -28,6 +31,12 @@ pub trait EncoderFactory: Send + Sync + 'static {
     /// The codec new lives default to. The real factory probes the GPU once; the spec prefers HEVC,
     /// then H.264, then the software AV1 fallback.
     fn preferred_codec(&self) -> Codec;
+
+    /// Whether this machine can encode a 4:4:4 preset at all. May block on a probe, like
+    /// [`Self::preferred_codec`].
+    fn offers_full_chroma(&self) -> bool {
+        false
+    }
 
     fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError>;
 }
@@ -51,6 +60,7 @@ fn config_for(preset: &Preset) -> EncoderConfig {
         fps: preset.fps,
         bitrate_kbps: preset.bitrate_kbps,
         codec: preset.codec,
+        quality: preset.quality(),
     }
 }
 
@@ -59,6 +69,7 @@ fn config_for(preset: &Preset) -> EncoderConfig {
 #[derive(Debug, Default)]
 pub struct FfmpegCodecs {
     probed_codec: OnceLock<Codec>,
+    full_chroma_confirmed: AtomicBool,
 }
 
 impl EncoderFactory for FfmpegCodecs {
@@ -68,6 +79,7 @@ impl EncoderFactory for FfmpegCodecs {
         source_format: PixelFormat,
         width: u32,
         height: u32,
+        chroma: ChromaLayout,
     ) -> Result<Box<dyn FrameConverter>, CodecError> {
         Ok(Box::new(SwsConverter::new(
             source.width,
@@ -75,6 +87,7 @@ impl EncoderFactory for FfmpegCodecs {
             source_format,
             width,
             height,
+            chroma,
         )?))
     }
 
@@ -90,11 +103,33 @@ impl EncoderFactory for FfmpegCodecs {
                 fps: 30,
                 bitrate_kbps: 1_000,
                 codec: Codec::Hevc,
+                quality: VideoQuality::Standard,
             };
             brp_codec::open_encoder_auto(probe, None)
                 .map(|e| e.params().codec)
                 .unwrap_or(Codec::Av1)
         })
+    }
+
+    fn offers_full_chroma(&self) -> bool {
+        // Only a yes is remembered: a no can be a passing shortage of NVENC sessions, and asking
+        // again costs one failed open per share.
+        if self.full_chroma_confirmed.load(Ordering::Relaxed) {
+            return true;
+        }
+        let offered = [Codec::Hevc, Codec::H264].into_iter().any(|codec| {
+            open_encoder(&EncoderConfig {
+                width: PROBE_WIDTH,
+                height: PROBE_HEIGHT,
+                fps: 30,
+                bitrate_kbps: 1_000,
+                codec,
+                quality: VideoQuality::Chroma444,
+            })
+            .is_ok()
+        });
+        self.full_chroma_confirmed.store(offered, Ordering::Relaxed);
+        offered
     }
 
     fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
@@ -132,8 +167,9 @@ pub mod fake {
             _format: PixelFormat,
             width: u32,
             height: u32,
+            chroma: ChromaLayout,
         ) -> Result<Box<dyn FrameConverter>, CodecError> {
-            Ok(Box::new(SolidConverter::new(width, height)))
+            Ok(Box::new(SolidConverter::with_chroma(chroma, width, height)))
         }
 
         fn open_encoder(&self, preset: &Preset) -> Result<Box<dyn VideoEncoder>, CodecError> {
@@ -145,6 +181,10 @@ pub mod fake {
 
         fn preferred_codec(&self) -> Codec {
             Codec::H264
+        }
+
+        fn offers_full_chroma(&self) -> bool {
+            true
         }
 
         fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {

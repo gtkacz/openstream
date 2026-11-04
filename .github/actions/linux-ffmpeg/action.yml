@@ -1,16 +1,18 @@
 name: Linux FFmpeg
-description: The pinned BtbN LGPL shared FFmpeg build, the same release the Windows action installs. Exports FFMPEG_DIR and puts the libraries on LD_LIBRARY_PATH.
+description: The pinned BtbN LGPL shared FFmpeg build from this repository's mirror, the same release the Windows action installs. Exports FFMPEG_DIR and puts the libraries on LD_LIBRARY_PATH.
 runs:
   using: composite
   steps:
-    - name: Install FFmpeg (BtbN LGPL shared, pinned)
+    - name: Install FFmpeg (BtbN LGPL shared, mirrored and checked)
       shell: bash
       run: |
         set -eu
-        release="autobuild-2026-11-03-12-50"
+        # Mirrored because BtbN deletes old builds. The hash is what ends up in every release.
+        release="ffmpeg-n8.1.3-32-g760d10603e"
         asset="ffmpeg-n8.1.3-32-g760d10603e-linux64-lgpl-shared-8.1"
         dir="$GITHUB_WORKSPACE/ffmpeg"
-        curl -fsSL -o ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/$release/$asset.tar.xz"
+        curl -fsSL -o ffmpeg.tar.xz "https://github.com/gtkacz/openstream/releases/download/$release/$asset.tar.xz"
+        echo "887daa33c71f627cd63367bc8c7d9854878bccc055d41e569ed4a584e4c9a7d0  ffmpeg.tar.xz" | sha256sum -c -
         mkdir -p ffmpeg-extract
         tar -xJf ffmpeg.tar.xz -C ffmpeg-extract
         mv ffmpeg-extract/"$asset" "$dir"

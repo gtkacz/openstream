@@ -27,18 +27,32 @@ pub fn draw(
     update_clicked: &mut bool,
 ) {
     let compact = theme::is_compact(ui.ctx());
+    let height_id = ui.id().with("status-height");
+    let height = ui
+        .ctx()
+        .data(|data| data.get_temp::<f32>(height_id))
+        .unwrap_or(theme::CONTROL_HEIGHT + 21.0);
     egui::Panel::bottom("status")
+        .exact_size(height)
         .frame(
             egui::Frame::NONE
                 .fill(theme::GROUND)
                 .inner_margin(egui::Margin::symmetric(12, 10)),
         )
         .show(ui, |ui| {
-            notices(ui, snapshot, state, update_state, update_clicked);
-            if compact {
-                compact_row(ui, snapshot, state, commands, open_settings);
-            } else {
-                wide_row(ui, snapshot, state, commands, open_settings);
+            let content = ui.scope(|ui| {
+                notices(ui, snapshot, state, update_state, update_clicked);
+                if compact {
+                    compact_row(ui, snapshot, state, commands, open_settings);
+                } else {
+                    wide_row(ui, snapshot, state, commands, open_settings);
+                }
+            });
+            let needed = content.response.rect.height() + 21.0;
+            if (needed - height).abs() > 0.5 {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(height_id, needed));
+                ui.ctx().request_discard("dock content height changed");
             }
         });
 }
@@ -151,11 +165,16 @@ fn notices(
         AudioCaptureState::Failed(error) => Some(error),
         _ => None,
     };
+    let audio_limit = match &snapshot.own_audio.state {
+        AudioCaptureState::Limited(notice) => Some(notice),
+        _ => None,
+    };
     let has_notice = !state.status.is_empty()
         || state.share_pending
         || update_state.available.is_some()
         || snapshot.audio_output_error.is_some()
-        || audio_error.is_some();
+        || audio_error.is_some()
+        || audio_limit.is_some();
     motion::unfold(ui, "dock-notices", has_notice, |ui| {
         ui.horizontal_wrapped(|ui| {
             if state.share_pending {
@@ -173,6 +192,9 @@ fn notices(
             }
             if let Some(error) = audio_error {
                 ui.colored_label(theme::ERROR, format!("Audio failed: {error}"));
+            }
+            if let Some(notice) = audio_limit {
+                ui.colored_label(theme::WARNING, notice);
             }
         });
         ui.add_space(4.0);
@@ -309,6 +331,50 @@ mod tests {
                         !rect.intersects(*other_rect),
                         "at {width} {name:?} overlaps {other:?}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_dock_keeps_controls_inside_its_clip() {
+        for width in [640.0, 800.0, 960.0, 1160.0, 1600.0] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let mut state = UiState::new();
+            state.status = "An update is available".into();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 720.0));
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| {
+                    draw(
+                        ui,
+                        &room(),
+                        &mut state,
+                        &mut Vec::new(),
+                        &mut false,
+                        &UpdateState::new(false),
+                        &mut false,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    if !text.galley.mesh_bounds.is_finite() {
+                        continue;
+                    }
+                    let ink = text.galley.mesh_bounds.translate(text.pos.to_vec2());
+                    assert!(
+                        shape.clip_rect.contains_rect(ink),
+                        "{width}: {:?} clipped ink={ink:?} clip={:?}",
+                        text.galley.text(),
+                        shape.clip_rect
+                    );
+                    assert!(screen.contains_rect(ink));
                 }
             }
         }

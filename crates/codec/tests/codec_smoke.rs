@@ -1,8 +1,9 @@
 //! Gated checks for the codecs installed on the host.
 
+use brp_codec::ffmpeg::{FfmpegDecoder, HwDecode};
 use brp_codec::select::{open_encoder, open_encoder_auto};
-use brp_codec::{CodecError, EncoderConfig, RawFrame, VideoEncoder};
-use brp_proto::Codec;
+use brp_codec::{CodecError, EncoderConfig, RawFrame, VideoDecoder, VideoEncoder};
+use brp_proto::{ChromaLayout, Codec, EncodedFrame, VideoQuality};
 
 fn cfg(codec: Codec) -> EncoderConfig {
     EncoderConfig {
@@ -11,6 +12,7 @@ fn cfg(codec: Codec) -> EncoderConfig {
         fps: 30,
         bitrate_kbps: 2_000,
         codec,
+        quality: brp_proto::VideoQuality::Standard,
     }
 }
 fn gated() -> bool {
@@ -166,4 +168,215 @@ fn macos_encodes_and_decodes_hevc_and_h264_on_videotoolbox() {
         eprintln!("{expected}: {decoded} frames decoded on videotoolbox");
         assert!(decoded >= 8, "{expected} decoded only {decoded} frames");
     }
+}
+
+/// A frame whose chroma changes every column, so a round trip that averaged it would show.
+fn colourful(index: u64) -> RawFrame {
+    let mut frame = RawFrame::black_with(ChromaLayout::Full, 320, 240, index * 33_333);
+    for row in 0..240 {
+        for column in 0..320 {
+            let shift = column + row + index as usize;
+            frame.y[row * 320 + column] = 16 + (shift % 200) as u8;
+            frame.uv[row * 640 + column * 2] = if column % 2 == 0 { 60 } else { 200 };
+            frame.uv[row * 640 + column * 2 + 1] = if column % 2 == 0 { 200 } else { 60 };
+        }
+    }
+    frame
+}
+
+fn round_trip(codec: Codec, quality: VideoQuality, hw: HwDecode) -> Option<(RawFrame, RawFrame)> {
+    let config = EncoderConfig {
+        quality,
+        ..cfg(codec)
+    };
+    let mut encoder = match open_encoder(&config) {
+        Ok(encoder) => encoder,
+        Err(CodecError::NoFullChromaEncoder(found)) => {
+            assert_eq!(found, codec);
+            return None;
+        }
+        Err(error) => panic!("unexpected error {error}"),
+    };
+    let mut decoder = FfmpegDecoder::open(&encoder.params(), hw).unwrap();
+    let mut sent = Vec::new();
+    let mut received = Vec::new();
+    for index in 0..10 {
+        let frame = colourful(index);
+        for packet in encoder.encode(&frame, index == 0).unwrap() {
+            received.extend(decoder.decode(&packet).unwrap());
+        }
+        sent.push(frame);
+    }
+    let last = received.pop()?;
+    let matching = sent
+        .into_iter()
+        .find(|frame| frame.capture_ts_us == last.capture_ts_us)
+        .expect("the decoder only reports timestamps it was given");
+    Some((matching, last))
+}
+
+#[test]
+fn full_chroma_survives_the_encoder_and_decoder() {
+    if !gated() {
+        return;
+    }
+    for codec in [Codec::Hevc, Codec::H264] {
+        let Some((sent, got)) = round_trip(codec, VideoQuality::Chroma444, HwDecode::Software)
+        else {
+            eprintln!("{codec:?}: no 4:4:4 encoder here");
+            continue;
+        };
+        assert_eq!(got.chroma, ChromaLayout::Full, "{codec:?}");
+        got.validate().unwrap();
+        let (u_even, u_odd) = (got.uv[0], got.uv[2]);
+        assert!(
+            u_even < 110 && u_odd > 150,
+            "{codec:?}: neighbouring columns must keep their own chroma, got {u_even} and {u_odd}"
+        );
+        assert_eq!(sent.uv.len(), got.uv.len());
+    }
+}
+
+#[test]
+fn lossless_returns_the_exact_samples_on_every_decode_path() {
+    if !gated() {
+        return;
+    }
+    for codec in [Codec::Hevc, Codec::H264] {
+        for hw in [HwDecode::Software, HwDecode::Auto] {
+            let Some((sent, got)) = round_trip(codec, VideoQuality::Lossless, hw) else {
+                eprintln!("{codec:?}: no lossless encoder here");
+                continue;
+            };
+            assert_eq!(got.chroma, ChromaLayout::Full, "{codec:?} {hw:?}");
+            assert!(got.y == sent.y, "{codec:?} {hw:?}: luma differs");
+            assert!(got.uv == sent.uv, "{codec:?} {hw:?}: chroma differs");
+        }
+    }
+}
+
+#[test]
+fn an_encoder_refuses_a_frame_of_the_wrong_chroma() {
+    if !gated() {
+        return;
+    }
+    let Ok(mut encoder) = open_encoder(&cfg(Codec::H264)) else {
+        return;
+    };
+    assert!(matches!(
+        encoder.encode(&colourful(0), false),
+        Err(CodecError::InvalidFrame(_))
+    ));
+}
+
+#[test]
+fn av1_at_full_chroma_says_so_instead_of_falling_back() {
+    let config = EncoderConfig {
+        quality: VideoQuality::Chroma444,
+        ..cfg(Codec::Av1)
+    };
+    assert!(matches!(
+        open_encoder(&config),
+        Err(CodecError::NoFullChromaEncoder(Codec::Av1))
+    ));
+}
+
+/// An IDR slice header followed by noise. FFmpeg takes it without error and produces nothing, which
+/// is how many hardware refusals look.
+fn corrupt_keyframe() -> EncodedFrame {
+    let mut data = vec![0, 0, 0, 1, 0x26, 0x01];
+    data.extend(std::iter::repeat_n(0xFF, 512));
+    EncodedFrame {
+        seq: 0,
+        capture_ts_us: 0,
+        keyframe: true,
+        data,
+    }
+}
+
+#[test]
+fn a_hardware_decoder_that_never_produces_a_frame_carries_on_in_software() {
+    if !gated() {
+        return;
+    }
+    let Ok(mut encoder) = open_encoder(&cfg(Codec::Hevc)) else {
+        return;
+    };
+    let mut decoder = FfmpegDecoder::open(&encoder.params(), HwDecode::Auto).unwrap();
+    if !decoder.is_hardware() {
+        eprintln!("no hardware decoder here");
+        return;
+    }
+    let pool = decoder.pool().unwrap();
+    let mut last = Ok(Vec::new());
+    for _ in 0..30 {
+        assert!(decoder.is_hardware(), "gave up on the hardware too early");
+        last = decoder.decode(&corrupt_keyframe());
+    }
+    assert!(!decoder.is_hardware(), "the fallback happened");
+    assert!(
+        last.is_err(),
+        "the viewer must be told to ask for a keyframe"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&pool, &decoder.pool().unwrap()),
+        "whoever displays frames still returns them to the same pool"
+    );
+
+    let keyframe = RawFrame::black(320, 240, 1);
+    let decoded: Vec<RawFrame> = encoder
+        .encode(&keyframe, true)
+        .unwrap()
+        .iter()
+        .flat_map(|packet| decoder.decode(packet).unwrap())
+        .collect();
+    assert_eq!(decoded.len(), 1, "software picks up at the next keyframe");
+}
+
+#[test]
+fn packets_before_the_first_keyframe_do_not_count_against_the_hardware_decoder() {
+    if !gated() {
+        return;
+    }
+    let Ok(encoder) = open_encoder(&cfg(Codec::Hevc)) else {
+        return;
+    };
+    let mut decoder = FfmpegDecoder::open(&encoder.params(), HwDecode::Auto).unwrap();
+    if !decoder.is_hardware() {
+        return;
+    }
+    let late_keyframe = EncodedFrame {
+        keyframe: false,
+        ..corrupt_keyframe()
+    };
+    for _ in 0..60 {
+        let _ = decoder.decode(&late_keyframe);
+    }
+    assert!(decoder.is_hardware());
+}
+
+#[test]
+fn a_bad_packet_after_decoding_has_started_does_not_cost_the_hardware_decoder() {
+    if !gated() {
+        return;
+    }
+    let Ok(mut encoder) = open_encoder(&cfg(Codec::Hevc)) else {
+        return;
+    };
+    let mut decoder = FfmpegDecoder::open(&encoder.params(), HwDecode::Auto).unwrap();
+    if !decoder.is_hardware() {
+        return;
+    }
+    for packet in encoder.encode(&RawFrame::black(320, 240, 1), true).unwrap() {
+        decoder.decode(&packet).unwrap();
+    }
+    let lost_reference = EncodedFrame {
+        keyframe: false,
+        ..corrupt_keyframe()
+    };
+    for _ in 0..60 {
+        let _ = decoder.decode(&lost_reference);
+        let _ = decoder.decode(&corrupt_keyframe());
+    }
+    assert!(decoder.is_hardware(), "this decoder has shown it can do it");
 }

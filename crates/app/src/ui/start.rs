@@ -12,6 +12,8 @@ use crate::settings::RecentRoom;
 pub enum StartAction {
     Create,
     Join,
+    /// The answer to an invite was no.
+    Decline,
     OpenSettings,
     Update,
 }
@@ -23,6 +25,10 @@ pub struct StartState {
     pub ticket: String,
     pub connecting: bool,
     pub error: String,
+    /// A link asked to open the room in `ticket`, and the person has not answered yet.
+    pub invited: bool,
+    /// Join takes the keyboard on an invite's first pass, so Enter answers it.
+    focus_join: bool,
 }
 
 impl StartState {
@@ -32,7 +38,16 @@ impl StartState {
             ticket: String::new(),
             connecting: false,
             error: String::new(),
+            invited: false,
+            focus_join: false,
         }
+    }
+
+    /// A link asked to open this room. Any web page can fire one, so the window asks first.
+    pub fn invite(&mut self, ticket: String) {
+        self.ticket = ticket;
+        self.invited = true;
+        self.focus_join = true;
     }
 
     /// Turns a click into an intent, or refuses it: nothing while an open is in flight, and a join
@@ -42,6 +57,12 @@ impl StartState {
             return None;
         }
         if self.connecting {
+            return None;
+        }
+        if action == StartAction::Decline {
+            self.ticket.clear();
+            self.invited = false;
+            self.error.clear();
             return None;
         }
         let intent = match action {
@@ -54,7 +75,9 @@ impl StartState {
                 }
             },
             // Returned above before this match is reached.
-            StartAction::OpenSettings | StartAction::Update => unreachable!(),
+            StartAction::Decline | StartAction::OpenSettings | StartAction::Update => {
+                unreachable!()
+            }
         };
         self.error.clear();
         self.connecting = true;
@@ -127,7 +150,12 @@ pub fn draw(
     update_state: &UpdateState,
 ) -> Option<StartAction> {
     let mut action = None;
-    super::motion::dissolve_in(ui.ctx(), "start", theme::GROUND);
+    let screen = if state.invited {
+        "start-invite"
+    } else {
+        "start"
+    };
+    super::motion::dissolve_in(ui.ctx(), screen, theme::GROUND);
     egui::CentralPanel::default()
         .frame(
             egui::Frame::NONE
@@ -190,6 +218,10 @@ fn form(
     update_state: &UpdateState,
     action: &mut Option<StartAction>,
 ) {
+    if state.invited {
+        invite_form(ui, state, action);
+        return;
+    }
     ui.label(
         egui::RichText::new("Share your screen")
             .font(theme::semibold(30.0))
@@ -252,17 +284,7 @@ fn form(
     {
         *action = Some(StartAction::Join);
     }
-    if state.connecting {
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            theme::spinner(ui, 16.0);
-            ui.weak("Connecting to the room…");
-        });
-    }
-    if !state.error.is_empty() {
-        ui.add_space(8.0);
-        ui.colored_label(theme::ERROR, &state.error);
-    }
+    open_status(ui, state);
     if !recent.is_empty() {
         ui.add_space(24.0);
         theme::section_heading(ui, "Recent rooms");
@@ -288,6 +310,77 @@ fn form(
         if update::draw(ui, update_state) {
             *action = Some(StartAction::Update);
         }
+    }
+}
+
+/// What a link opens: one question, the name the room would see, and a way out. Worded as a question
+/// rather than "You're invited" because a stranger's web page can send someone here too.
+fn invite_form(ui: &mut egui::Ui, state: &mut StartState, action: &mut Option<StartAction>) {
+    ui.label(
+        egui::RichText::new("Join this room?")
+            .font(theme::semibold(30.0))
+            .extra_letter_spacing(-0.5),
+    );
+    ui.label(
+        egui::RichText::new(
+            "A link sent you here. People in the room can see your name and IP address.",
+        )
+        .size(16.0)
+        .color(theme::SECONDARY),
+    );
+    ui.add_space(24.0);
+    theme::section_heading(ui, "Your name");
+    let name = ui
+        .add_enabled_ui(!state.connecting, |ui| {
+            theme::field(
+                ui,
+                egui::TextEdit::singleline(&mut state.nickname).hint_text("Nickname"),
+                theme::FORM_HEIGHT,
+            )
+        })
+        .inner;
+    let full_width = egui::vec2(ui.available_width(), theme::FORM_HEIGHT);
+    let join = theme::wide_action(
+        ui,
+        icons::JOIN,
+        "Join room",
+        theme::Tone::Primary,
+        !state.connecting,
+        full_width,
+    );
+    if std::mem::take(&mut state.focus_join) {
+        join.request_focus();
+    }
+    if join.clicked() {
+        *action = Some(StartAction::Join);
+    }
+    ui.add_space(4.0);
+    let not_now = theme::text_button(ui, "Not now", !state.connecting);
+    // Esc in the name field only leaves the field, and an open dialog takes it for itself.
+    let dialog_open = ui.ctx().memory(|memory| memory.top_modal_layer()).is_some();
+    let editing = name.has_focus() || name.lost_focus();
+    let escape = !dialog_open
+        && !editing
+        && !state.connecting
+        && ui.input(|input| input.key_pressed(egui::Key::Escape));
+    if not_now.clicked() || escape {
+        *action = Some(StartAction::Decline);
+    }
+    open_status(ui, state);
+}
+
+/// How the open in flight is going, or why the last one failed.
+fn open_status(ui: &mut egui::Ui, state: &StartState) {
+    if state.connecting {
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            theme::spinner(ui, 16.0);
+            ui.weak("Connecting to the room…");
+        });
+    }
+    if !state.error.is_empty() {
+        ui.add_space(8.0);
+        ui.colored_label(theme::ERROR, &state.error);
     }
 }
 
@@ -427,6 +520,96 @@ mod tests {
         run(&ctx, &mut state, with_events(vec![button(true)]));
         let (_, action) = run(&ctx, &mut state, with_events(vec![button(false)]));
         assert_eq!(action, Some(StartAction::OpenSettings));
+    }
+
+    fn press(key: egui::Key) -> egui::RawInput {
+        let mut raw = sized(1440.0, 900.0);
+        raw.events = vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }];
+        raw
+    }
+
+    fn drawn_text(output: &egui::FullOutput) -> String {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    fn invited(ticket: &RoomTicket) -> StartState {
+        let mut state = StartState::new("Alex".into());
+        state.invite(ticket.to_string());
+        state
+    }
+
+    #[test]
+    fn an_invite_asks_first_and_shows_only_what_answers_it() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut state = invited(&valid_ticket());
+        let (output, action) = run(&ctx, &mut state, sized(1440.0, 900.0));
+        let text = drawn_text(&output);
+        assert_eq!(action, None, "a link alone must not join");
+        for shown in ["Join this room?", "IP address", "Your name", "Not now"] {
+            assert!(text.contains(shown), "{shown} missing from {text}");
+        }
+        for hidden in ["Create room", "Have an invite?"] {
+            assert!(!text.contains(hidden), "{hidden} shown in {text}");
+        }
+    }
+
+    #[test]
+    fn enter_answers_an_invite_with_join() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let ticket = valid_ticket();
+        let mut state = invited(&ticket);
+        run(&ctx, &mut state, sized(1440.0, 900.0));
+        let (_, action) = run(&ctx, &mut state, press(egui::Key::Enter));
+        assert_eq!(action, Some(StartAction::Join));
+        assert_eq!(
+            state.submit(StartAction::Join),
+            Some(Intent::Join(ticket)),
+            "joining from an invite opens the room the link named"
+        );
+    }
+
+    #[test]
+    fn escape_declines_an_invite_and_the_form_returns_without_the_ticket() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut state = invited(&valid_ticket());
+        run(&ctx, &mut state, sized(1440.0, 900.0));
+        let (_, action) = run(&ctx, &mut state, press(egui::Key::Escape));
+        assert_eq!(action, Some(StartAction::Decline));
+        assert_eq!(state.submit(StartAction::Decline), None);
+        assert!(!state.invited);
+        assert!(state.ticket.is_empty());
+        let (output, _) = run(&ctx, &mut state, sized(1440.0, 900.0));
+        assert!(drawn_text(&output).contains("Create room"));
+    }
+
+    #[test]
+    fn a_failed_join_stays_on_the_invite_with_its_reason() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut state = invited(&valid_ticket());
+        state.submit(StartAction::Join);
+        state.failed("no room member answered".into());
+        let (output, _) = run(&ctx, &mut state, sized(1440.0, 900.0));
+        let text = drawn_text(&output);
+        assert!(text.contains("Join this room?"), "{text}");
+        assert!(text.contains("no room member answered"), "{text}");
     }
 
     #[test]

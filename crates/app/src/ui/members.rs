@@ -6,7 +6,7 @@ use std::hash::Hash;
 
 use brp_net::PathKind;
 use brp_proto::constants::SOURCE_PRESET_ID;
-use brp_proto::{LiveInfo, Preset};
+use brp_proto::{AudioMix, LiveInfo, Preset};
 use brp_room::{MemberView, RoomSnapshot, WatchState};
 
 use super::motion;
@@ -140,12 +140,31 @@ fn member_block(
                 });
             }
         });
+        if let Some(mix) = &member.audio_mix {
+            let summary = mix_summary(mix);
+            ui.add(egui::Label::new(egui::RichText::new(&summary).small().weak()).truncate())
+                .on_hover_text(summary);
+        }
     }
     for live in &member.lives {
         motion::reveal(ui, ("member-live", live.id), |ui| {
             ui.add_space(CARD_GAP);
             live_row(ui, snapshot, member, live, state, commands);
         });
+    }
+}
+
+/// What someone's audio carries, in the words the rail shows under their volume.
+fn mix_summary(mix: &AudioMix) -> String {
+    match mix {
+        AudioMix::All => "Sharing all applications".to_string(),
+        AudioMix::Only { names, others: 0 } if names.is_empty() => {
+            "Sharing no applications".to_string()
+        }
+        AudioMix::Only { names, others: 0 } => format!("Sharing {}", names.join(", ")),
+        AudioMix::Only { names, others } => {
+            format!("Sharing {} and {others} more", names.join(", "))
+        }
     }
 }
 
@@ -490,6 +509,24 @@ pub fn preset_selector(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mix_summary_names_what_is_shared_and_counts_what_did_not_fit() {
+        let only = |names: &[&str], others| AudioMix::Only {
+            names: names.iter().map(|n| n.to_string()).collect(),
+            others,
+        };
+        assert_eq!(mix_summary(&AudioMix::All), "Sharing all applications");
+        assert_eq!(mix_summary(&only(&[], 0)), "Sharing no applications");
+        assert_eq!(
+            mix_summary(&only(&["firefox", "game.exe"], 0)),
+            "Sharing firefox, game.exe"
+        );
+        assert_eq!(
+            mix_summary(&only(&["firefox"], 3)),
+            "Sharing firefox and 3 more"
+        );
+    }
     use brp_proto::{Codec, SourceKind, template_presets};
 
     #[test]

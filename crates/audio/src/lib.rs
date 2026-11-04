@@ -17,7 +17,9 @@ pub use chunk::*;
 pub use cpal_output::{CpalOutput, OutputDevice, output_devices};
 pub use error::AudioError;
 pub use fake_output::{FakeOutput, FakeOutputHandle};
-pub use selection::{AppKey, AudioSelection, AudioSource};
+pub use selection::{
+    AppKey, AudioSelection, AudioSource, MAX_SEPARATE_APPLICATIONS, SendVolumeSupport, SendVolumes,
+};
 pub use synthetic::SyntheticTone;
 
 #[cfg(target_os = "linux")]

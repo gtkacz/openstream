@@ -4,7 +4,7 @@ use crate::ffmpeg::ffi::{
 };
 use crate::raw::{RawFrame, RawFramePool};
 use crate::traits::VideoDecoder;
-use brp_proto::{Codec, CodecParams, EncodedFrame};
+use brp_proto::{ChromaLayout, Codec, CodecParams, EncodedFrame};
 use ffmpeg_sys_next as ff;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -24,6 +24,12 @@ pub struct FfmpegDecoder {
     frame: Frame,
     sw_frame: Frame,
     name: &'static str,
+    params: CodecParams,
+    /// Whether a refusal could still be the hardware's fault: true until the first frame, since a
+    /// decoder that has produced one can do this stream, and until a software open has failed.
+    may_fall_back: bool,
+    /// Packets taken from the first keyframe on without a frame. Anything earlier cannot decode.
+    silent_packets: u32,
     /// Recycled decoded-frame buffers, shared with whoever displays the frames this decoder
     /// produces (see `VideoDecoder::pool`) so a buffer comes back once nothing reads it any more,
     /// whether that is a supersession in `LatestSlot` or a completed GPU upload. One watch has at
@@ -36,6 +42,13 @@ pub struct FfmpegDecoder {
 /// `decode` call after a gap, so this allows a little slack beyond the steady-state one-in-flight
 /// case.
 const DECODE_POOL_CAPACITY: usize = 4;
+/// Packets a hardware decoder may swallow without producing a frame before software takes over.
+/// FFmpeg reports many refusals as success with no output, so this is what catches them. Far beyond
+/// any decoder's delay, and about a second of black tile at 30 fps.
+const HW_SILENT_PACKET_LIMIT: u32 = 30;
+/// wgpu's default texture limit squared: no viewer could show a larger picture, and the size comes
+/// from a remote peer's stream, so it is refused before FFmpeg and the pool allocate for it.
+const MAX_DECODED_PIXELS: i64 = 8192 * 8192;
 /// Hardware decoders tried before software for `os` (a `std::env::consts::OS` value): the
 /// platform's own API first, then NVDEC where NVIDIA hardware can exist.
 fn hw_device_order(os: &str) -> &'static [(ff::AVHWDeviceType, &'static str)] {
@@ -84,6 +97,14 @@ impl FfmpegDecoder {
             let c = &mut *ctx.0;
             c.flags |= ff::AV_CODEC_FLAG_LOW_DELAY as c_int;
             c.thread_type = ff::FF_THREAD_SLICE as c_int;
+            // FFmpeg defaults to one thread, which leaves the thread type above doing nothing. Slice
+            // threads rather than frame threads, which are several times faster but hold the newest
+            // frames back until later ones arrive: compositors send frames only on damage, so on a
+            // still screen the last update would stay stuck in the decoder.
+            if hw_pix_fmt.is_none() {
+                c.thread_count = 0;
+            }
+            c.max_pixels = MAX_DECODED_PIXELS;
             if !params.extradata.is_empty() {
                 let size = params.extradata.len();
                 let buffer =
@@ -110,6 +131,9 @@ impl FfmpegDecoder {
             frame: Frame::new()?,
             sw_frame: Frame::new()?,
             name,
+            params: params.clone(),
+            may_fall_back: true,
+            silent_packets: 0,
             pool: Arc::new(RawFramePool::new(DECODE_POOL_CAPACITY)),
         })
     }
@@ -206,8 +230,28 @@ unsafe extern "C" fn pick_hw_format(
         *formats
     }
 }
-impl VideoDecoder for FfmpegDecoder {
-    fn decode(&mut self, encoded: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+impl FfmpegDecoder {
+    /// Keeps the pool: whoever displays this decoder's frames still returns buffers to it.
+    fn fall_back_to_software(&mut self) {
+        tracing::warn!(
+            decoder = self.name,
+            hardware = self.hw_device.unwrap_or("none"),
+            "hardware decoder refused this stream; continuing in software"
+        );
+        match Self::open(&self.params, HwDecode::Software) {
+            Ok(software) => {
+                let pool = self.pool.clone();
+                *self = software;
+                self.pool = pool;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "software decoder could not be opened");
+                self.may_fall_back = false;
+            }
+        }
+    }
+
+    fn decode_packet(&mut self, encoded: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
         let size = c_int::try_from(encoded.data.len())
             .map_err(|_| CodecError::InvalidFrame("packet larger than c_int".into()))?;
         unsafe {
@@ -252,6 +296,30 @@ impl VideoDecoder for FfmpegDecoder {
             self.frame.unref();
         }
     }
+}
+impl VideoDecoder for FfmpegDecoder {
+    fn decode(&mut self, encoded: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        let result = self.decode_packet(encoded);
+        if result.as_ref().is_ok_and(|frames| !frames.is_empty()) {
+            self.may_fall_back = false;
+        }
+        if encoded.keyframe || self.silent_packets > 0 {
+            self.silent_packets += 1;
+        }
+        // A keyframe needs nothing earlier, so failing on one is the hardware refusing the stream
+        // (4:4:4, on most GPUs) rather than a lost packet.
+        let refused = self.may_fall_back
+            && ((result.is_err() && encoded.keyframe)
+                || self.silent_packets >= HW_SILENT_PACKET_LIMIT);
+        if !(refused && self.is_hardware()) {
+            return result;
+        }
+        self.fall_back_to_software();
+        // Always an error, because the viewer answers one by asking for the keyframe software needs.
+        result.and(Err(CodecError::InvalidFrame(
+            "the hardware decoder produced nothing".into(),
+        )))
+    }
     /// A frame decoded but superseded before it was ever displayed: safe to reuse since nothing
     /// read it.
     fn recycle(&mut self, frame: RawFrame) {
@@ -262,9 +330,29 @@ impl VideoDecoder for FfmpegDecoder {
     }
 }
 fn raw_from_avframe(frame: &ff::AVFrame, pool: &RawFramePool) -> Result<RawFrame, CodecError> {
+    let format = frame.format;
+    let is = |candidate: ff::AVPixelFormat| format == candidate as c_int;
+    let semi_planar =
+        is(ff::AVPixelFormat::AV_PIX_FMT_NV12) || is(ff::AVPixelFormat::AV_PIX_FMT_NV24);
+    let chroma = if is(ff::AVPixelFormat::AV_PIX_FMT_NV12)
+        || is(ff::AVPixelFormat::AV_PIX_FMT_YUV420P)
+        || is(ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P)
+    {
+        ChromaLayout::Half
+    } else if is(ff::AVPixelFormat::AV_PIX_FMT_NV24)
+        || is(ff::AVPixelFormat::AV_PIX_FMT_YUV444P)
+        || is(ff::AVPixelFormat::AV_PIX_FMT_YUVJ444P)
+    {
+        ChromaLayout::Full
+    } else {
+        return Err(CodecError::InvalidFrame(format!(
+            "decoder produced unsupported pixel format {format}"
+        )));
+    };
     let (width, height) = (frame.width as u32, frame.height as u32);
-    let mut output = pool.acquire(width, height, frame.pts.max(0) as u64);
+    let mut output = pool.acquire(chroma, width, height, frame.pts.max(0) as u64);
     let rows = output.chroma_rows();
+    let uv_bytes = output.chroma_width() * 2;
     let width = width as usize;
     unsafe {
         for row in 0..height as usize {
@@ -274,31 +362,24 @@ fn raw_from_avframe(frame: &ff::AVFrame, pool: &RawFramePool) -> Result<RawFrame
                 width,
             );
         }
-        if frame.format == ff::AVPixelFormat::AV_PIX_FMT_NV12 as c_int {
+        if semi_planar {
             for row in 0..rows {
                 ptr::copy_nonoverlapping(
                     frame.data[1].add(row * frame.linesize[1] as usize),
                     output.uv.as_mut_ptr().add(row * output.uv_stride),
-                    width,
+                    uv_bytes,
                 );
             }
-        } else if frame.format == ff::AVPixelFormat::AV_PIX_FMT_YUV420P as c_int
-            || frame.format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as c_int
-        {
+        } else {
             for row in 0..rows {
                 let u = frame.data[1].add(row * frame.linesize[1] as usize);
                 let v = frame.data[2].add(row * frame.linesize[2] as usize);
-                let dst = &mut output.uv[row * output.uv_stride..row * output.uv_stride + width];
+                let dst = &mut output.uv[row * output.uv_stride..row * output.uv_stride + uv_bytes];
                 for (index, pair) in dst.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                     pair[0] = *u.add(index);
                     pair[1] = *v.add(index);
                 }
             }
-        } else {
-            return Err(CodecError::InvalidFrame(format!(
-                "decoder produced unsupported pixel format {}",
-                frame.format
-            )));
         }
     }
     Ok(output)

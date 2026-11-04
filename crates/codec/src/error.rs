@@ -19,6 +19,8 @@ pub enum CodecError {
     FakePayload(#[from] postcard::Error),
     #[error("no encoder available for {0:?}")]
     NoEncoder(brp_proto::Codec),
+    #[error("no encoder on this machine can send {0:?} at 4:4:4")]
+    NoFullChromaEncoder(brp_proto::Codec),
     #[error("no decoder available for {0:?}")]
     NoDecoder(brp_proto::Codec),
 }
