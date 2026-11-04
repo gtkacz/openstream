@@ -154,6 +154,8 @@ mod tests {
             .join(" ")
     }
 
+    // Paths joined on Windows would carry backslashes, and only macOS ever runs these steps.
+    #[cfg(unix)]
     #[test]
     fn an_updated_bundle_takes_the_new_version_then_is_signed_inside_out_and_verified() {
         let bundle = Path::new("/Applications/OpenStream.app");

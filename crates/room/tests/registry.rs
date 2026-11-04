@@ -52,6 +52,16 @@ impl CaptureSession for DummySession {
     fn stop(self: Box<Self>) {}
 }
 
+/// A packet queued before capture stopped can still arrive first, so the stream has ended once the
+/// receiver drains to nothing, not necessarily on its very next read.
+async fn assert_ends(packets: &mut tokio::sync::mpsc::Receiver<Arc<EncodedFrame>>, why: &str) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while packets.recv().await.is_some() {}
+    })
+    .await
+    .expect(why);
+}
+
 async fn synthetic_live(registry: &LiveRegistry, title: &str) -> u32 {
     let fan = Arc::new(CaptureFan::default());
     let sink = fan.clone();
@@ -437,13 +447,11 @@ async fn turning_audio_off_while_capturing_stops_it_and_views_agree() {
     assert_eq!(registry.audio_view().state, AudioCaptureState::Off);
     assert!(registry.views().iter().all(|v| !v.info.has_audio));
     assert!(registry.live_infos().iter().all(|l| !l.has_audio));
-    assert!(
-        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
-            .await
-            .unwrap()
-            .is_none(),
-        "packets receiver should end when capture stops"
-    );
+    assert_ends(
+        &mut audio.packets,
+        "packets receiver should end when capture stops",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -460,13 +468,11 @@ async fn stop_all_stops_running_audio() {
     // audio.enabled is untouched by stop_all; with no lives, no error, and nothing running,
     // that reads as Idle rather than Off.
     assert_eq!(registry.audio_view().state, AudioCaptureState::Idle);
-    assert!(
-        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
-            .await
-            .unwrap()
-            .is_none(),
-        "packets receiver should end when stop_all stops capture"
-    );
+    assert_ends(
+        &mut audio.packets,
+        "packets receiver should end when stop_all stops capture",
+    )
+    .await;
 }
 
 async fn synthetic_live_with_presets(
@@ -982,13 +988,11 @@ async fn a_swap_that_fails_to_start_drops_has_audio_and_rejects_new_subscribers(
         registry.subscribe_audio(live),
         Err(SubscribeRejected::NoAudio)
     ));
-    assert!(
-        tokio::time::timeout(Duration::from_secs(2), audio.packets.recv())
-            .await
-            .unwrap()
-            .is_none(),
-        "no fallback to the old session: the publisher stops and the subscription ends"
-    );
+    assert_ends(
+        &mut audio.packets,
+        "no fallback to the old session: the publisher stops and the subscription ends",
+    )
+    .await;
 }
 
 #[tokio::test]
