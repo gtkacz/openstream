@@ -6,7 +6,7 @@
 use std::io;
 
 #[cfg(target_os = "linux")]
-pub use linux::{DESKTOP_FILE, desktop_entry, install};
+pub use linux::{APP_ID, DESKTOP_FILE, desktop_entry, install};
 
 /// Registers the running executable for `brp://` links on a detached thread. `xdg-mime` can be
 /// slow or absent and a registry can be locked by policy, so nothing waits on the outcome and
@@ -46,8 +46,12 @@ mod linux {
     use std::path::Path;
     use std::process::Command;
 
+    /// The id windows announce, which compositors resolve to `<id>.desktop` for their icon.
+    pub const APP_ID: &str = "brp";
     /// The handler-only desktop entry, under the user's applications directory.
     pub const DESKTOP_FILE: &str = "brp.desktop";
+    const ICON_FILE: &str = "brp.svg";
+    const ICON_SVG: &str = include_str!("../assets/icon/openstream.svg");
     const SCHEME_MIME: &str = "x-scheme-handler/brp";
 
     /// The desktop entry that hands `brp://` links to `exe`. `NoDisplay` keeps it out of
@@ -55,7 +59,8 @@ mod linux {
     pub fn desktop_entry(exe: &Path) -> String {
         format!(
             "[Desktop Entry]\nType=Application\nName=OpenStream\nComment=Peer-to-peer screen sharing\n\
-             Exec={} join %u\nTerminal=false\nNoDisplay=true\nMimeType={SCHEME_MIME};\n",
+             Exec={} join %u\nIcon={APP_ID}\nTerminal=false\nNoDisplay=true\n\
+             MimeType={SCHEME_MIME};\n",
             quote_exec(exe)
         )
     }
@@ -83,13 +88,23 @@ mod linux {
     /// Writes the entry into `dir` when its content differs from what is there, creating the
     /// directory if needed. Returns whether it wrote.
     pub fn install(dir: &Path, exe: &Path) -> io::Result<bool> {
-        let path = dir.join(DESKTOP_FILE);
-        let entry = desktop_entry(exe);
-        if fs::read_to_string(&path).is_ok_and(|current| current == entry) {
+        write_if_changed(dir, DESKTOP_FILE, &desktop_entry(exe))
+    }
+
+    /// Writes the icon into the user's hicolor theme under `data_dir`, where the entry's `Icon`
+    /// key finds it. Returns whether it wrote.
+    fn install_icon(data_dir: &Path) -> io::Result<bool> {
+        let dir = data_dir.join("icons/hicolor/scalable/apps");
+        write_if_changed(&dir, ICON_FILE, ICON_SVG)
+    }
+
+    fn write_if_changed(dir: &Path, file: &str, contents: &str) -> io::Result<bool> {
+        let path = dir.join(file);
+        if fs::read_to_string(&path).is_ok_and(|current| current == contents) {
             return Ok(false);
         }
         fs::create_dir_all(dir)?;
-        fs::write(&path, entry)?;
+        fs::write(&path, contents)?;
         Ok(true)
     }
 
@@ -97,6 +112,10 @@ mod linux {
         let exe = std::env::current_exe()?;
         let dirs = directories::BaseDirs::new()
             .ok_or_else(|| io::Error::other("no home directory for the desktop entry"))?;
+        // A missing icon is cosmetic, so it must not stop the link handler registering below.
+        if let Err(error) = install_icon(dirs.data_local_dir()) {
+            tracing::warn!(%error, "could not install the application icon");
+        }
         let dir = dirs.data_local_dir().join("applications");
         let written = install(&dir, &exe)?;
         tracing::debug!(path = %dir.join(DESKTOP_FILE).display(), written, "desktop entry checked");
@@ -140,6 +159,24 @@ mod linux {
                 "{entry}"
             );
             assert!(entry.contains("\nTerminal=false\n"), "{entry}");
+        }
+
+        #[test]
+        fn the_entry_names_the_icon_under_the_id_windows_announce() {
+            let entry = desktop_entry(Path::new("/opt/brp/brp"));
+            assert!(entry.contains(&format!("\nIcon={APP_ID}\n")), "{entry}");
+            assert_eq!(DESKTOP_FILE, format!("{APP_ID}.desktop"));
+            assert_eq!(ICON_FILE, format!("{APP_ID}.svg"));
+        }
+
+        #[test]
+        fn the_icon_installs_once_into_the_hicolor_theme() {
+            let dir = temp_dir("icon");
+            let path = dir.join("icons/hicolor/scalable/apps/brp.svg");
+            assert!(install_icon(&dir).unwrap());
+            assert_eq!(fs::read_to_string(&path).unwrap(), ICON_SVG);
+            assert!(!install_icon(&dir).unwrap());
+            let _ = fs::remove_dir_all(&dir);
         }
 
         #[test]

@@ -30,6 +30,13 @@ bundled Hack, which adds no bytes. Static figures such as `2560 × 1440` stay in
 Icons are a [Lucide](https://lucide.dev) subset, one stroke, in the colour of their text role. An
 icon with no visible label names itself in a tooltip and to screen readers.
 
+## App icon
+
+A CRT drawn in scanlines: thirteen rows make a disc, the O, and the rows left unlit make the S, whose
+curve is a 1:3 oscilloscope figure. The mark is one compound shape in one colour, so it holds as a
+silhouette. The scanlines blur together at favicon size, so there the disc fills in and keeps only
+the S. Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/icon/README.md).
+
 ## Layout
 
 - **Start.** The form on the left, with Join taking the primary surface from Create as soon as a

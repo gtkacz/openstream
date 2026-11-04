@@ -23,6 +23,7 @@ use winit::{
 use crate::cli::WindowArgs;
 use crate::commands::{RoomCommand, WindowCommand};
 use crate::dirty::DirtyStreams;
+use crate::icon::with_app_icon;
 use crate::launch::{self, Intent, Launch};
 use crate::popouts::PopOuts;
 use crate::relaunch::Relaunch;
@@ -638,11 +639,13 @@ impl App {
             Phase::Start => None,
         }
         .unwrap_or_else(|| "live".to_string());
-        let attributes = Window::default_attributes()
-            .with_title(format!("OpenStream · {title}"))
-            .with_theme(Some(winit::window::Theme::Dark))
-            .with_inner_size(DEFAULT_WINDOW_SIZE)
-            .with_visible(false);
+        let attributes = with_app_icon(
+            Window::default_attributes()
+                .with_title(format!("OpenStream · {title}"))
+                .with_theme(Some(winit::window::Theme::Dark))
+                .with_inner_size(DEFAULT_WINDOW_SIZE)
+                .with_visible(false),
+        );
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -692,12 +695,12 @@ impl ApplicationHandler<AppEvent> for App {
         if self.main.is_some() {
             return;
         }
-        let window = match event_loop.create_window(
+        let window = match event_loop.create_window(with_app_icon(
             Window::default_attributes()
                 .with_title("OpenStream")
                 .with_theme(Some(winit::window::Theme::Dark))
                 .with_inner_size(DEFAULT_WINDOW_SIZE),
-        ) {
+        )) {
             Ok(window) => Arc::new(window),
             Err(error) => {
                 tracing::error!(%error, "could not create window");

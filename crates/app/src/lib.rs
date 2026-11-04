@@ -5,6 +5,7 @@ pub mod console;
 pub mod dirty;
 pub mod error;
 pub mod handler;
+pub mod icon;
 pub mod identity;
 pub mod launch;
 pub mod link;
