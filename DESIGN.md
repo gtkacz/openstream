@@ -6,7 +6,7 @@ URL schemes, wire protocols, and release machinery.
 
 ## Direction
 
-A terminal for a network: amber phosphor on a character grid, with the connections between people
+A terminal for a network: blue phosphor on a character grid, with the connections between people
 drawn as a live circuit. It comes from the CRT, the oscilloscope, and retro-futurist control rooms,
 and from the way VPN and blockchain software show links rather than hide them.
 
@@ -22,10 +22,12 @@ Four rules keep that from becoming costume:
 - **Things you touch stay on springs; things the network does tick.** Hover and press ease
   continuously. Packets and traffic step at about 12 frames a second.
 
-Colour comes from the phosphor, chosen in Settings: amber by default, green, or white. A palette holds
-a ground, three surface steps, a rule, a wire, and three text roles, all tints of the phosphor, and
-everything in the interface reads through it, so a change applies at once. The one colour that does
-not change is the alarm, `#FF2D78`, because an alarm must read the same on every tube. It marks lost
+Colour comes from the phosphor: blue, on a floor that is nearly black. Light runs from `#1E3FD8`
+through `#38BDF8` to `#F6F8FF`, secondary text is `#A5D8FF`, and the surfaces rise from the floor
+through the darkest blues of that same falloff. A palette holds a ground, three surface steps, a rule,
+a wire, and three text roles, and everything in the interface reads through it. Choosing a phosphor is
+disabled for now: the code stays, the Settings row is gone, and a saved choice is not applied. The one
+colour that does not change is the alarm, `#FF2D78`, because an alarm must read the same on every tube. It marks lost
 signal and failures and nothing else.
 
 Every window is one ground with tone steps for depth, under static scanlines and grain that sit below
@@ -35,7 +37,7 @@ Text has primary, secondary, and muted roles, all at 4.5:1 or better where they 
 truncate with a tooltip, never displacing actions.
 
 Controls are bracketed labels, `[ Copy link ]`, in reverse video on hover and press. The one main
-action on a screen is a solid block. A bar that frames its controls already, like a tile's toolbar,
+action on a screen is a solid block of `#1E3FD8` with `#F6F8FF` text. A bar that frames its controls already, like a tile's toolbar,
 drops the brackets. Marks are characters too: `[x]` for a check and `(*)` for a radio. A field's caret
 is a blinking block over the next character, in reverse video.
 
@@ -68,7 +70,7 @@ Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/ico
   the form's gap to the window's top, right, and bottom edges, passing under Settings, over a horizon
   of light along the foot of the window.
 - **Invite.** A link that names a room replaces the form with one question, in the same place: the
-  name the room would see, Join as the accent with the keyboard on it, and Not now, which leads back
+  name the room would see, Join as the main action with the keyboard on it, and Not now, which leads back
   to the full form. It asks rather than saying "You're invited" because a stranger's web page can
   send someone here too.
 - **Rail.** The rail is a circuit with you at its root. Your streams branch off first, and everyone
@@ -84,7 +86,7 @@ Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/ico
 - **Dock.** It holds what you do to the room: share, audio, upload, mute, Settings. Always one row,
   because a second would come out of the video. As the width falls it sheds words instead: the audio
   status first, then the tools' labels, the audio labels, the upload figure, and the main action's
-  label last. Accent says what to do next: Share monitor carries it only while you are not sharing
+  label last. The main action says what to do next: Share monitor carries it only while you are not sharing
   and someone else is, and the canvas's own Share button carries it while nobody is. The audio switch
   and its application chooser are one control on one surface.
 - **Tiles.** A tile is the shape of its picture, known from the stream's preset before its first
@@ -176,7 +178,7 @@ thrown. No input is ever locked out for an animation to finish.
   picture. It never sits behind video.
 - **The chrome's glow.** The interface is drawn again at a quarter of the size, blurred, and screened
   over the window, which gives text and lines a soft halo. Screened rather than added, because adding
-  pushes amber towards yellow.
+  washes a colour out towards white.
 - **The start wall.** Columns drift at their own speeds in alternating directions. A still's dots come
   on in steps as it loads. Hovering a tile pauses its column and burns through to the full picture
   across most of the tile, with a bright rim at the edge of what is showing; once the pointer has gone

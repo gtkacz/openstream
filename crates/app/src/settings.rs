@@ -38,7 +38,7 @@ pub struct Settings {
     /// A `brp://` link joins its room at once instead of asking. Off by default because any web page
     /// can fire one, and joining shows the room this person's name and IP address.
     pub auto_join_links: bool,
-    /// The colour of the tube.
+    /// The colour of the tube. Kept in the file but not applied while choosing one is disabled.
     pub phosphor: crate::ui::theme::Phosphor,
 }
 

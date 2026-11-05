@@ -449,6 +449,33 @@ fn a_compact_window_folds_the_room_into_a_sheet_and_keeps_the_video_placed() {
 }
 
 #[test]
+fn settings_offers_no_colour_while_choosing_one_is_disabled() {
+    use brp_app::{settings::Settings, ui::settings};
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut dialog = settings::SettingsDialog::default();
+    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        let mut output = ctx.run_ui(window(1280.0, 800.0), |ui| {
+            settings::draw(ui.ctx(), &mut dialog, false);
+        });
+        output.textures_delta.clear();
+        shapes = output.shapes;
+    }
+    assert!(
+        !text_rects(&shapes, "Your name").is_empty(),
+        "the form drew"
+    );
+    for word in ["Phosphor", "Amber", "Green", "White"] {
+        assert!(
+            text_rects(&shapes, word).is_empty(),
+            "{word} is still offered"
+        );
+    }
+}
+
+#[test]
 fn a_rejected_save_says_why_where_it_can_be_seen_rather_than_below_the_fold() {
     use brp_app::{settings::Settings, ui::settings};
     const HEIGHT: f32 = 480.0;
@@ -1313,18 +1340,11 @@ fn checks_in_a_wrapped_row_move_to_the_next_line_rather_than_truncating() {
     assert!(third.right() <= 240.0);
 }
 
-fn accent_surfaces(shapes: &[egui::epaint::ClippedShape]) -> usize {
-    // The logo is drawn in the accent too, in bars far thinner than any control.
-    const CONTROL_AT_LEAST: f32 = 24.0;
+fn action_surfaces(shapes: &[egui::epaint::ClippedShape]) -> usize {
     fn count(shape: &egui::Shape) -> usize {
         match shape {
             egui::Shape::Vec(shapes) => shapes.iter().map(count).sum(),
-            egui::Shape::Rect(rect)
-                if rect.fill == brp_app::ui::theme::accent()
-                    && rect.rect.height() >= CONTROL_AT_LEAST =>
-            {
-                1
-            }
+            egui::Shape::Rect(rect) if rect.fill == brp_app::ui::theme::main_action() => 1,
             _ => 0,
         }
     }
@@ -1500,7 +1520,7 @@ fn alone_in_a_room_the_canvas_holds_the_invite_and_the_one_accent_share_button()
         1,
         "said once, on the canvas rather than also in the rail"
     );
-    assert_eq!(accent_surfaces(&shapes), 1, "one primary action on screen");
+    assert_eq!(action_surfaces(&shapes), 1, "one primary action on screen");
     // Two labelled Share buttons: the canvas's accent one and the dock's neutral one.
     let shares = text_rects(&shapes, "Share monitor");
     assert_eq!(shares.len(), 2);
@@ -1648,14 +1668,14 @@ fn the_accent_marks_the_next_thing_to_do_and_leaves_once_you_are_sharing() {
         settled_room(&ctx, (1440.0, 900.0), snapshot, &mut state).1
     };
     assert_eq!(
-        accent_surfaces(&run(&room_with_an_unwatched_stream())),
+        action_surfaces(&run(&room_with_an_unwatched_stream())),
         1,
         "not sharing: the dock's Share is the way in"
     );
     let mut sharing = busy_room();
     sharing.members.clear();
     sharing.watches.clear();
-    assert_eq!(accent_surfaces(&run(&sharing)), 0, "already sharing");
+    assert_eq!(action_surfaces(&run(&sharing)), 0, "already sharing");
 }
 
 #[test]
@@ -1689,14 +1709,17 @@ fn the_tone_of_a_control_eases_rather_than_cutting() {
     for frame in 0..30 {
         fill_at(frame, theme::Tone::Primary);
     }
-    assert_eq!(fill_at(30, theme::Tone::Primary), Some(theme::accent()));
+    assert_eq!(
+        fill_at(30, theme::Tone::Primary),
+        Some(theme::main_action())
+    );
     let next = fill_at(31, theme::Tone::Neutral).expect("a surface");
     assert_ne!(
         next,
         egui::Color32::TRANSPARENT,
         "cut straight to the new tone"
     );
-    assert_ne!(next, theme::accent(), "did not start moving");
+    assert_ne!(next, theme::main_action(), "did not start moving");
     for frame in 32..90 {
         fill_at(frame, theme::Tone::Neutral);
     }

@@ -27,15 +27,12 @@ pub struct SettingsDialog {
     /// The frame rate is being typed rather than picked. Held apart from the value because 60 can be
     /// a typed number too, and choosing Custom must not change it.
     pub custom_fps: bool,
-    /// Phosphor applies as it is picked, so Cancel has to put this back.
-    pub phosphor_before: theme::Phosphor,
 }
 
 impl SettingsDialog {
     /// Opens with a fresh draft of `settings` and the device list as enumerated now.
     pub fn open_with(&mut self, settings: &Settings, devices: Result<Vec<OutputDevice>, String>) {
         self.draft = settings.clone();
-        self.phosphor_before = settings.phosphor;
         self.nickname_text = settings.nickname.clone().unwrap_or_default();
         match devices {
             Ok(devices) => {
@@ -113,24 +110,6 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                         egui::TextEdit::singleline(&mut dialog.nickname_text),
                         theme::CONTROL_HEIGHT,
                     );
-                });
-                ui.add_space(ROW_GAP);
-                theme::form_row(ui, "Phosphor", |ui| {
-                    let choice = theme::segmented(
-                        ui,
-                        "settings-phosphor",
-                        &[
-                            (theme::Phosphor::Amber, "Amber"),
-                            (theme::Phosphor::Green, "Green"),
-                            (theme::Phosphor::White, "White"),
-                        ],
-                        dialog.draft.phosphor,
-                        ui.available_width() / 3.0,
-                    );
-                    if let Some(phosphor) = choice {
-                        dialog.draft.phosphor = phosphor;
-                        theme::set_phosphor(ctx, phosphor);
-                    }
                 });
                 ui.add_space(ROW_GAP);
                 theme::form_row(ui, "Connection", |ui| {
@@ -261,9 +240,6 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
     })?;
     // The title bar's close button and Esc behave like Cancel.
     dialog.open &= !dismissed;
-    if visible && !dialog.open && saved.is_none() {
-        theme::set_phosphor(ctx, dialog.phosphor_before);
-    }
     saved
 }
 

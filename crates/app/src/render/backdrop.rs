@@ -112,7 +112,6 @@ struct Look {
 }
 
 fn look(kind: BackdropKind) -> Look {
-    let phosphor = theme::accent();
     match kind {
         BackdropKind::Horizon => Look {
             gain: 0.74,
@@ -120,8 +119,8 @@ fn look(kind: BackdropKind) -> Look {
             halo: 0.22,
             wash: 0.24,
             ground: theme::ground(),
-            dim: phosphor.lerp_to_gamma(Color32::BLACK, 0.55),
-            hot: phosphor,
+            dim: theme::wire(),
+            hot: theme::text(),
         },
         BackdropKind::Scope { .. } => Look {
             gain: 0.62,
@@ -129,8 +128,8 @@ fn look(kind: BackdropKind) -> Look {
             halo: 0.34,
             wash: 0.16,
             ground: Color32::BLACK,
-            dim: phosphor.lerp_to_gamma(Color32::BLACK, 0.5),
-            hot: phosphor.lerp_to_gamma(Color32::WHITE, 0.3),
+            dim: theme::wire(),
+            hot: theme::text(),
         },
     }
 }

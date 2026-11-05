@@ -348,12 +348,27 @@ fn draw_to_pixels(
         .collect()
 }
 
-fn mean_red(pixels: &[u8], width: u32, rows: std::ops::Range<u32>) -> f32 {
+/// The channels the phosphor is strongest and weakest in, so a check holds for any tube's colour.
+fn phosphor_channels() -> (usize, usize) {
+    let accent = brp_app::ui::theme::accent().to_array();
+    let by_strength = |pick: fn(u8, u8) -> bool| {
+        (0..3).fold(0, |best, channel| {
+            if pick(accent[channel], accent[best]) {
+                channel
+            } else {
+                best
+            }
+        })
+    };
+    (by_strength(|a, b| a > b), by_strength(|a, b| a < b))
+}
+
+fn mean_channel(pixels: &[u8], width: u32, channel: usize, rows: std::ops::Range<u32>) -> f32 {
     let (mut sum, mut count) = (0u64, 0u64);
     for row in rows {
         let line = &pixels[(row * width * 4) as usize..((row + 1) * width * 4) as usize];
         for pixel in line.chunks(4) {
-            sum += u64::from(pixel[0]);
+            sum += u64::from(pixel[channel]);
             count += 1;
         }
     }
@@ -399,9 +414,10 @@ fn the_horizon_lights_the_foot_of_the_window_and_leaves_the_top_dark() {
         });
         backdrop.show(&mut pass.forget_lifetime());
     });
+    let (lit, _) = phosphor_channels();
     let (top, foot) = (
-        mean_red(&pixels, size.0, 0..40),
-        mean_red(&pixels, size.0, 320..360),
+        mean_channel(&pixels, size.0, lit, 0..40),
+        mean_channel(&pixels, size.0, lit, 320..360),
     );
     assert!(foot > top + 30.0, "foot {foot} against top {top}");
 }
@@ -497,13 +513,14 @@ fn a_tile_that_lost_its_signal_reduces_to_characters_in_the_phosphors_colour() {
         });
         tiles.draw(&mut pass.forget_lifetime(), &placements);
     });
+    let (lit, unlit) = phosphor_channels();
     let (mut dark, mut inked, mut tinted) = (0, 0, 0);
     for pixel in pixels.chunks(4) {
-        if pixel[0] < 16 {
+        if pixel[lit] < 16 {
             dark += 1;
-        } else if pixel[0] > 48 {
+        } else if pixel[lit] > 48 {
             inked += 1;
-            tinted += usize::from(pixel[0] > pixel[2] + 24);
+            tinted += usize::from(pixel[lit] > pixel[unlit] + 24);
         }
     }
     assert!(dark > 1000, "a grey picture must break up: {dark} dark");

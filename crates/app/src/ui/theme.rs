@@ -15,23 +15,27 @@ use super::motion;
 /// Video letterboxes on black, so the canvas between tiles stays black and tiles read as screens.
 pub const CANVAS: Color32 = Color32::BLACK;
 
-/// The colour of the tube, chosen in Settings.
+/// The colour of the tube.
+// shortcut: only `Blue` is reachable while choosing a colour is disabled. To bring it back, restore
+// the Settings row and the `start_with_phosphor` call at launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phosphor {
     #[default]
-    Amber = 0,
-    Green = 1,
-    White = 2,
+    Blue = 0,
+    Amber = 1,
+    Green = 2,
+    White = 3,
 }
 
 static PHOSPHOR: AtomicU8 = AtomicU8::new(0);
 
 pub fn phosphor() -> Phosphor {
     match PHOSPHOR.load(Ordering::Relaxed) {
-        1 => Phosphor::Green,
-        2 => Phosphor::White,
-        _ => Phosphor::Amber,
+        1 => Phosphor::Amber,
+        2 => Phosphor::Green,
+        3 => Phosphor::White,
+        _ => Phosphor::Blue,
     }
 }
 
@@ -75,6 +79,18 @@ const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
+const BLUE: Palette = Palette {
+    ground: hex(0x0E1022),
+    surface: hex(0x131429),
+    raised: hex(0x141C4A),
+    selected: hex(0x17236B),
+    rule: hex(0x192982),
+    wire: hex(0x1E3FD8),
+    text: hex(0xF6F8FF),
+    secondary: hex(0xA5D8FF),
+    muted: hex(0x6C94E1),
+    accent: hex(0x38BDF8),
+};
 const AMBER: Palette = Palette {
     ground: hex(0x120B03),
     surface: hex(0x1A1105),
@@ -114,6 +130,7 @@ const WHITE: Palette = Palette {
 
 fn palette() -> &'static Palette {
     match phosphor() {
+        Phosphor::Blue => &BLUE,
         Phosphor::Amber => &AMBER,
         Phosphor::Green => &GREEN,
         Phosphor::White => &WHITE,
@@ -154,8 +171,9 @@ pub fn muted() -> Color32 {
 pub fn accent() -> Color32 {
     palette().accent
 }
-pub fn accent_hover() -> Color32 {
-    palette().text
+/// The one main action on a screen.
+pub fn main_action() -> Color32 {
+    palette().wire
 }
 pub fn accent_pressed() -> Color32 {
     palette().secondary
@@ -448,7 +466,7 @@ pub fn paint_material(ui: &egui::Ui, rect: egui::Rect) {
         (rect.max.to_vec2() * scale).to_pos2(),
     );
     let mut mesh = egui::Mesh::with_texture(texture.id());
-    mesh.add_rect_with_uv(rect, uv, accent());
+    mesh.add_rect_with_uv(rect, uv, wire());
     ui.painter().add(egui::Shape::mesh(mesh));
 }
 
@@ -645,10 +663,6 @@ pub fn tactile(
                 widget.weak_bg_fill = Color32::TRANSPARENT;
                 widget.bg_stroke = Stroke::NONE;
                 widget.expansion = 0.0;
-                if enabled {
-                    widget.fg_stroke.color =
-                        widget.fg_stroke.color.lerp_to_gamma(on_accent(), accent);
-                }
             }
             add(ui)
         })
@@ -659,12 +673,11 @@ pub fn tactile(
     let chosen = motion::follow(&ctx, id.with("chosen"), selected, motion::HOVER);
     let live = motion::follow(&ctx, id.with("enabled"), enabled, motion::TRAVEL);
     let focus = motion::follow(&ctx, id.with("focus"), response.has_focus(), motion::HOVER);
-    let rest = Color32::TRANSPARENT.lerp_to_gamma(self::accent(), accent);
-    let over = self::accent().lerp_to_gamma(accent_hover(), accent);
+    let rest = Color32::TRANSPARENT.lerp_to_gamma(main_action(), accent);
     let fill = Color32::TRANSPARENT
         .lerp_to_gamma(rest, live)
         .lerp_to_gamma(self::selected(), chosen)
-        .lerp_to_gamma(over, hover)
+        .lerp_to_gamma(self::accent(), hover)
         .lerp_to_gamma(text(), held);
     let surface = response.rect.shrink(held * PRESS_INSET);
     let mut shapes = vec![egui::Shape::rect_filled(surface, RADIUS_CONTROL, fill)];
@@ -1528,6 +1541,12 @@ mod tests {
     }
 
     #[test]
+    fn every_launch_starts_on_the_blue_tube() {
+        assert_eq!(phosphor(), Phosphor::Blue);
+        assert_eq!(Phosphor::default(), Phosphor::Blue);
+    }
+
+    #[test]
     fn every_text_role_stays_readable_on_every_surface_it_sits_on() {
         for ink in [text(), secondary(), accent(), warning(), error()] {
             for surface in [ground(), surface(), raised()] {
@@ -1537,9 +1556,13 @@ mod tests {
         for surface in [ground(), surface()] {
             assert!(contrast(muted(), surface) >= 4.5, "muted on {surface:?}");
         }
-        for surface in [accent(), accent_hover(), accent_pressed()] {
+        for surface in [accent(), accent_pressed()] {
             assert!(contrast(on_accent(), surface) >= 4.5, "ink on {surface:?}");
         }
+        assert!(
+            contrast(text(), main_action()) >= 4.5,
+            "ink on the main action"
+        );
         for ink in [text(), accent()] {
             for surface in [selected(), selected_hover()] {
                 assert!(contrast(ink, surface) >= 3.0, "{ink:?} on {surface:?}");

@@ -143,8 +143,10 @@ pub fn draw(ui: &mut Ui, area: Rect) {
     let (tile_w, tile_h) = (grid.width as f32 / scale, grid.height as f32 / scale);
     let columns = ((area.width() / COLUMN_WIDTH).ceil() as i32).max(1);
     let painter = ui.painter().with_clip_rect(area);
-    let dot = theme::accent().gamma_multiply(DOTS);
-    let solid_dot = theme::accent().lerp_to_gamma(Color32::BLACK, 1.0 - DOTS);
+    // Halfway to the wire, because dimming this blue towards black alone turns it teal.
+    let tint = theme::accent().lerp_to_gamma(theme::wire(), 0.5);
+    let dot = tint.gamma_multiply(DOTS);
+    let solid_dot = tint.lerp_to_gamma(Color32::BLACK, 1.0 - DOTS);
     let rim = theme::text();
     let step = (now - wall.last_time.unwrap_or(now)).clamp(0.0, f64::from(motion::LONGEST_STEP));
     wall.last_time = Some(now);

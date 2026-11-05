@@ -74,7 +74,7 @@ cargo build --release
 ```
 
 The Settings button on the start screen and in the dock opens a dialog
-for the nickname, the phosphor colour (amber, green, or white), the relay choice
+for the nickname, the relay choice
 (public relays, a custom relay URL, or no
 relay), whether links join without asking, the capture frame rate ceiling, and the
 audio output device. Settings

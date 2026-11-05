@@ -192,8 +192,9 @@ fn fs_show(vertex: Vertex) -> @location(0) vec4<f32> {
     let around = textureSampleLevel(halo, soft, across, 0.0).r;
 
     var color = scene.ground.rgb;
-    color += scene.phosphor.rgb * wash * wash * scene.wash;
-    color += scene.phosphor.rgb * around * scene.halo;
+    // Deep where the light is faint, and the phosphor's own colour only where it is strong.
+    color += mix(scene.dim.rgb, scene.phosphor.rgb, wash) * wash * wash * scene.wash;
+    color += scene.dim.rgb * around * scene.halo;
     color = mix(color, tone(answer.r) * scene.ink, drawn);
 
     // Stronger where there is light, the way a tube's own noise is, and it hides the banding of such
