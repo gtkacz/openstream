@@ -18,7 +18,7 @@ use winit::{
     dpi::PhysicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
-    window::{Fullscreen, Window, WindowId},
+    window::{Fullscreen, Window, WindowAttributes, WindowId},
 };
 
 use crate::cli::WindowArgs;
@@ -67,6 +67,17 @@ pub fn default_window_size(os: &str) -> winit::dpi::Size {
     } else {
         DEFAULT_WINDOW_SIZE.into()
     }
+}
+
+/// Fullscreen from the first frame. The inner size is what leaving fullscreen returns to.
+fn main_window_attributes() -> WindowAttributes {
+    with_app_icon(
+        Window::default_attributes()
+            .with_title("OpenStream")
+            .with_theme(Some(winit::window::Theme::Dark))
+            .with_inner_size(default_window_size(std::env::consts::OS))
+            .with_fullscreen(Some(Fullscreen::Borderless(None))),
+    )
 }
 
 /// Wakes the winit event loop for a reason that does not arrive as a `WindowEvent`. Sent through
@@ -842,12 +853,7 @@ impl ApplicationHandler<AppEvent> for App {
         // now that launching has finished, in case AppKit claimed the event while it did.
         #[cfg(target_os = "macos")]
         crate::macos_links::install(self.proxy.clone());
-        let window = match event_loop.create_window(with_app_icon(
-            Window::default_attributes()
-                .with_title("OpenStream")
-                .with_theme(Some(winit::window::Theme::Dark))
-                .with_inner_size(default_window_size(std::env::consts::OS)),
-        )) {
+        let window = match event_loop.create_window(main_window_attributes()) {
             Ok(window) => Arc::new(window),
             Err(error) => {
                 tracing::error!(%error, "could not create window");
@@ -1230,6 +1236,16 @@ fn affected_windows<Id: Copy + Eq + Hash>(
 mod tests {
     use super::*;
     use iroh::SecretKey;
+
+    #[test]
+    fn the_main_window_opens_fullscreen_with_a_size_to_leave_it_for() {
+        let attributes = main_window_attributes();
+        assert_eq!(attributes.fullscreen, Some(Fullscreen::Borderless(None)));
+        assert_eq!(
+            attributes.inner_size,
+            Some(default_window_size(std::env::consts::OS))
+        );
+    }
 
     #[test]
     fn a_mac_opens_the_window_at_its_size_in_points_and_others_in_pixels() {

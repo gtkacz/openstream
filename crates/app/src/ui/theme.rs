@@ -904,6 +904,39 @@ pub fn icon_button(ui: &mut egui::Ui, glyph: &str, name: &str, enabled: bool) ->
     toned_icon_button(ui, Tone::Neutral, glyph, name, enabled)
 }
 
+/// Whether F11 went down this frame. `key_pressed` fires on key-repeat too, which would retoggle
+/// fullscreen every frame while F11 is held; only the initial press should count.
+pub fn f11_pressed(ui: &egui::Ui) -> bool {
+    ui.input(|i| {
+        i.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::F11,
+                    pressed: true,
+                    repeat: false,
+                    ..
+                }
+            )
+        })
+    })
+}
+
+/// Flips the main window between fullscreen and windowed, from this button or F11. The window opens
+/// fullscreen, which hides its title bar, so this is also the way back to its close button.
+pub fn fullscreen_button(ui: &mut egui::Ui) {
+    let fullscreen = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
+    let (glyph, name) = if fullscreen {
+        (icons::WINDOWED, "Exit fullscreen")
+    } else {
+        (icons::FULLSCREEN, "Fullscreen")
+    };
+    if icon_button(ui, glyph, name, true).clicked() || f11_pressed(ui) {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+    }
+}
+
 pub fn toned_icon_button(
     ui: &mut egui::Ui,
     tone: Tone,

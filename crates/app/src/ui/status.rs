@@ -80,6 +80,7 @@ fn compact_row(
         },
         |ui| {
             settings_button(ui, open_settings);
+            theme::fullscreen_button(ui);
             master_mute(ui, snapshot, commands, false);
         },
     );
@@ -100,11 +101,11 @@ struct DockFit {
 impl DockFit {
     fn for_width(width: f32) -> Self {
         Self {
-            audio_status: width >= 1240.0,
-            tools_labelled: width >= 900.0,
-            audio_labelled: width >= 720.0,
-            upload: width >= 600.0,
-            share_labelled: width >= 480.0,
+            audio_status: width >= 1280.0,
+            tools_labelled: width >= 940.0,
+            audio_labelled: width >= 760.0,
+            upload: width >= 640.0,
+            share_labelled: width >= 520.0,
         }
     }
 }
@@ -137,6 +138,7 @@ fn wide_row(
         },
         |ui| {
             settings_button(ui, open_settings);
+            theme::fullscreen_button(ui);
             master_mute(ui, snapshot, &mut mute_commands, fit.tools_labelled);
             if fit.upload {
                 ui.add_space(GROUP_GAP);

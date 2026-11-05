@@ -46,22 +46,8 @@ pub fn draw(
                 Placement::PopOut { fullscreen },
             );
         });
-    let (f11, escape) = ui.input(|i| {
-        // `key_pressed` fires on key-repeat too, which would retoggle fullscreen every frame
-        // while F11 is held; only the initial press should count.
-        let f11 = i.events.iter().any(|event| {
-            matches!(
-                event,
-                egui::Event::Key {
-                    key: egui::Key::F11,
-                    pressed: true,
-                    repeat: false,
-                    ..
-                }
-            )
-        });
-        (f11, i.key_pressed(egui::Key::Escape))
-    });
+    let f11 = super::theme::f11_pressed(ui);
+    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
     if fullscreen_toggle_requested(f11, escape, fullscreen, popup_open) {
         output
             .window_commands

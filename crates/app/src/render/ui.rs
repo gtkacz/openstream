@@ -1,4 +1,7 @@
-use winit::{event::WindowEvent, window::Window};
+use winit::{
+    event::WindowEvent,
+    window::{Fullscreen, Window},
+};
 pub struct EguiLayer {
     ctx: egui::Context,
     state: egui_winit::State,
@@ -66,9 +69,13 @@ impl EguiLayer {
         let out = self.ctx.run_ui(input, ui);
         self.state
             .handle_platform_output(window, out.platform_output);
-        let repaint_delay = out
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
+        let viewport = out.viewport_output.get(&egui::ViewportId::ROOT);
+        for command in viewport.iter().flat_map(|v| &v.commands) {
+            if let egui::ViewportCommand::Fullscreen(fullscreen) = command {
+                window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
+            }
+        }
+        let repaint_delay = viewport
             .map(|v| v.repaint_delay)
             .unwrap_or(std::time::Duration::MAX);
         UiFrame {

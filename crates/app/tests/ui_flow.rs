@@ -448,6 +448,103 @@ fn a_compact_window_folds_the_room_into_a_sheet_and_keeps_the_video_placed() {
     );
 }
 
+fn fullscreen_window(width: f32, height: f32) -> egui::RawInput {
+    let mut raw = window(width, height);
+    raw.viewports.insert(
+        egui::ViewportId::ROOT,
+        egui::ViewportInfo {
+            fullscreen: Some(true),
+            ..Default::default()
+        },
+    );
+    raw
+}
+
+#[test]
+fn every_screen_offers_a_way_out_of_fullscreen_because_it_hides_the_close_button() {
+    use brp_app::ui::{state::UiState, theme, theme::icons};
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let mut start_state = StartState::new("Alex".into());
+    let mut output = ctx.run_ui(fullscreen_window(1280.0, 800.0), |ui| {
+        start::draw(ui, &mut start_state, &[], 0, &UpdateState::new(false));
+    });
+    output.textures_delta.clear();
+    assert!(
+        !text_rects(&output.shapes, icons::WINDOWED).is_empty(),
+        "start screen"
+    );
+
+    // Wide, the rail folded, and a phone's width, since the dock lays out differently in each.
+    for (width, height) in [(1280.0, 800.0), (820.0, 600.0), (390.0, 844.0)] {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let snapshot = busy_room();
+        let mut state = UiState::new();
+        let (_, shapes) = run_room(
+            &ctx,
+            fullscreen_window(width, height),
+            &snapshot,
+            &mut state,
+        );
+        assert!(
+            !text_rects(&shapes, icons::WINDOWED).is_empty(),
+            "room at {width}"
+        );
+    }
+}
+
+#[test]
+fn the_fullscreen_button_and_f11_ask_the_window_for_the_other_state() {
+    use brp_app::ui::theme;
+    let f11 = |pressed| egui::Event::Key {
+        key: egui::Key::F11,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Default::default(),
+    };
+    let asked = |ctx: &egui::Context, raw: egui::RawInput| {
+        let mut output = ctx.run_ui(raw, |ui| {
+            theme::fullscreen_button(ui);
+        });
+        output.textures_delta.clear();
+        let commands: Vec<_> = output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .filter(|command| matches!(command, egui::ViewportCommand::Fullscreen(_)))
+            .cloned()
+            .collect();
+        (commands, output.shapes)
+    };
+    let with = |mut raw: egui::RawInput, event| {
+        raw.events.push(event);
+        raw
+    };
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+
+    let (none, shapes) = asked(&ctx, fullscreen_window(400.0, 200.0));
+    assert!(none.is_empty(), "{none:?}");
+    let on_the_button = text_rect(&shapes, theme::icons::WINDOWED).center();
+    let (leave, _) = asked(&ctx, with(fullscreen_window(400.0, 200.0), f11(true)));
+    assert_eq!(leave, [egui::ViewportCommand::Fullscreen(false)]);
+    // egui marks another press of a key it already holds as a repeat, as holding F11 would send.
+    let (held, _) = asked(&ctx, with(fullscreen_window(400.0, 200.0), f11(true)));
+    assert!(held.is_empty(), "a held key must not retoggle: {held:?}");
+    asked(&ctx, with(window(400.0, 200.0), f11(false)));
+    let (enter, _) = asked(&ctx, with(window(400.0, 200.0), f11(true)));
+    assert_eq!(enter, [egui::ViewportCommand::Fullscreen(true)]);
+
+    for pressed in [true, false] {
+        let raw = click_at(fullscreen_window(400.0, 200.0), on_the_button, pressed);
+        let (commands, _) = asked(&ctx, raw);
+        if !pressed {
+            assert_eq!(commands, [egui::ViewportCommand::Fullscreen(false)]);
+        }
+    }
+}
+
 #[test]
 fn settings_offers_no_colour_while_choosing_one_is_disabled() {
     use brp_app::{settings::Settings, ui::settings};

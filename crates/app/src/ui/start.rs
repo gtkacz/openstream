@@ -185,6 +185,7 @@ pub fn draw(
                     if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
                         action = Some(StartAction::OpenSettings);
                     }
+                    theme::fullscreen_button(ui);
                 });
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let width = ui.available_width().min(FORM_WIDTH);

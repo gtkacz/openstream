@@ -47,8 +47,9 @@ are postcard-encoded on the versioned media ALPN `brp/media/1`.
 ## Usage
 
 Run `brp` with no arguments, or double-click `brp.exe` on Windows, to open the
-start screen: pick a nickname, then Create room, or paste a ticket or a link and
-Join room. The room rail's Copy link button gives you an `https://` link that
+start screen, fullscreen. The button beside Settings, or F11, switches to a normal
+window and back, which is also how to reach the window's close button. Pick a
+nickname, then Create room, or paste a ticket or a link and Join room. The room rail's Copy link button gives you an `https://` link that
 opens OpenStream on a machine that has it and offers the download on one that does
 not; Copy ticket gives the bare ticket for the terminal. A link does not join by
 itself, because any web page can fire one: the window asks first and shows the name

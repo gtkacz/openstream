@@ -65,6 +65,9 @@ Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/ico
 
 ## Layout
 
+- **Window.** The main window opens fullscreen, which hides its title bar, so the start screen and the
+  dock each carry a button beside Settings that leaves it, and F11 does the same. Esc does not, because
+  in this window it already closes dialogs and declines invites.
 - **Start.** The brand, the form, and the Settings button share one column of at most 1200 points, so
   they stay on two common edges on a wide window. At 960 points and wider, a wall of stills runs from
   the form's gap to the window's top, right, and bottom edges, passing under Settings, over a horizon
@@ -83,7 +86,7 @@ Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/ico
   frames at all. Your own stream unfolds its controls from its row, and a failure opens it by itself.
   Below all this a ledger keeps the room's last few events on a mission clock counted from when the
   room opened.
-- **Dock.** It holds what you do to the room: share, audio, upload, mute, Settings. Always one row,
+- **Dock.** It holds what you do to the room: share, audio, upload, mute, Settings, fullscreen. Always one row,
   because a second would come out of the video. As the width falls it sheds words instead: the audio
   status first, then the tools' labels, the audio labels, the upload figure, and the main action's
   label last. The main action says what to do next: Share monitor carries it only while you are not sharing
