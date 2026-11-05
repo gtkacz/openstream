@@ -1,5 +1,7 @@
 # Start screen: drifting wall of shared screens
 
+Status: superseded on 2026-11-05 by [the start screen field](2026-11-05-start-screen-field-design.md).
+
 Status: design awaiting approval, 2026-11-04. Replaces the room diagram on the start screen. The running reference is a throwaway browser mockup, version C, based on React Bits' DriftWall. No React or DriftWall code ships; only the idea does.
 
 ## 1. Intent
