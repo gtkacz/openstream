@@ -15,7 +15,7 @@ use egui::{Color32, Painter, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 
 use super::motion;
 use super::own_lives;
-use super::state::{UiState, delay_text, ordered_members};
+use super::state::{Outcome, UiState, delay_text, ordered_members};
 use super::theme::{self, icons};
 use crate::commands::RoomCommand;
 use crate::link;
@@ -109,13 +109,14 @@ fn ledger(ui: &mut egui::Ui, state: &UiState) {
     ui.painter().rect_filled(rule, 0, theme::rule());
     ui.add_space(10.0);
     let count = state.ledger.lines.len();
-    for (index, (line, bad)) in state.ledger.lines.iter().enumerate() {
-        let ink = if *bad {
-            theme::error()
-        } else if index + 1 == count {
-            theme::secondary()
-        } else {
-            theme::muted()
+    let fresh = state.ledger.newest_is_fresh();
+    for (index, (line, outcome)) in state.ledger.lines.iter().enumerate() {
+        let newest = index + 1 == count;
+        let ink = match outcome {
+            Outcome::Bad => theme::error(),
+            Outcome::Good if newest && fresh => theme::signal(),
+            _ if newest => theme::secondary(),
+            _ => theme::muted(),
         };
         let (rect, _) =
             ui.allocate_exact_size(vec2(ui.available_width(), LEDGER_LINE), Sense::hover());
@@ -172,7 +173,7 @@ fn circuit(
         ui.painter(),
         me_rect.right_center(),
         &format!("↑ {}", own_lives::bitrate(state.upload_kbps)),
-        theme::accent(),
+        theme::rate_ink(state.upload_kbps > 0),
     );
     let my_left = me_glyph.right() + 8.0;
     let name = truncated(
@@ -230,7 +231,7 @@ fn circuit(
         let (word, ink) = if failing {
             ("needs attention".to_string(), theme::error())
         } else if watching > 0 {
-            (format!("live · {watching} watching"), theme::accent())
+            (format!("live · {watching} watching"), theme::live())
         } else {
             ("ready".to_string(), theme::secondary())
         };
@@ -311,6 +312,49 @@ pub fn heartbeat_fade(member: &MemberView) -> f32 {
     }
 }
 
+/// How brightly a heartbeat still shows, from 1 as it lands to 0. In steps, because what the network
+/// does ticks.
+fn heartbeat_glow(age: f64) -> f32 {
+    const SECONDS: f64 = 0.75;
+    let stepped = (age / WIRE_TICK).floor() * WIRE_TICK;
+    (1.0 - stepped / SECONDS).max(0.0) as f32
+}
+
+/// How long ago this person's heartbeat last reached the screen, in seconds.
+pub fn heartbeat_age(ui: &egui::Ui, member: &MemberView) -> f64 {
+    let now = ui.input(|input| input.time);
+    let id = egui::Id::new(("heartbeat", member.id));
+    let (last_age, started) = ui
+        .ctx()
+        .data(|data| data.get_temp::<(u64, f64)>(id))
+        .unwrap_or((u64::MAX, f64::MIN));
+    let started = if member.seen_ago_ms < last_age && last_age != u64::MAX {
+        now
+    } else {
+        started
+    };
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(id, (member.seen_ago_ms, started)));
+    now - started
+}
+
+/// The colour of someone's glyph: it catches the signal as a real heartbeat lands and cools back, and
+/// it dims as their last one ages.
+pub fn heartbeat_ink(ui: &egui::Ui, member: &MemberView) -> Color32 {
+    let resting = theme::accent().gamma_multiply(heartbeat_fade(member));
+    let age = heartbeat_age(ui, member);
+    let moving = ui.input(|input| input.focused) && motion::ambient_allowed(ui.ctx());
+    if !moving || member.signal_lost {
+        return resting;
+    }
+    let glow = heartbeat_glow(age);
+    if glow > 0.0 {
+        ui.ctx()
+            .request_repaint_after(Duration::from_secs_f64(WIRE_TICK));
+    }
+    resting.lerp_to_gamma(theme::signal(), glow)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn member_block(
     ui: &mut egui::Ui,
@@ -337,7 +381,7 @@ fn member_block(
         glyph.center(),
         member.id.as_bytes(),
         GLYPH_CELL,
-        theme::accent().gamma_multiply(heartbeat_fade(member)),
+        heartbeat_ink(ui, member),
     );
     let (word, word_ink) = if lost {
         ("no signal".to_string(), theme::error())
@@ -536,10 +580,9 @@ fn stream_row(
         WatchState::Ended => ("ended".to_string(), theme::secondary()),
         WatchState::Live => {
             let rate = state.traffic.get(&key).map_or(0.0, |t| t.bytes_per_second);
-            (
-                format!("↓ {:.1} Mbps", rate * 8.0 / 1e6),
-                theme::secondary(),
-            )
+            let mbps = rate * 8.0 / 1e6;
+            // Under what one decimal can show it reads as zero, so it is coloured as one too.
+            (format!("↓ {mbps:.1} Mbps"), theme::rate_ink(mbps >= 0.05))
         }
     });
     let mut right = tick.left() - 8.0;
@@ -633,7 +676,7 @@ fn traffic_strip(ui: &egui::Ui, rect: Rect, traffic: Option<&super::state::Strea
     for (index, bar) in bars.enumerate() {
         let x = rect.left() + index as f32 * PITCH;
         let (tall, ink) = if bar.keyframe {
-            (height, theme::text())
+            (height, theme::signal())
         } else if bar.megabits_per_second <= 0.0 {
             continue;
         } else {
@@ -698,6 +741,20 @@ fn crisp(ui: &egui::Ui, point: Pos2) -> Pos2 {
     )
 }
 
+/// A wire's colour: what is wrong comes first, then whether anything is flowing along it. It stays lit
+/// when motion is reduced and its packets hold still, so the state does not depend on the motion.
+pub fn wire_ink(lost: bool, dim: bool, carrying: bool) -> Color32 {
+    if lost {
+        theme::error()
+    } else if carrying {
+        theme::signal_line()
+    } else if dim {
+        theme::rule()
+    } else {
+        theme::wire()
+    }
+}
+
 fn paint_wires(ui: &egui::Ui, wires: &[Wire]) -> Vec<Shape> {
     let mut shapes = Vec::new();
     let now = ui.input(|input| input.time);
@@ -705,13 +762,7 @@ fn paint_wires(ui: &egui::Ui, wires: &[Wire]) -> Vec<Shape> {
     // Lines first, so packets and relay nodes sit on top of every wire they cross.
     for wire in wires {
         let points: Vec<Pos2> = wire.points.iter().map(|p| crisp(ui, *p)).collect();
-        let ink = if wire.lost {
-            theme::error()
-        } else if wire.dim {
-            theme::rule()
-        } else {
-            theme::wire()
-        };
+        let ink = wire_ink(wire.lost, wire.dim, wire.forward + wire.back > 0.0);
         let stroke = Stroke::new(1.0, ink);
         if wire.lost {
             shapes.extend(Shape::dashed_line(&points, stroke, 3.0, 4.0));
@@ -771,7 +822,7 @@ pub fn packets(
             if left <= *length {
                 let at = pair[0].lerp(pair[1], left / length.max(0.001));
                 let square = Rect::from_center_size(at.round(), egui::Vec2::splat(4.0));
-                shapes.push(Shape::rect_filled(square, 0, theme::accent()));
+                shapes.push(Shape::rect_filled(square, 0, theme::signal()));
                 break;
             }
             left -= length;
@@ -867,13 +918,13 @@ pub(super) fn copy_button(
         .unwrap_or(0.0);
     let remaining = until - now;
     // One short word for both, so the confirmation fits the column the label did.
-    let (glyph, shown) = if remaining > 0.0 {
-        (icons::COPIED, "Copied")
+    let (glyph, shown, tone) = if remaining > 0.0 {
+        (icons::COPIED, "Copied", theme::Tone::Confirmed)
     } else {
-        (glyph, label)
+        (glyph, label, theme::Tone::Neutral)
     };
     let size = egui::vec2(ui.available_width(), height);
-    let response = theme::wide_action(ui, glyph, shown, theme::Tone::Neutral, true, size);
+    let response = theme::wide_action(ui, glyph, shown, tone, true, size);
     if response.clicked() {
         ui.ctx().copy_text(text());
         ui.ctx().data_mut(|data| data.insert_temp(id, now + 1.5));
@@ -927,6 +978,22 @@ mod tests {
     use super::*;
 
     use brp_proto::{Codec, SourceKind, template_presets};
+
+    #[test]
+    fn a_heartbeats_glow_cools_in_steps_and_is_gone_in_under_a_second() {
+        assert_eq!(heartbeat_glow(0.0), 1.0);
+        assert_eq!(heartbeat_glow(WIRE_TICK * 0.5), 1.0, "it ticks");
+        assert!(heartbeat_glow(0.5) < heartbeat_glow(0.1));
+        assert_eq!(heartbeat_glow(1.0), 0.0);
+    }
+
+    #[test]
+    fn a_wire_lights_up_while_it_carries_data_unless_its_signal_is_lost() {
+        assert_eq!(wire_ink(false, false, true), theme::signal_line());
+        assert_eq!(wire_ink(false, false, false), theme::wire());
+        assert_eq!(wire_ink(false, true, false), theme::rule());
+        assert_eq!(wire_ink(true, false, true), theme::error());
+    }
 
     fn live() -> LiveInfo {
         LiveInfo {

@@ -164,6 +164,7 @@ pub fn draw(
         BackdropRequest {
             kind: BackdropKind::Horizon,
             shown: 1.0,
+            signal: 1.0,
         },
     );
     if ui.input(|input| input.focused) && super::motion::ambient_allowed(ui.ctx()) {

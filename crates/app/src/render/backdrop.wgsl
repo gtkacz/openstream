@@ -28,6 +28,7 @@ struct Scene {
     dim: vec4<f32>,
     phosphor: vec4<f32>,
     hot: vec4<f32>,
+    spark: vec4<f32>,
     stirs: array<vec4<f32>, 16>,
     rings: array<vec4<f32>, 4>,
 };
@@ -176,6 +177,22 @@ fn tone(amount: f32) -> vec3<f32> {
     return mix(scene.phosphor.rgb, scene.hot.rgb, stepped - 1.0);
 }
 
+// Where the signal's colour gathers: soft patches about half a window apart, wandering on the same
+// clock as everything else in the light, so they hold still when motion is reduced. Driven mostly by
+// the width, because a field free to wander in both directions can leave the bright part empty.
+fn signal_patch(across: vec2<f32>) -> f32 {
+    let t = scene.drift_clock;
+    let x = across.x * scene.window.x / scene.window.y;
+    let bend = sin(x * 1.9 - t * 0.09) * 1.1 + sin(across.y * 3.0 + t * 0.11) * 0.5;
+    return smoothstep(0.35, 0.85, sin(x * 7.0 + t * 0.13 + bend));
+}
+
+// How much of the signal's colour this much light carries. Faint light stays blue, whatever patch it
+// is in, so the signal falls through the blues to the floor like the rest of the light.
+fn carried(amount: f32, gathered: f32) -> f32 {
+    return gathered * scene.spark.a * smoothstep(0.2, 0.55, amount);
+}
+
 @fragment
 fn fs_show(vertex: Vertex) -> @location(0) vec4<f32> {
     let spot = vertex.position.xy / scene.cell;
@@ -192,10 +209,13 @@ fn fs_show(vertex: Vertex) -> @location(0) vec4<f32> {
     let around = textureSampleLevel(halo, soft, across, 0.0).r;
 
     var color = scene.ground.rgb;
+    let gathered = signal_patch(across);
     // Deep where the light is faint, and the phosphor's own colour only where it is strong.
-    color += mix(scene.dim.rgb, scene.phosphor.rgb, wash) * wash * wash * scene.wash;
-    color += scene.dim.rgb * around * scene.halo;
-    color = mix(color, tone(answer.r) * scene.ink, drawn);
+    let glow = mix(mix(scene.dim.rgb, scene.phosphor.rgb, wash), scene.spark.rgb, carried(wash, gathered));
+    color += glow * wash * wash * scene.wash;
+    color += mix(scene.dim.rgb, scene.spark.rgb, carried(around, gathered)) * around * scene.halo;
+    let ink = mix(tone(answer.r), scene.spark.rgb, carried(answer.r, gathered));
+    color = mix(color, ink * scene.ink, drawn);
 
     // Stronger where there is light, the way a tube's own noise is, and it hides the banding of such
     // a dark gradient.

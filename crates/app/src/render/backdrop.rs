@@ -43,6 +43,8 @@ pub struct BackdropRequest {
     pub kind: BackdropKind,
     /// For fading with the screen it belongs to.
     pub shown: f32,
+    /// How much of the signal's colour the light carries, from 0 to 1.
+    pub signal: f32,
 }
 
 const REQUEST: &str = "backdrop-request";
@@ -95,6 +97,7 @@ struct Scene {
     dim: [f32; 4],
     phosphor: [f32; 4],
     hot: [f32; 4],
+    spark: [f32; 4],
     stirs: [[f32; 4]; MAX_STIRS],
     rings: [[f32; 4]; MAX_RINGS],
 }
@@ -412,6 +415,10 @@ impl Backdrop {
             dim: rgba(look.dim),
             phosphor: rgba(theme::accent()),
             hot: rgba(look.hot),
+            spark: {
+                let [red, green, blue, _] = rgba(theme::signal());
+                [red, green, blue, request.signal]
+            },
             stirs,
             rings,
         };

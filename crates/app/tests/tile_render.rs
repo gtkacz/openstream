@@ -375,27 +375,22 @@ fn mean_channel(pixels: &[u8], width: u32, channel: usize, rows: std::ops::Range
     sum as f32 / count as f32
 }
 
-#[test]
-fn the_horizon_lights_the_foot_of_the_window_and_leaves_the_top_dark() {
+fn draw_the_horizon(device: &wgpu::Device, queue: &wgpu::Queue, size: (u32, u32)) -> Vec<u8> {
     use brp_app::render::backdrop::{Backdrop, BackdropKind, BackdropRequest};
-    let Some((device, queue)) = gpu() else {
-        eprintln!("no GPU adapter; skipping");
-        return;
-    };
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let size = (640, 360);
-    let mut backdrop = Backdrop::new(&device, &queue, format);
+    let mut backdrop = Backdrop::new(device, queue, format);
     backdrop.skip_opening();
-    let pixels = draw_to_pixels(&device, &queue, size, format, |encoder, view| {
+    draw_to_pixels(device, queue, size, format, |encoder, view| {
         backdrop.prepare(
-            &device,
-            &queue,
+            device,
+            queue,
             encoder,
             size,
             1.0,
             BackdropRequest {
                 kind: BackdropKind::Horizon,
                 shown: 1.0,
+                signal: 1.0,
             },
             Default::default(),
             false,
@@ -413,7 +408,43 @@ fn the_horizon_lights_the_foot_of_the_window_and_leaves_the_top_dark() {
             ..Default::default()
         });
         backdrop.show(&mut pass.forget_lifetime());
-    });
+    })
+}
+
+#[test]
+fn the_signal_gathers_in_patches_of_the_light_and_the_blues_still_lead() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    const WIDTH: usize = 640;
+    let pixels = draw_the_horizon(&device, &queue, (WIDTH as u32, 360));
+    // Every blue in the palette has more blue than green, and only the signal does not.
+    let (mut lit, mut bands) = (0, [0usize; 8]);
+    for (index, pixel) in pixels.chunks(4).enumerate() {
+        lit += usize::from(pixel[1].max(pixel[2]) > 96);
+        if pixel[1] > 96 && pixel[1] > pixel[2] + 24 {
+            bands[(index % WIDTH) * bands.len() / WIDTH] += 1;
+        }
+    }
+    let signal: usize = bands.iter().sum();
+    assert!(signal * 20 > lit, "more than a trace: {signal} of {lit}");
+    assert!(signal * 2 < lit, "the blues lead: {signal} of {lit}");
+    let (most, least) = (bands.iter().max(), bands.iter().min());
+    assert!(
+        most.unwrap() / 4 > *least.unwrap(),
+        "gathered, not scattered: {bands:?}"
+    );
+}
+
+#[test]
+fn the_horizon_lights_the_foot_of_the_window_and_leaves_the_top_dark() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let size = (640, 360);
+    let pixels = draw_the_horizon(&device, &queue, size);
     let (lit, _) = phosphor_channels();
     let (top, foot) = (
         mean_channel(&pixels, size.0, lit, 0..40),

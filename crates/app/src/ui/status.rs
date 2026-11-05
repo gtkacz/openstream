@@ -236,10 +236,10 @@ fn master_mute(
 
 fn upload(ui: &mut egui::Ui, state: &UiState) {
     ui.spacing_mut().item_spacing.x = 4.0;
-    ui.label(theme::figure(format!(
-        "↑ {}",
-        own_lives::bitrate(state.upload_kbps)
-    )))
+    ui.label(
+        theme::figure(format!("↑ {}", own_lives::bitrate(state.upload_kbps)))
+            .color(theme::rate_ink(state.upload_kbps > 0)),
+    )
     .on_hover_text("What you are sending to the room");
 }
 

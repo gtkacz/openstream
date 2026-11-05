@@ -546,6 +546,42 @@ fn the_fullscreen_button_and_f11_ask_the_window_for_the_other_state() {
 }
 
 #[test]
+fn a_copied_link_confirms_in_the_signal_colour_and_then_settles_back() {
+    use brp_app::ui::{state::UiState, theme};
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = UiState::new();
+    let mut frame = 0;
+    let mut pass = |raw: egui::RawInput, state: &mut UiState| {
+        frame += 1;
+        run_room(&ctx, timed(raw, frame), &snapshot, state).1
+    };
+    let shapes = pass(window(1280.0, 800.0), &mut state);
+    let copy = text_rect(&shapes, "Copy link").center();
+    for pressed in [true, false] {
+        pass(click_at(window(1280.0, 800.0), copy, pressed), &mut state);
+    }
+    let block = |shapes: &[egui::epaint::ClippedShape]| {
+        filled_rects(shapes, theme::signal())
+            .iter()
+            .filter(|rect| rect.height() >= 24.0)
+            .count()
+    };
+    let mut shapes = Vec::new();
+    for _ in 0..40 {
+        shapes = pass(window(1280.0, 800.0), &mut state);
+    }
+    assert_eq!(block(&shapes), 1, "a solid block while it says so");
+    assert!(!text_rects(&shapes, "Copied").is_empty());
+    for _ in 0..120 {
+        shapes = pass(window(1280.0, 800.0), &mut state);
+    }
+    assert_eq!(block(&shapes), 0, "back to its usual surface");
+    assert!(!text_rects(&shapes, "Copy link").is_empty());
+}
+
+#[test]
 fn settings_offers_no_colour_while_choosing_one_is_disabled() {
     use brp_app::{settings::Settings, ui::settings};
     let ctx = egui::Context::default();

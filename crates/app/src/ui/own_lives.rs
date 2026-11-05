@@ -4,7 +4,7 @@
 use brp_audio::AudioSelection;
 use brp_proto::constants::{MAX_BITRATE_KBPS, MAX_LIVES_PER_PARTICIPANT, MIN_BITRATE_KBPS};
 use brp_proto::{Codec, LiveInfo, Preset, SourceKind, VideoQuality};
-use brp_room::{AudioCaptureState, OwnLiveView, PresetView, RoomSnapshot};
+use brp_room::{AudioCaptureState, OwnAudioView, OwnLiveView, PresetView, RoomSnapshot};
 
 use super::applications::selection_summary;
 use super::motion;
@@ -195,6 +195,17 @@ pub fn audio_controls(
     if switch.changed() {
         commands.push(RoomCommand::SetAudio(share_audio));
     }
+    let on_air = on_air(&snapshot.own_audio);
+    let lit = motion::follow(
+        ui.ctx(),
+        ui.id().with("audio-on-air"),
+        on_air,
+        motion::HOVER,
+    );
+    let usual_ink = ui.visuals().widgets.inactive.fg_stroke.color;
+    if on_air {
+        ui.visuals_mut().widgets.inactive.fg_stroke.color = theme::signal();
+    }
     let chooser = theme::toned_icon_button(
         ui,
         theme::Tone::Quiet,
@@ -203,6 +214,7 @@ pub fn audio_controls(
         true,
     )
     .on_hover_text(tooltip);
+    ui.visuals_mut().widgets.inactive.fg_stroke.color = usual_ink;
     if chooser.clicked() {
         commands.push(RoomCommand::ChooseApplications);
     }
@@ -212,11 +224,29 @@ pub fn audio_controls(
     );
     ui.painter().set(
         backing,
-        egui::Shape::rect_filled(surface, theme::RADIUS_CONTROL, theme::raised()),
+        egui::Shape::rect_filled(
+            surface,
+            theme::RADIUS_CONTROL,
+            theme::raised().lerp_to_gamma(theme::signal_surface(), lit),
+        ),
     );
     if let (true, Some(status)) = (show_status, &status) {
-        ui.weak(status);
+        if on_air {
+            ui.colored_label(theme::signal(), status);
+        } else {
+            ui.weak(status);
+        }
     }
+}
+
+/// Whether the room is really hearing this person right now, rather than merely allowed to.
+fn on_air(audio: &OwnAudioView) -> bool {
+    let capturing = matches!(
+        audio.state,
+        AudioCaptureState::Capturing | AudioCaptureState::Limited(_)
+    );
+    let silent = matches!(&audio.selection, AudioSelection::Only(keys) if keys.is_empty());
+    capturing && !silent && audio.subscribers > 0
 }
 
 /// What the room hears, plus the status when the dock has no room to show it. With nothing selected
@@ -269,7 +299,10 @@ pub fn share_sheet(
             });
             ui.add_space(12.0);
             theme::section_heading(ui, "Upload");
-            ui.label(theme::figure(bitrate(state.upload_kbps)));
+            ui.label(
+                theme::figure(bitrate(state.upload_kbps))
+                    .color(theme::rate_ink(state.upload_kbps > 0)),
+            );
         });
     output.inner_rect.top() - top + output.content_size.y
 }
@@ -536,6 +569,45 @@ fn preset_detail(ui: &mut egui::Ui, live_id: u32, view: &PresetView, state: &UiS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_is_on_air_only_while_someone_is_really_listening() {
+        let audio = |state, selection, subscribers| brp_room::OwnAudioView {
+            enabled: true,
+            state,
+            selection,
+            subscribers,
+            packets_encoded: 0,
+        };
+        let everything = AudioSelection::All;
+        let nothing = AudioSelection::Only(Default::default());
+        assert!(on_air(&audio(
+            AudioCaptureState::Capturing,
+            everything.clone(),
+            2
+        )));
+        assert!(on_air(&audio(
+            AudioCaptureState::Limited("held back".into()),
+            everything.clone(),
+            1
+        )));
+        assert!(!on_air(&audio(
+            AudioCaptureState::Capturing,
+            everything.clone(),
+            0
+        )));
+        assert!(!on_air(&audio(
+            AudioCaptureState::Idle,
+            everything.clone(),
+            2
+        )));
+        assert!(!on_air(&audio(
+            AudioCaptureState::Failed("gone".into()),
+            everything,
+            2
+        )));
+        assert!(!on_air(&audio(AudioCaptureState::Capturing, nothing, 2)));
+    }
 
     #[test]
     fn the_chooser_tooltip_says_a_status_matching_the_selection_only_once() {

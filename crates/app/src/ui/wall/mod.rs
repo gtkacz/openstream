@@ -28,6 +28,8 @@ const DRIFT_FRAME: f32 = 1.0 / 60.0;
 const CELL_POINTS: f32 = 3.0;
 /// How strong the dots are at rest, so the form's button and a revealed picture stay the brightest.
 const DOTS: f32 = 0.62;
+/// One still in this many takes the signal's colour, so the wall is not all one tone.
+const SIGNAL_EVERY: usize = 6;
 /// Wide enough that from near the middle of a tile the reveal covers nearly all of it, leaving only
 /// the corners dotted.
 const REVEAL_REACH: f32 = 0.75 * TILE.x;
@@ -144,10 +146,17 @@ pub fn draw(ui: &mut Ui, area: Rect) {
     let columns = ((area.width() / COLUMN_WIDTH).ceil() as i32).max(1);
     let painter = ui.painter().with_clip_rect(area);
     // Halfway to the wire, because dimming this blue towards black alone turns it teal.
-    let tint = theme::accent().lerp_to_gamma(theme::wire(), 0.5);
-    let dot = tint.gamma_multiply(DOTS);
-    let solid_dot = tint.lerp_to_gamma(Color32::BLACK, 1.0 - DOTS);
-    let rim = theme::text();
+    let blue = theme::accent().lerp_to_gamma(theme::wire(), 0.5);
+    // Partway to its lit wire, for the same reason, and so that it sits as deep as the blue.
+    let green = theme::signal().lerp_to_gamma(theme::signal_line(), 0.5);
+    let tint_of = |still: usize| {
+        if still % SIGNAL_EVERY == 1 {
+            green
+        } else {
+            blue
+        }
+    };
+    let rim = theme::signal();
     let step = (now - wall.last_time.unwrap_or(now)).clamp(0.0, f64::from(motion::LONGEST_STEP));
     wall.last_time = Some(now);
     let mut hovered = None;
@@ -196,7 +205,12 @@ pub fn draw(ui: &mut Ui, area: Rect) {
                 Some(reveal) => tile_mesh(rect, reveal.texture().id(), Color32::WHITE, &|at| {
                     fade(at) * shown
                 }),
-                None => tile_mesh(rect, texture.id(), dot, &|at| fade(at) * shown),
+                None => tile_mesh(
+                    rect,
+                    texture.id(),
+                    tint_of(still).gamma_multiply(DOTS),
+                    &|at| fade(at) * shown,
+                ),
             };
             painter.add(egui::Shape::mesh(mesh));
             painter.rect_stroke(
@@ -233,9 +247,10 @@ pub fn draw(ui: &mut Ui, area: Rect) {
     let reach = REVEAL_REACH * scale / grid.cell as f32;
     let loader = &wall.loader;
     wall.reveals.retain(|_, reveal| {
-        loader
-            .prepared(reveal.still)
-            .is_some_and(|still| reveal.step(step as f32, reach, gently, still, solid_dot, rim))
+        loader.prepared(reveal.still).is_some_and(|prepared| {
+            let dot = tint_of(reveal.still).lerp_to_gamma(Color32::BLACK, 1.0 - DOTS);
+            reveal.step(step as f32, reach, gently, prepared, dot, rim)
+        })
     });
     let hovered_column = wall.hovered.map(|(column, _)| column);
     for column in 0..columns {

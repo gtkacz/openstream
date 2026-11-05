@@ -256,7 +256,7 @@ fn empty_canvas(
         super::room_map::draw(ui, snapshot, state, commands, shown, active);
         return;
     }
-    super::room_map::light(ui, shown);
+    super::room_map::light(ui, shown, state.upload_kbps > 0);
     let canvas = ui.max_rect();
     let column = egui::Rect::from_center_size(
         canvas.center() + motion::rise(ui.ctx(), shown, 6.0),
@@ -433,7 +433,7 @@ fn name_chip(
     ui: &egui::Ui,
     rect: egui::Rect,
     title: &str,
-    path: Option<PathShape>,
+    path: Option<(PathShape, egui::Color32)>,
     rtt_ms: Option<u32>,
     opacity: f32,
 ) {
@@ -465,7 +465,7 @@ fn name_chip(
     painter.multiply_opacity(opacity);
     painter.rect_filled(chip, 0, theme::ground());
     let mut left = chip.left() + PADDING.x;
-    if let Some(path) = path {
+    if let Some((path, ink)) = path {
         let y = chip.center().y;
         paint_path(
             &painter,
@@ -473,7 +473,7 @@ fn name_chip(
             egui::pos2(left + GLYPH.x - 2.0, y),
             path,
             2.0,
-            theme::accent(),
+            ink,
         );
         left += glyph_space;
     }
@@ -764,6 +764,12 @@ pub fn tile_overlay(
             PathShape::eased(ui.ctx(), ui.id().with(("chip-path", key)), member.path)
         });
         let rtt = publisher.and_then(|member| member.rtt_ms).filter(|_| !lost);
+        let path_ink = if watch.state == WatchState::Live {
+            theme::live()
+        } else {
+            theme::accent()
+        };
+        let path = path.map(|path| (path, path_ink));
         name_chip(ui, rect, &chip, path, rtt, chip_opacity);
     }
     if opacity <= 0.0 {

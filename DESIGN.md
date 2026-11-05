@@ -26,8 +26,16 @@ Colour comes from the phosphor: blue, on a floor that is nearly black. Light run
 through `#38BDF8` to `#F6F8FF`, secondary text is `#A5D8FF`, and the surfaces rise from the floor
 through the darkest blues of that same falloff. A palette holds a ground, three surface steps, a rule,
 a wire, and three text roles, and everything in the interface reads through it. Choosing a phosphor is
-disabled for now: the code stays, the Settings row is gone, and a saved choice is not applied. The one
-colour that does not change is the alarm, `#FF2D78`, because an alarm must read the same on every tube. It marks lost
+disabled for now: the code stays, the Settings row is gone, and a saved choice is not applied.
+Blue is the wiring and mint is the current: `#40FFAA`, the signal, marks only what is working right
+now, so a quiet room is blue and a room gets greener the more is flowing. It has three steps, each with
+a job: the signal itself for words, figures, and marks; `#27A095` for a wire carrying data; and
+`#063837` behind a control that is on air. It marks live status, a rate above zero, packets, keyframes,
+a person's glyph as a real heartbeat lands, the newest good event in the ledger, audio someone is
+hearing, a confirmed copy, and the caret. A zero is never mint. In the light it gathers in soft patches
+that wander, tinting the characters and the glow only where the light is strong, and the room map's
+patches strengthen while something is flowing. One still in six on the wall takes it too.
+The one colour that does not change is the alarm, `#FF2D78`, because an alarm must read the same on every tube. It marks lost
 signal and failures and nothing else.
 
 Every window is one ground with tone steps for depth, under static scanlines and grain that sit below

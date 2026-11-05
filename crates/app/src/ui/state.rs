@@ -153,12 +153,21 @@ pub fn signal_lost(state: WatchState) -> bool {
     matches!(state, WatchState::SignalLost | WatchState::Reconnecting)
 }
 
+/// How an event in the ledger went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Good,
+    Neutral,
+    Bad,
+}
+
 /// Who joined, how they connect, and what failed, as it happens. Timed from when the room
 /// opened, like a mission clock, which needs no time zone and says how long the room has run.
 #[derive(Debug, Default)]
 pub struct Ledger {
     started: Option<Instant>,
-    pub lines: std::collections::VecDeque<(String, bool)>,
+    pub lines: std::collections::VecDeque<(String, Outcome)>,
+    newest_at: Option<Instant>,
     seen: HashMap<iroh::PublicKey, (brp_net::PathKind, bool, String)>,
     watching: HashSet<TileKey>,
     primed: bool,
@@ -166,14 +175,21 @@ pub struct Ledger {
 
 impl Ledger {
     const KEEP: usize = 5;
+    /// How long the newest line stays lit before it is only history.
+    const FRESH: std::time::Duration = std::time::Duration::from_secs(8);
 
-    fn add(&mut self, message: String, bad: bool) {
+    pub fn newest_is_fresh(&self) -> bool {
+        self.newest_at.is_some_and(|at| at.elapsed() < Self::FRESH)
+    }
+
+    fn add(&mut self, message: String, outcome: Outcome) {
         let started = *self.started.get_or_insert_with(Instant::now);
         let seconds = started.elapsed().as_secs();
         self.lines.push_back((
             format!("{:02}:{:02} {message}", seconds / 60, seconds % 60),
-            bad,
+            outcome,
         ));
+        self.newest_at = Some(Instant::now());
         if self.lines.len() > Self::KEEP {
             self.lines.pop_front();
         }
@@ -192,7 +208,7 @@ impl Ledger {
         };
         if !self.primed {
             self.primed = true;
-            self.add("Room open".to_string(), false);
+            self.add("Room open".to_string(), Outcome::Good);
         }
         let mut present = HashSet::new();
         for member in &snapshot.members {
@@ -201,16 +217,19 @@ impl Ledger {
             match self.seen.get(&member.id).cloned() {
                 None => {
                     let path = path_words(member.path, member.rtt_ms);
-                    self.add(format!("{} joined · {path}", member.nickname), false);
+                    self.add(
+                        format!("{} joined · {path}", member.nickname),
+                        Outcome::Good,
+                    );
                 }
                 Some((path, was_lost, _)) => {
                     if lost && !was_lost {
-                        self.add(format!("{}: no signal", member.nickname), true);
+                        self.add(format!("{}: no signal", member.nickname), Outcome::Bad);
                     } else if was_lost && !lost {
-                        self.add(format!("{} reconnected", member.nickname), false);
+                        self.add(format!("{} reconnected", member.nickname), Outcome::Good);
                     } else if path != member.path && member.path != PathKind::Unknown {
                         let path = path_words(member.path, member.rtt_ms);
-                        self.add(format!("{} · {path}", member.nickname), false);
+                        self.add(format!("{} · {path}", member.nickname), Outcome::Neutral);
                     }
                 }
             }
@@ -225,7 +244,7 @@ impl Ledger {
             .collect();
         for id in gone {
             if let Some((_, _, name)) = self.seen.remove(&id) {
-                self.add(format!("{name} left"), false);
+                self.add(format!("{name} left"), Outcome::Neutral);
             }
         }
         let watching: HashSet<TileKey> = snapshot
@@ -240,7 +259,7 @@ impl Ledger {
                 .find(|m| m.id == key.0)
                 .map_or("Someone", |m| m.nickname.as_str());
             let title = name.to_string();
-            self.add(format!("Watching {title}"), false);
+            self.add(format!("Watching {title}"), Outcome::Good);
         }
         self.watching = watching;
     }
@@ -456,6 +475,20 @@ pub fn live_title(snapshot: &RoomSnapshot, key: TileKey) -> Option<String> {
 mod tests {
     use super::*;
     use brp_audio::AudioSelection;
+
+    #[test]
+    fn the_ledger_remembers_how_an_event_went_and_how_recent_the_newest_is() {
+        let mut ledger = Ledger::default();
+        assert!(!ledger.newest_is_fresh(), "nothing has happened yet");
+        ledger.add("Sam joined".to_string(), Outcome::Good);
+        assert!(ledger.newest_is_fresh());
+        assert_eq!(ledger.lines[0].1, Outcome::Good);
+        ledger.newest_at = Some(Instant::now() - Ledger::FRESH);
+        assert!(
+            !ledger.newest_is_fresh(),
+            "it cools rather than staying lit"
+        );
+    }
     use brp_capture::{SourceDescriptor, SourceId};
     use brp_net::PathKind;
     use brp_proto::{Codec, LiveInfo, Preset};

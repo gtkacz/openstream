@@ -73,6 +73,9 @@ struct Palette {
     secondary: Color32,
     muted: Color32,
     accent: Color32,
+    signal: Color32,
+    signal_line: Color32,
+    signal_surface: Color32,
 }
 
 const fn hex(rgb: u32) -> Color32 {
@@ -90,6 +93,9 @@ const BLUE: Palette = Palette {
     secondary: hex(0xA5D8FF),
     muted: hex(0x6C94E1),
     accent: hex(0x38BDF8),
+    signal: hex(0x40FFAA),
+    signal_line: hex(0x27A095),
+    signal_surface: hex(0x063837),
 };
 const AMBER: Palette = Palette {
     ground: hex(0x120B03),
@@ -102,6 +108,9 @@ const AMBER: Palette = Palette {
     secondary: hex(0xD9971A),
     muted: hex(0xA97416),
     accent: hex(0xFFB000),
+    signal: hex(0xFFB000),
+    signal_line: hex(0x8A6016),
+    signal_surface: hex(0x2A1C08),
 };
 const GREEN: Palette = Palette {
     ground: hex(0x030F08),
@@ -114,6 +123,9 @@ const GREEN: Palette = Palette {
     secondary: hex(0x27C95E),
     muted: hex(0x1E9F4C),
     accent: hex(0x33FF77),
+    signal: hex(0x33FF77),
+    signal_line: hex(0x17803F),
+    signal_surface: hex(0x0A2414),
 };
 const WHITE: Palette = Palette {
     ground: hex(0x0A0D0F),
@@ -126,6 +138,9 @@ const WHITE: Palette = Palette {
     secondary: hex(0xAEBBC1),
     muted: hex(0x86949B),
     accent: hex(0xDCE6EA),
+    signal: hex(0xDCE6EA),
+    signal_line: hex(0x66747B),
+    signal_surface: hex(0x1C2328),
 };
 
 fn palette() -> &'static Palette {
@@ -188,8 +203,25 @@ pub fn selected() -> Color32 {
 pub fn selected_hover() -> Color32 {
     palette().raised
 }
+/// The current in the circuit: what is working right now, as words, figures, and marks. A quiet room
+/// shows little of it, and a room gets greener the more is flowing.
+pub fn signal() -> Color32 {
+    palette().signal
+}
+/// A wire with something really flowing along it.
+pub fn signal_line() -> Color32 {
+    palette().signal_line
+}
+/// Behind a control that is on air.
+pub fn signal_surface() -> Color32 {
+    palette().signal_surface
+}
+/// A rate: the signal's colour only while something is flowing, so a zero never reads as good news.
+pub fn rate_ink(flowing: bool) -> Color32 {
+    if flowing { signal() } else { secondary() }
+}
 pub fn live() -> Color32 {
-    palette().accent
+    signal()
 }
 /// The same in every phosphor, because an alarm must not change with the tube.
 pub fn error() -> Color32 {
@@ -623,6 +655,8 @@ pub enum Tone {
     Primary,
     /// No surface until the pointer arrives, for rows in a list.
     Quiet,
+    /// Something just worked: a solid block in the signal's colour, for a moment.
+    Confirmed,
 }
 
 /// Wraps any egui control in one physical behaviour. Its own surface is switched off and drawn
@@ -644,6 +678,12 @@ pub fn tactile(
         tone == Tone::Primary,
         motion::TRAVEL,
     );
+    let confirmed = motion::follow(
+        ui.ctx(),
+        ui.next_auto_id().with("confirmed"),
+        tone == Tone::Confirmed,
+        motion::HOVER,
+    );
     let response = ui
         .scope(|ui| {
             if !enabled {
@@ -663,6 +703,8 @@ pub fn tactile(
                 widget.weak_bg_fill = Color32::TRANSPARENT;
                 widget.bg_stroke = Stroke::NONE;
                 widget.expansion = 0.0;
+                widget.fg_stroke.color =
+                    widget.fg_stroke.color.lerp_to_gamma(on_accent(), confirmed);
             }
             add(ui)
         })
@@ -678,7 +720,8 @@ pub fn tactile(
         .lerp_to_gamma(rest, live)
         .lerp_to_gamma(self::selected(), chosen)
         .lerp_to_gamma(self::accent(), hover)
-        .lerp_to_gamma(text(), held);
+        .lerp_to_gamma(text(), held)
+        .lerp_to_gamma(signal(), confirmed);
     let surface = response.rect.shrink(held * PRESS_INSET);
     let mut shapes = vec![egui::Shape::rect_filled(surface, RADIUS_CONTROL, fill)];
     if focus > 0.0 {
@@ -769,7 +812,7 @@ fn block_caret(
     let place = galley.pos_from_cursor(cursor).translate(at.to_vec2());
     let cell = egui::Rect::from_min_size(place.min, egui::vec2(width, place.height()));
     let painter = ui.painter().with_clip_rect(clip.intersect(ui.clip_rect()));
-    painter.rect_filled(cell, 0, accent());
+    painter.rect_filled(cell, 0, signal());
     if let Some(under) = galley.text().chars().nth(cursor.index.0) {
         painter.text(
             cell.center(),
@@ -787,7 +830,7 @@ fn labelled_button(ui: &mut egui::Ui, glyph: &str, text: &str, size: Vec2, tone:
     let base = ui.visuals().widgets.inactive.fg_stroke.color;
     let shown = match (text.is_empty(), tone) {
         (true, _) => glyph.to_owned(),
-        (false, Tone::Primary | Tone::Quiet) => text.to_owned(),
+        (false, Tone::Primary | Tone::Quiet | Tone::Confirmed) => text.to_owned(),
         (false, _) => format!("[ {text} ]"),
     };
     let font = if text.is_empty() {
@@ -1459,7 +1502,7 @@ mod tests {
             .iter()
             .filter(|shape| match &shape.shape {
                 egui::Shape::Rect(rect) => {
-                    rect.fill == accent()
+                    rect.fill == signal()
                         && rect.rect.width() < 12.0
                         && shape.clip_rect.contains_rect(rect.rect)
                 }
@@ -1574,6 +1617,26 @@ mod tests {
     }
 
     #[test]
+    fn a_rate_takes_the_signal_colour_only_while_something_is_flowing() {
+        assert_eq!(rate_ink(true), signal());
+        assert_ne!(rate_ink(false), signal());
+    }
+
+    #[test]
+    fn each_step_of_the_signal_ramp_does_its_job() {
+        for ink in [signal(), text(), secondary()] {
+            assert!(contrast(ink, signal_surface()) >= 4.5, "{ink:?} on air");
+        }
+        assert!(contrast(on_accent(), signal()) >= 4.5, "a confirmed block");
+        assert!(contrast(signal_line(), ground()) >= 3.0, "a lit wire reads");
+        assert!(contrast(signal(), signal_line()) >= 2.0, "a packet on it");
+        assert!(
+            contrast(signal_surface(), ground()) >= 1.2,
+            "on air stands out"
+        );
+    }
+
+    #[test]
     fn every_launch_starts_on_the_blue_tube() {
         assert_eq!(phosphor(), Phosphor::Blue);
         assert_eq!(Phosphor::default(), Phosphor::Blue);
@@ -1581,7 +1644,7 @@ mod tests {
 
     #[test]
     fn every_text_role_stays_readable_on_every_surface_it_sits_on() {
-        for ink in [text(), secondary(), accent(), warning(), error()] {
+        for ink in [text(), secondary(), accent(), signal(), warning(), error()] {
             for surface in [ground(), surface(), raised()] {
                 assert!(contrast(ink, surface) >= 4.5, "{ink:?} on {surface:?}");
             }

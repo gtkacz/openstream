@@ -7,7 +7,7 @@ use brp_proto::{LiveInfo, SourceKind};
 use brp_room::{MemberView, RoomSnapshot};
 use egui::{Color32, Id, Pos2, Rect, Shape, Stroke, UiBuilder, pos2, vec2};
 
-use super::members::{heartbeat_fade, offered_preset, packets, path_badge};
+use super::members::{heartbeat_age, heartbeat_ink, offered_preset, packets, path_badge, wire_ink};
 use super::motion;
 use super::own_lives;
 use super::state::{UiState, delay_text, nobody_is_sharing, ordered_members};
@@ -56,13 +56,17 @@ fn plate(painter: &egui::Painter, rect: Rect) {
 }
 
 /// The light behind the canvas, for screens that want it without the map on top.
-pub fn light(ui: &egui::Ui, shown: f32) {
+pub fn light(ui: &egui::Ui, shown: f32, flowing: bool) {
+    // A quiet room's light stays mostly blue, and the signal's colour rises as something flows.
+    const QUIET: f32 = 0.35;
+    let flow = motion::follow(ui.ctx(), Id::new("map-flow"), flowing, motion::SURFACE);
     let (center, radius) = geometry(ui.max_rect());
     backdrop::request(
         ui.ctx(),
         BackdropRequest {
             kind: BackdropKind::Scope { center, radius },
             shown,
+            signal: QUIET + (1.0 - QUIET) * flow,
         },
     );
     if ui.input(|input| input.focused) && motion::ambient_allowed(ui.ctx()) {
@@ -88,7 +92,7 @@ pub fn draw(
 ) {
     let canvas = ui.max_rect();
     let (center, radius) = geometry(canvas);
-    light(ui, shown);
+    light(ui, shown, state.upload_kbps > 0);
     let mut painter = ui.painter_at(canvas);
     painter.multiply_opacity(shown);
     for ms in RINGS_MS {
@@ -114,7 +118,7 @@ pub fn draw(
     for (index, member) in members.iter().enumerate() {
         let at = place(member, index, center, radius);
         let lost = member.signal_lost;
-        let ink = if lost { theme::error() } else { theme::wire() };
+        let ink = wire_ink(lost, false, member.watching_me && upload > 0.0);
         let stroke = Stroke::new(1.0, ink);
         if member.path == PathKind::Unknown || lost {
             lines.extend(Shape::dashed_line(&[center, at], stroke, 3.0, 4.0));
@@ -140,7 +144,7 @@ pub fn draw(
         node(
             ui, &painter, member, at, center, canvas, state, commands, active, shown,
         );
-        ping(ui, &painter, member, at, moving, now);
+        ping(ui, &painter, member, at, moving);
     }
     centre(&painter, snapshot, center);
     hero(ui, snapshot, state, commands, canvas, shown, active);
@@ -172,34 +176,15 @@ fn place(member: &MemberView, index: usize, center: Pos2, radius: f32) -> Pos2 {
 }
 
 /// A ring that flares once when a heartbeat really arrives, in steps.
-fn ping(
-    ui: &egui::Ui,
-    painter: &egui::Painter,
-    member: &MemberView,
-    at: Pos2,
-    moving: bool,
-    now: f64,
-) {
-    let id = Id::new(("map-ping", member.id));
-    let (last_age, started) = ui
-        .ctx()
-        .data(|data| data.get_temp::<(u64, f64)>(id))
-        .unwrap_or((u64::MAX, f64::MIN));
-    let started = if member.seen_ago_ms < last_age && last_age != u64::MAX {
-        now
-    } else {
-        started
-    };
-    ui.ctx()
-        .data_mut(|data| data.insert_temp(id, (member.seen_ago_ms, started)));
-    let age = now - started;
+fn ping(ui: &egui::Ui, painter: &egui::Painter, member: &MemberView, at: Pos2, moving: bool) {
+    let age = heartbeat_age(ui, member);
     if moving && age < PING_SECONDS {
         let step = (age / PING_TICK).floor() as f32;
         let fade = 1.0 - (age / PING_SECONDS) as f32;
         painter.circle_stroke(
             at,
             14.0 + step * 6.0,
-            Stroke::new(1.0, theme::accent().gamma_multiply(fade)),
+            Stroke::new(1.0, theme::signal().gamma_multiply(fade)),
         );
     }
 }
@@ -232,7 +217,7 @@ fn node(
         at,
         member.id.as_bytes(),
         GLYPH_CELL,
-        theme::accent().gamma_multiply(heartbeat_fade(member)),
+        heartbeat_ink(ui, member),
     );
     let on_left = at.x < center.x;
     let meta = if lost {
@@ -363,20 +348,21 @@ fn centre(painter: &egui::Painter, snapshot: &RoomSnapshot, center: Pos2) {
         .filter_map(|preset| preset.encoder.as_ref())
         .map(|encoder| encoder.subscribers)
         .sum();
-    let text = match snapshot.own_lives.first() {
-        Some(live) if watching > 0 => {
-            format!("You · {} live · {watching} watching", live.info.title)
-        }
-        Some(live) => format!("You · {} ready", live.info.title),
-        None => "You".to_string(),
+    let (text, ink) = match snapshot.own_lives.first() {
+        Some(live) if watching > 0 => (
+            format!("You · {} live · {watching} watching", live.info.title),
+            theme::live(),
+        ),
+        Some(live) => (format!("You · {} ready", live.info.title), theme::accent()),
+        None => ("You".to_string(), theme::accent()),
     };
-    let label = painter.layout_no_wrap(text, theme::medium(13.0), theme::accent());
+    let label = painter.layout_no_wrap(text, theme::medium(13.0), ink);
     let at = center + vec2(-label.size().x / 2.0, 16.0);
     plate(
         painter,
         Rect::from_min_size(at, label.size()).expand2(vec2(4.0, 1.0)),
     );
-    painter.galley(at, label, theme::accent());
+    painter.galley(at, label, ink);
 }
 
 fn hero(
