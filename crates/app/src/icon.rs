@@ -63,9 +63,6 @@ const MARK_BARS: [(u8, f32, f32); 22] = [
 ];
 const MARK_ROWS: u8 = 13;
 const MARK_BAR_TO_ROW: f32 = 0.64;
-/// The icon's own blue rather than a theme colour, so the logo in the app always matches the icon
-/// the desktop shows.
-const MARK_COLOR: egui::Color32 = egui::Color32::from_rgb(0x5C, 0xC8, 0xFF);
 
 /// Paints the icon's mark, without its tile, into a square of `size` points.
 pub fn paint_mark(ui: &mut egui::Ui, size: f32) {
@@ -84,7 +81,7 @@ fn paint_mark_at(painter: &egui::Painter, rect: egui::Rect) {
             egui::pos2(rect.left() + start * size, top),
             egui::pos2(rect.left() + end * size, top + row_height * MARK_BAR_TO_ROW),
         );
-        painter.rect_filled(bar, bar.height() / 2.0, MARK_COLOR);
+        painter.rect_filled(bar, 0.0, crate::ui::theme::accent());
     }
 }
 
@@ -101,7 +98,5 @@ mod tests {
     fn the_painted_mark_matches_the_svg() {
         let svg = include_str!("../assets/icon/openstream.svg");
         assert_eq!(svg.matches('Z').count(), MARK_BARS.len());
-        let [red, green, blue, _] = MARK_COLOR.to_array();
-        assert!(svg.contains(&format!("#{red:02X}{green:02X}{blue:02X}")));
     }
 }

@@ -35,6 +35,7 @@ pub fn run(
         Some(ticket) if store.settings.auto_join_links => (Some(Intent::Join(ticket)), None),
         invite => (intent, invite),
     };
+    crate::ui::theme::start_with_phosphor(store.settings.phosphor);
     let launch = Launch::from_settings(&store.settings, &args)?;
     let (secret, identity_lock) = identity::load_or_create()?;
     let nickname = launch::default_nickname(&launch, &secret);

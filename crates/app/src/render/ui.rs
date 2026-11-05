@@ -101,6 +101,17 @@ impl EguiLayer {
     pub fn paint(&self, pass: &mut wgpu::RenderPass<'static>, frame: &UiFrame) {
         self.renderer.render(pass, &frame.paint_jobs, &frame.screen)
     }
+    /// The same frame again at another size, for the chrome's glow. The renderer's uniforms hold the
+    /// size in points, which `screen` keeps.
+    pub fn paint_scaled(
+        &self,
+        pass: &mut wgpu::RenderPass<'static>,
+        frame: &UiFrame,
+        screen: &egui_wgpu::ScreenDescriptor,
+    ) {
+        self.renderer.render(pass, &frame.paint_jobs, screen)
+    }
+
     pub fn cleanup(&mut self, frame: &mut UiFrame) {
         for id in frame.textures_delta.free.drain() {
             self.renderer.free_texture(&id);

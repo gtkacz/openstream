@@ -25,7 +25,7 @@ fn render(
     shown: f32,
 ) -> Vec<u8> {
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut tiles = TileRenderer::new(device, format);
+    let mut tiles = TileRenderer::new(device, queue, format);
     let key = (iroh::SecretKey::from_bytes(&[1; 32]).public(), 1);
     tiles.upload(device, queue, key, frame);
     let placements = [(
@@ -38,7 +38,7 @@ fn render(
         },
         shown,
     )];
-    tiles.update_fits(queue, &placements);
+    tiles.update_fits(queue, &placements, 1.0);
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
@@ -249,18 +249,18 @@ fn a_viewer_sees_lossless_detail_after_the_real_encoder_and_decoder() {
 }
 
 #[test]
-fn a_tile_darkens_to_the_canvas_as_it_leaves() {
+fn a_leaving_tile_collapses_towards_a_bright_line_and_then_to_nothing() {
     let Some((device, queue)) = gpu() else {
         eprintln!("no GPU adapter; skipping");
         return;
     };
     let full = middle_with(&device, &queue, 1.0);
-    let half = middle_with(&device, &queue, 0.5);
+    let collapsing = middle_with(&device, &queue, 0.5);
     let none = middle_with(&device, &queue, 0.0);
     assert!(full > 150, "a shown tile was {full}");
     assert!(
-        (i32::from(half) - i32::from(full) / 2).abs() <= 2,
-        "half shown was {half} of {full}"
+        collapsing > full,
+        "collapsing it brightens {full} to {collapsing}"
     );
     assert_eq!(none, 0, "a tile that has left must match the black canvas");
 }
@@ -271,7 +271,7 @@ fn a_frame_the_gpu_cannot_hold_is_skipped_rather_than_fatal() {
         eprintln!("no GPU adapter; skipping");
         return;
     };
-    let mut tiles = TileRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let mut tiles = TileRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
     let key = (iroh::SecretKey::from_bytes(&[1; 32]).public(), 1);
     let too_large = device.limits().max_texture_dimension_2d + 2;
     // A one-pixel-wide frame would ask for a chroma plane with no width at all.
@@ -284,4 +284,187 @@ fn a_frame_the_gpu_cannot_hold_is_skipped_rather_than_fatal() {
         );
     }
     tiles.upload(&device, &queue, key, &brp_codec::RawFrame::black(16, 16, 0));
+}
+
+/// A render target and the bytes read back from it, for the passes that draw the whole window.
+fn draw_to_pixels(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    (width, height): (u32, u32),
+    format: wgpu::TextureFormat,
+    draw: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
+) -> Vec<u8> {
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let stride = (width * 4).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(stride * height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let view = target.create_view(&Default::default());
+    draw(&mut encoder, &view);
+    encoder.copy_texture_to_buffer(
+        target.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: None,
+            },
+        },
+        target.size(),
+    );
+    queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).ok();
+        });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("the GPU finished");
+    rx.recv().expect("mapped").expect("mapped");
+    let pixels = buffer.slice(..).get_mapped_range().expect("mapped");
+    pixels
+        .chunks(stride as usize)
+        .flat_map(|row| row[..width as usize * 4].iter().copied())
+        .collect()
+}
+
+fn mean_red(pixels: &[u8], width: u32, rows: std::ops::Range<u32>) -> f32 {
+    let (mut sum, mut count) = (0u64, 0u64);
+    for row in rows {
+        let line = &pixels[(row * width * 4) as usize..((row + 1) * width * 4) as usize];
+        for pixel in line.chunks(4) {
+            sum += u64::from(pixel[0]);
+            count += 1;
+        }
+    }
+    sum as f32 / count as f32
+}
+
+#[test]
+fn the_horizon_lights_the_foot_of_the_window_and_leaves_the_top_dark() {
+    use brp_app::render::backdrop::{Backdrop, BackdropKind, BackdropRequest};
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let size = (640, 360);
+    let mut backdrop = Backdrop::new(&device, &queue, format);
+    backdrop.skip_opening();
+    let pixels = draw_to_pixels(&device, &queue, size, format, |encoder, view| {
+        backdrop.prepare(
+            &device,
+            &queue,
+            encoder,
+            size,
+            1.0,
+            BackdropRequest {
+                kind: BackdropKind::Horizon,
+                shown: 1.0,
+            },
+            Default::default(),
+            false,
+        );
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+        backdrop.show(&mut pass.forget_lifetime());
+    });
+    let (top, foot) = (
+        mean_red(&pixels, size.0, 0..40),
+        mean_red(&pixels, size.0, 320..360),
+    );
+    assert!(foot > top + 30.0, "foot {foot} against top {top}");
+}
+
+#[test]
+fn a_tile_that_lost_its_signal_reduces_to_characters_in_the_phosphors_colour() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let size = (320, 180);
+    let key = (iroh::SecretKey::from_bytes(&[1; 32]).public(), 1);
+    let mut tiles = TileRenderer::new(&device, &queue, format);
+    let mut frame = RawFrame::black(320, 180, 0);
+    frame.y.fill(160);
+    tiles.upload(&device, &queue, key, &frame);
+    tiles.set_fx(
+        key,
+        brp_app::render::tiles::TileFx {
+            ascii: 1.0,
+            warm: 1.0,
+        },
+    );
+    let placements = [(
+        key,
+        PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: size.0 as f32,
+            height: size.1 as f32,
+        },
+        1.0,
+    )];
+    tiles.update_fits(&queue, &placements, 1.0);
+    let pixels = draw_to_pixels(&device, &queue, size, format, |encoder, view| {
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+        tiles.draw(&mut pass.forget_lifetime(), &placements);
+    });
+    let (mut dark, mut inked, mut tinted) = (0, 0, 0);
+    for pixel in pixels.chunks(4) {
+        if pixel[0] < 16 {
+            dark += 1;
+        } else if pixel[0] > 48 {
+            inked += 1;
+            tinted += usize::from(pixel[0] > pixel[2] + 24);
+        }
+    }
+    assert!(dark > 1000, "a grey picture must break up: {dark} dark");
+    assert!(inked > 1000, "into characters: {inked} inked");
+    assert!(
+        tinted * 10 > inked * 9,
+        "of the phosphor: {tinted} of {inked}"
+    );
 }

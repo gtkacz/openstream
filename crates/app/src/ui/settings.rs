@@ -27,12 +27,15 @@ pub struct SettingsDialog {
     /// The frame rate is being typed rather than picked. Held apart from the value because 60 can be
     /// a typed number too, and choosing Custom must not change it.
     pub custom_fps: bool,
+    /// Phosphor applies as it is picked, so Cancel has to put this back.
+    pub phosphor_before: theme::Phosphor,
 }
 
 impl SettingsDialog {
     /// Opens with a fresh draft of `settings` and the device list as enumerated now.
     pub fn open_with(&mut self, settings: &Settings, devices: Result<Vec<OutputDevice>, String>) {
         self.draft = settings.clone();
+        self.phosphor_before = settings.phosphor;
         self.nickname_text = settings.nickname.clone().unwrap_or_default();
         match devices {
             Ok(devices) => {
@@ -112,6 +115,24 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     );
                 });
                 ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Phosphor", |ui| {
+                    let choice = theme::segmented(
+                        ui,
+                        "settings-phosphor",
+                        &[
+                            (theme::Phosphor::Amber, "Amber"),
+                            (theme::Phosphor::Green, "Green"),
+                            (theme::Phosphor::White, "White"),
+                        ],
+                        dialog.draft.phosphor,
+                        ui.available_width() / 3.0,
+                    );
+                    if let Some(phosphor) = choice {
+                        dialog.draft.phosphor = phosphor;
+                        theme::set_phosphor(ctx, phosphor);
+                    }
+                });
+                ui.add_space(ROW_GAP);
                 theme::form_row(ui, "Connection", |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let mut kind = RelayKind::of(&dialog.draft.relay);
@@ -137,7 +158,7 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     ui.label(
                         egui::RichText::new("Any link you open can then put you in a room")
                             .small()
-                            .color(theme::SECONDARY),
+                            .color(theme::secondary()),
                     );
                 });
                 ui.add_space(ROW_GAP);
@@ -189,7 +210,7 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     });
                     if let Some(error) = &dialog.devices_error {
                         ui.colored_label(
-                            theme::ERROR,
+                            theme::error(),
                             format!("Could not list output devices: {error}"),
                         );
                     }
@@ -204,7 +225,7 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     ui.label(
                         egui::RichText::new("Takes effect the next time OpenStream starts")
                             .small()
-                            .color(theme::SECONDARY),
+                            .color(theme::secondary()),
                     );
                 });
                 if room_open {
@@ -213,7 +234,7 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                 }
                 if !dialog.error.is_empty() {
                     ui.add_space(ROW_GAP);
-                    ui.colored_label(theme::ERROR, &dialog.error);
+                    ui.colored_label(theme::error(), &dialog.error);
                 }
             });
         theme::dialog_footer(
@@ -238,6 +259,9 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
     })?;
     // The title bar's close button and Esc behave like Cancel.
     dialog.open &= !dismissed;
+    if visible && !dialog.open && saved.is_none() {
+        theme::set_phosphor(ctx, dialog.phosphor_before);
+    }
     saved
 }
 

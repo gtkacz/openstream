@@ -215,7 +215,7 @@ pub fn audio_controls(
     );
     ui.painter().set(
         backing,
-        egui::Shape::rect_filled(surface, theme::RADIUS_CONTROL, theme::RAISED),
+        egui::Shape::rect_filled(surface, theme::RADIUS_CONTROL, theme::raised()),
     );
     if let (true, Some(status)) = (show_status, &status) {
         ui.weak(status);
@@ -275,7 +275,8 @@ pub fn live_card(
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
 ) {
-    theme::card().show(ui, |ui| {
+    // Solid, because the rail's circuit runs behind it on the way to the next person.
+    theme::card().fill(theme::ground()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 4.0;
         live_rows(ui, live, state, commands);
@@ -311,13 +312,20 @@ fn live_rows(
         |ui| {
             // Placed first so a long title truncates against it instead of pushing it out.
             if failing {
-                ui.colored_label(theme::ERROR, egui::RichText::new("Needs attention").small());
+                ui.colored_label(
+                    theme::error(),
+                    egui::RichText::new("Needs attention").small(),
+                );
             } else if streaming {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                ui.colored_label(theme::LIVE, egui::RichText::new("Live").small());
+                ui.colored_label(theme::live(), egui::RichText::new("Live").small());
                 theme::live_dot(ui, true);
             } else {
-                ui.label(egui::RichText::new("Ready").small().color(theme::SECONDARY));
+                ui.label(
+                    egui::RichText::new("Ready")
+                        .small()
+                        .color(theme::secondary()),
+                );
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(
@@ -334,7 +342,7 @@ fn live_rows(
             info.source_width, info.source_height, info.source_fps
         ))
         .small()
-        .color(theme::SECONDARY),
+        .color(theme::secondary()),
     );
     ui.add_space(4.0);
     let mut stop = false;
@@ -393,7 +401,7 @@ fn live_rows(
     for preset in &live.presets {
         if let Some(error) = &preset.last_error {
             ui.colored_label(
-                theme::ERROR,
+                theme::error(),
                 format!("{} failed: {error}", preset.preset.name),
             );
         }
@@ -404,7 +412,7 @@ fn live_rows(
             .as_ref()
             .is_some_and(|encoder| brp_codec::is_software_encoder(encoder.name))
     }) {
-        ui.colored_label(theme::WARNING, "Software encoding · using the CPU");
+        ui.colored_label(theme::warning(), "Software encoding · using the CPU");
     }
     let open = state.quality_open.contains(&info.id);
     if theme::disclosure(ui, "Quality & encoding", open).clicked() {
@@ -447,7 +455,7 @@ fn quality_details(
                 // Lossless has no bitrate to choose: it takes what the picture needs.
                 if template.quality() == VideoQuality::Lossless {
                     let hint = egui::RichText::new("Fast link only");
-                    ui.label(hint.small().color(theme::SECONDARY));
+                    ui.label(hint.small().color(theme::secondary()));
                 } else if let Some(view) = view {
                     bitrate_field(ui, info, &view.preset, state, commands);
                 }
@@ -518,7 +526,7 @@ fn preset_detail(ui: &mut egui::Ui, live_id: u32, view: &PresetView, state: &UiS
             )))
             .on_hover_text(format!("{} frames encoded", encoder.frames_encoded))
         }
-        (None, Some(error)) => ui.colored_label(theme::ERROR, format!("failed: {error}")),
+        (None, Some(error)) => ui.colored_label(theme::error(), format!("failed: {error}")),
         (None, None) => ui.label(theme::figure(format!("{dimensions} · idle"))),
     };
 }

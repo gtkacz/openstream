@@ -43,7 +43,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState, commands: &mut Vec<RoomCom
                     let dimensions =
                         egui::RichText::new(format!("{} × {}", choice.width, choice.height))
                             .small()
-                            .color(theme::SECONDARY);
+                            .color(theme::secondary());
                     let row = theme::tactile(ui, theme::Tone::Quiet, false, true, |ui| {
                         ui.add(
                             egui::Button::new((

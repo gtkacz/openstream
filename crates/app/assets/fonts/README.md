@@ -2,9 +2,9 @@
 
 Embedded with `include_bytes!` by `crates/app/src/ui/theme.rs`, so the app never fetches a font.
 
-- **IBM Plex Sans** Regular, Medium, SemiBold: unmodified from
+- **IBM Plex Mono** Regular, Medium, SemiBold: unmodified from
   [IBM/plex](https://github.com/IBM/plex). SIL OFL 1.1 with the Reserved Font Name "Plex", see
-  `IBMPlexSans-OFL.txt`. Keep these files unmodified: a subset would be a Modified Version and could
+  `IBMPlexMono-OFL.txt`. Keep these files unmodified: a subset would be a Modified Version and could
   not keep the name.
 - **Lucide** (`lucide-static` 1.67.0): a subset of the icon font. ISC, see `Lucide-LICENSE.txt`.
 

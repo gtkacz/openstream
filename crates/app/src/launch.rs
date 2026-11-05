@@ -140,6 +140,7 @@ mod tests {
 
     fn saved() -> Settings {
         Settings {
+            phosphor: Default::default(),
             nickname: Some("saved".into()),
             fps: 30,
             relay: RelayChoice::Custom("https://relay.example.com/".into()),

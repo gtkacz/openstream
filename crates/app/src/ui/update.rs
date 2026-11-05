@@ -106,7 +106,7 @@ pub fn draw(ui: &mut egui::Ui, state: &UpdateState) -> bool {
         }
     });
     if let UpdatePhase::Failed(message) = &state.phase {
-        ui.colored_label(super::theme::ERROR, message);
+        ui.colored_label(super::theme::error(), message);
     }
     clicked
 }

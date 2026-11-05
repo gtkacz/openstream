@@ -7,7 +7,9 @@ fn text_rect(shapes: &[egui::epaint::ClippedShape], text: &str) -> egui::Rect {
     shapes
         .iter()
         .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(s) if s.galley.text() == text => {
+            egui::Shape::Text(s)
+                if s.galley.text() == text || s.galley.text() == format!("[ {text} ]") =>
+            {
                 Some(s.galley.rect.translate(s.pos.to_vec2()))
             }
             _ => None,
@@ -379,7 +381,7 @@ fn the_video_keeps_most_of_the_window_while_sharing_at_every_width() {
     // One row of controls, its separator, and the gaps around the tile, at every width.
     const LARGEST_DOCK: f32 = 74.0;
     const WINDOW_EDGES: f32 = 16.0;
-    const RAIL: f32 = 288.0;
+    const RAIL: f32 = 320.0;
     for (width, height) in [
         (390.0, 844.0),
         (799.0, 600.0),
@@ -418,9 +420,10 @@ fn a_compact_window_folds_the_room_into_a_sheet_and_keeps_the_video_placed() {
     let mut state = brp_app::ui::state::UiState::new();
     let (_, shapes) = run_room(&ctx, window(390.0, 844.0), &snapshot, &mut state);
     let has_text = |shapes: &[egui::epaint::ClippedShape], text: &str| {
-        shapes
-            .iter()
-            .any(|shape| matches!(&shape.shape, egui::Shape::Text(s) if s.galley.text() == text))
+        shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(s)
+                if s.galley.text() == text || s.galley.text() == format!("[ {text} ]"))
+        })
     };
     assert!(
         !has_text(&shapes, "Copy link"),
@@ -554,19 +557,176 @@ fn timed(mut raw: egui::RawInput, frame: u32) -> egui::RawInput {
     raw
 }
 
+/// Hovers `at` until the tile's toolbar has risen and every surface has settled.
+fn hovering(
+    ctx: &egui::Context,
+    at: egui::Pos2,
+    snapshot: &brp_room::RoomSnapshot,
+    state: &mut brp_app::ui::state::UiState,
+    first_frame: u32,
+) -> Vec<egui::epaint::ClippedShape> {
+    let mut last = Vec::new();
+    for frame in first_frame..first_frame + 60 {
+        let mut raw = timed(window(1280.0, 800.0), frame);
+        raw.events = vec![egui::Event::PointerMoved(at)];
+        last = run_room(ctx, raw, snapshot, state).1;
+    }
+    last
+}
+
+fn filled_rects(shapes: &[egui::epaint::ClippedShape], fill: egui::Color32) -> Vec<egui::Rect> {
+    fn collect(shape: &egui::Shape, fill: egui::Color32, found: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Vec(parts) => parts.iter().for_each(|part| collect(part, fill, found)),
+            egui::Shape::Rect(rect) if rect.fill == fill => found.push(rect.rect),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for shape in shapes {
+        collect(&shape.shape, fill, &mut found);
+    }
+    found
+}
+
 #[test]
-fn a_button_centres_its_icon_on_its_label() {
+fn a_tiles_toolbar_holds_its_controls_in_the_middle_of_its_bar() {
+    use brp_app::ui::theme;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (output, _) = settled_room(&ctx, (1280.0, 800.0), &snapshot, &mut state);
+    let tile = output.tile_rects[0].1;
+    let shapes = hovering(&ctx, tile.center(), &snapshot, &mut state, 60);
+    let stats = text_rect(&shapes, "Stats");
+    let bar = filled_rects(&shapes, theme::ground())
+        .into_iter()
+        .find(|rect| rect.contains(stats.center()) && rect.width() > stats.width() * 2.0)
+        .expect("the bar behind the controls");
+    assert!(
+        (stats.center().y - bar.center().y).abs() <= 1.0,
+        "label at {} in a bar centred on {}",
+        stats.center().y,
+        bar.center().y
+    );
+
+    // Ink rather than the label's box: a dropdown's text can share a box with its neighbours and
+    // still draw a pixel lower. Compared on letters that reach the same heights.
+    let ink = |name: &str| {
+        shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text)
+                if text.galley.text() == name
+                    && bar.contains(text.pos + text.galley.rect.center().to_vec2()) =>
+            {
+                Some(text.pos.y + text.galley.mesh_bounds.top())
+            }
+            _ => None,
+        })
+    };
+    let (dropdown, button) = (ink("Source"), ink("Stats"));
+    assert!(
+        dropdown.is_some() && dropdown == button,
+        "{dropdown:?} and {button:?}"
+    );
+
+    let on_the_bar = |name: &str, shapes: &[egui::epaint::ClippedShape]| {
+        text_rects(shapes, name)
+            .into_iter()
+            .find(|label| bar.contains(label.center()))
+            .unwrap_or_else(|| panic!("{name} is not on the bar"))
+    };
+
+    // The hover block shows a control's own rect, so it has to sit evenly in the bar too.
+    for (frame, name) in [(120, "Stats"), (180, "Source"), (240, "Close")] {
+        let label = on_the_bar(name, &shapes);
+        let hovered = hovering(&ctx, label.center(), &snapshot, &mut state, frame);
+        let block = filled_rects(&hovered, theme::accent())
+            .into_iter()
+            .find(|rect| rect.contains(label.center()))
+            .unwrap_or_else(|| panic!("{name}'s surface"));
+        let (above, below) = (block.top() - bar.top(), bar.bottom() - block.bottom());
+        assert!(
+            (above - below).abs() <= 1.0 && above >= 2.0,
+            "{name}: {above} above the block and {below} below it"
+        );
+        assert!(
+            (label.center().y - block.center().y).abs() <= 1.0,
+            "{name}: label at {} in a block centred on {}",
+            label.center().y,
+            block.center().y
+        );
+    }
+}
+
+#[test]
+fn a_hovered_buttons_label_flips_to_reverse_video() {
+    use brp_app::ui::theme;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let ink = |frame: u32, events: Vec<egui::Event>| {
+        let mut raw = timed(window(400.0, 200.0), frame);
+        raw.events = events;
+        let mut output = ctx.run_ui(raw, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                theme::wide_action(
+                    ui,
+                    theme::icons::CREATE,
+                    "Act",
+                    theme::Tone::Neutral,
+                    true,
+                    egui::vec2(200.0, 36.0),
+                );
+            });
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "[ Act ]" => Some((
+                    text.fallback_color,
+                    text.galley.job.sections[0].format.color,
+                )),
+                _ => None,
+            })
+            .expect("the label is drawn")
+    };
+    let (resting, baked) = ink(0, Vec::new());
+    assert_eq!(
+        baked,
+        egui::Color32::PLACEHOLDER,
+        "its colour must stay free"
+    );
+    assert_eq!(resting, theme::text());
+    let over = egui::Event::PointerMoved(egui::pos2(100.0, 40.0));
+    for frame in 1..60 {
+        ink(frame, vec![over.clone()]);
+    }
+    assert_eq!(ink(60, vec![over]).0, theme::on_accent());
+}
+
+#[test]
+fn a_bracketed_label_and_an_icon_button_share_a_centre_line() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut output = ctx.run_ui(window(400.0, 200.0), |ui| {
         egui::CentralPanel::default().show(ui, |ui| {
-            brp_app::ui::theme::action(ui, brp_app::ui::theme::icons::LINK, "Copy link", true);
+            ui.horizontal(|ui| {
+                brp_app::ui::theme::action(ui, brp_app::ui::theme::icons::LINK, "Copy link", true);
+                brp_app::ui::theme::icon_button(
+                    ui,
+                    brp_app::ui::theme::icons::SETTINGS,
+                    "Settings",
+                    true,
+                );
+            });
         });
     });
     let shapes = std::mem::take(&mut output.shapes);
     output.textures_delta.clear();
     let label = text_rect(&shapes, "Copy link");
-    let icon = text_rect(&shapes, brp_app::ui::theme::icons::LINK);
+    let icon = text_rect(&shapes, brp_app::ui::theme::icons::SETTINGS);
     assert!(
         (label.center().y - icon.center().y).abs() <= 1.0,
         "label at {} and icon at {}",
@@ -744,9 +904,10 @@ fn at_the_default_window_size_a_joined_room_lists_the_member_s_stream_and_its_sw
     let snapshot = joined_room();
     let mut state = brp_app::ui::state::UiState::new();
     let has_text = |shapes: &[egui::epaint::ClippedShape], text: &str| {
-        shapes
-            .iter()
-            .any(|shape| matches!(&shape.shape, egui::Shape::Text(s) if s.galley.text() == text))
+        shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(s)
+                if s.galley.text() == text || s.galley.text() == format!("[ {text} ]"))
+        })
     };
     let mut last = Vec::new();
     for frame in 0..120 {
@@ -763,7 +924,7 @@ fn at_the_default_window_size_a_joined_room_lists_the_member_s_stream_and_its_sw
         has_text(&last, "Monitor 1"),
         "the member's stream is listed"
     );
-    assert!(has_text(&last, "Watch"), "the stream can be switched on");
+    assert!(has_text(&last, "[ ]"), "the stream can be switched on");
 }
 
 /// Draws the room for long enough that anything arriving settles, starting at `first_frame`
@@ -800,7 +961,9 @@ fn text_rects(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<egui::Re
     shapes
         .iter()
         .filter_map(|shape| match &shape.shape {
-            egui::Shape::Text(s) if s.galley.text() == text => {
+            egui::Shape::Text(s)
+                if s.galley.text() == text || s.galley.text() == format!("[ {text} ]") =>
+            {
                 Some(s.galley.rect.translate(s.pos.to_vec2()))
             }
             _ => None,
@@ -815,59 +978,53 @@ fn the_rail_keeps_its_width_whatever_its_contents_ask_for() {
     let snapshot = busy_room();
     let mut state = brp_app::ui::state::UiState::new();
     // Quality details hold the rail's widest rows.
+    state.own_open.insert(1);
     state.quality_open.insert(1);
     let (output, shapes) = settled_room(&ctx, (1280.0, 900.0), &snapshot, &mut state);
     let tile = output.tile_rects[0].1;
     assert!(
-        tile.left() <= 296.5,
-        "the rail pushed the video to {} instead of leaving it at 296",
+        tile.left() <= 328.5,
+        "the rail pushed the video to {} instead of leaving it at 328",
         tile.left()
     );
     for label in ["Copy link", "Copy ticket", "Quality & encoding"] {
         assert!(
-            text_rect(&shapes, label).right() <= 280.0,
+            text_rect(&shapes, label).right() <= 304.0,
             "{label} overflows"
         );
     }
 }
 
 #[test]
-fn a_persons_name_and_detail_are_centred_on_their_avatar() {
+fn a_persons_name_and_how_they_reach_you_share_a_line() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let snapshot = busy_room();
     let mut state = brp_app::ui::state::UiState::new();
     let (_, shapes) = settled_room(&ctx, (1280.0, 800.0), &snapshot, &mut state);
-    for (initial, name, detail) in [("A", "Alex", "You"), ("M", "Morgan", "Direct")] {
-        let avatar = text_rect(&shapes, initial);
-        let block = text_rect(&shapes, name).union(text_rect(&shapes, detail));
-        assert!(
-            (avatar.center().y - block.center().y).abs() <= 0.5,
-            "{name}: avatar at {} and text at {}",
-            avatar.center().y,
-            block.center().y
-        );
-    }
+    let name = text_rect(&shapes, "Morgan");
+    let path = text_rect(&shapes, "direct");
+    assert!(
+        (name.center().y - path.center().y).abs() <= 0.5,
+        "name at {} and path at {}",
+        name.center().y,
+        path.center().y
+    );
+    assert!(name.right() < path.left(), "{name:?} runs into {path:?}");
+    text_rect(&shapes, "Alex · you");
 }
 
 #[test]
-fn a_rail_card_keeps_its_title_detail_and_controls_on_one_left_edge() {
+fn a_rail_rows_figures_end_on_the_rails_inner_edge() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let snapshot = busy_room();
     let mut state = brp_app::ui::state::UiState::new();
     let (_, shapes) = settled_room(&ctx, (1280.0, 800.0), &snapshot, &mut state);
-    let edge = text_rect(&shapes, "Monitor 1").left();
-    let detail = text_rects(&shapes, "2560 × 1440 · 60 fps")[0].left();
-    let disclosure = text_rect(&shapes, "Quality & encoding").left();
-    assert!(
-        (detail - edge).abs() < 0.5,
-        "detail at {detail}, title at {edge}"
-    );
-    assert!(
-        (disclosure - edge).abs() < 0.5,
-        "disclosure at {disclosure}, title at {edge}"
-    );
+    let edge = text_rect(&shapes, "direct").right();
+    assert!((edge - 304.0).abs() <= 1.0, "ends at {edge}");
+    let copy = text_rect(&shapes, "Copy link");
+    assert!(copy.left() >= 16.0 && copy.right() <= 304.0, "{copy:?}");
 }
 
 #[test]
@@ -913,8 +1070,9 @@ fn the_start_form_is_centred_in_the_body() {
     // The Join button is 40 tall around its label, so its bottom edge is 20 below the label's centre.
     let form = (title.top() + join_label.center().y + 20.0) / 2.0;
     let body = (24.0 + 36.0 + 8.0 + 800.0 - 24.0) / 2.0;
+    // A little loose: the headline's line box stands a little taller than its letters.
     assert!(
-        (form - body).abs() <= 1.0,
+        (form - body).abs() <= 2.0,
         "form centred at {form}, body at {body}"
     );
 }
@@ -1025,6 +1183,7 @@ fn unfolded_quality_details_show_each_preset_and_fold_away_again() {
     brp_app::ui::theme::install(&ctx);
     let snapshot = busy_room();
     let mut state = brp_app::ui::state::UiState::new();
+    state.own_open.insert(1);
     let (_, shut) = settled_room(&ctx, (1280.0, 1000.0), &snapshot, &mut state);
     assert!(text_rects(&shut, "480p").is_empty());
     let header = text_rect(&shut, "Quality & encoding").center();
@@ -1139,7 +1298,7 @@ fn accent_surfaces(shapes: &[egui::epaint::ClippedShape]) -> usize {
         match shape {
             egui::Shape::Vec(shapes) => shapes.iter().map(count).sum(),
             egui::Shape::Rect(rect)
-                if rect.fill == brp_app::ui::theme::ACCENT
+                if rect.fill == brp_app::ui::theme::accent()
                     && rect.rect.height() >= CONTROL_AT_LEAST =>
             {
                 1
@@ -1345,18 +1504,19 @@ fn alone_in_a_room_the_canvas_holds_the_invite_and_the_one_accent_share_button()
 }
 
 #[test]
-fn a_stream_on_the_canvas_starts_with_one_click_and_its_tile_grows_out_of_that_card() {
+fn a_stream_on_the_map_starts_with_one_click_and_its_tile_warms_up_where_it_stands() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut snapshot = room_with_an_unwatched_stream();
     let mut state = brp_app::ui::state::UiState::new();
     let (_, shapes) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
-    let card = text_rect(&shapes, "Morgan · Monitor 1");
+    // The rail lists the same title without brackets, and only the map's offer is one click.
+    let offer = text_rect(&shapes, "[ Monitor 1 ]");
     let commands = click_text(
         &ctx,
         60,
         (1440.0, 900.0),
-        card.center(),
+        offer.center(),
         &snapshot,
         &mut state,
     );
@@ -1384,13 +1544,77 @@ fn a_stream_on_the_canvas_starts_with_one_click_and_its_tile_grows_out_of_that_c
         &mut state,
     )
     .0;
-    let tile = first.tile_rects[0].1;
-    assert!(
-        tile.height() < 120.0 && tile.expand(24.0).contains(card.center()),
-        "the tile began at {tile:?}, far from its card around {card:?}"
-    );
     let settled = settled_room_from(63, &ctx, (1440.0, 900.0), &snapshot, &mut state).0;
-    assert!(settled.tile_rects[0].1.height() > 500.0);
+    let (first, settled) = (first.tile_rects[0].1, settled.tile_rects[0].1);
+    assert!(settled.height() > 500.0);
+    assert!(
+        first.height() > settled.height() * 0.9,
+        "the tile began at {first:?}, not where it stands at {settled:?}"
+    );
+}
+
+#[test]
+fn a_small_canvas_lists_streams_instead_of_drawing_the_map() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = room_with_an_unwatched_stream();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, roomy) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    assert!(!text_rects(&roomy, "Closer means less delay").is_empty());
+
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let (_, small) = settled_room(&ctx, (390.0, 844.0), &snapshot, &mut state);
+    assert!(text_rects(&small, "Closer means less delay").is_empty());
+    assert!(!text_rects(&small, "Morgan · Monitor 1").is_empty());
+}
+
+#[test]
+fn a_stream_that_lost_its_signal_says_so_on_its_tile_and_in_the_rail() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    snapshot.members[0].signal_lost = true;
+    snapshot.watches[0].state = brp_room::WatchState::SignalLost;
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, lost) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    assert!(!text_rects(&lost, "No signal").is_empty(), "on the tile");
+    assert!(!text_rects(&lost, "no signal").is_empty(), "in the rail");
+    assert!(!text_rects(&lost, "Last heard 4 s ago").is_empty());
+
+    snapshot.watches[0].state = brp_room::WatchState::Reconnecting;
+    let (_, trying) = settled_room_from(60, &ctx, (1440.0, 900.0), &snapshot, &mut state);
+    let says_reconnecting = |shape: &egui::epaint::ClippedShape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().ends_with("· reconnecting"));
+    assert!(trying.iter().any(says_reconnecting));
+}
+
+#[test]
+fn someone_elses_stream_offers_its_quality_before_it_is_watched() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = room_with_an_unwatched_stream();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shapes) = settled_room(&ctx, (1440.0, 900.0), &snapshot, &mut state);
+    assert!(!text_rects(&shapes, "Source").is_empty());
+}
+
+#[test]
+fn your_own_stream_unfolds_its_controls_from_its_row() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let snapshot = busy_room();
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shut) = settled_room(&ctx, (1280.0, 1000.0), &snapshot, &mut state);
+    assert!(text_rects(&shut, "Quality & encoding").is_empty());
+    // Your own stream's row comes first in the rail, ahead of anyone else's.
+    let row = text_rects(&shut, "Monitor 1")[0].center();
+    for (frame, pressed) in [(60, true), (61, false)] {
+        let click = timed(click_at(window(1280.0, 1000.0), row, pressed), frame);
+        run_room(&ctx, click, &snapshot, &mut state);
+    }
+    assert!(state.own_open.contains(&1));
+    let (_, open) = settled_room_from(62, &ctx, (1280.0, 1000.0), &snapshot, &mut state);
+    assert!(!text_rects(&open, "Quality & encoding").is_empty());
 }
 
 #[test]
@@ -1443,14 +1667,21 @@ fn the_tone_of_a_control_eases_rather_than_cutting() {
     for frame in 0..30 {
         fill_at(frame, theme::Tone::Primary);
     }
-    assert_eq!(fill_at(30, theme::Tone::Primary), Some(theme::ACCENT));
+    assert_eq!(fill_at(30, theme::Tone::Primary), Some(theme::accent()));
     let next = fill_at(31, theme::Tone::Neutral).expect("a surface");
-    assert_ne!(next, theme::RAISED, "cut straight to the new tone");
-    assert_ne!(next, theme::ACCENT, "did not start moving");
+    assert_ne!(
+        next,
+        egui::Color32::TRANSPARENT,
+        "cut straight to the new tone"
+    );
+    assert_ne!(next, theme::accent(), "did not start moving");
     for frame in 32..90 {
         fill_at(frame, theme::Tone::Neutral);
     }
-    assert_eq!(fill_at(90, theme::Tone::Neutral), Some(theme::RAISED));
+    assert_eq!(
+        fill_at(90, theme::Tone::Neutral),
+        Some(egui::Color32::TRANSPARENT)
+    );
 }
 
 #[test]
@@ -1511,6 +1742,7 @@ fn each_quality_is_ticked_on_its_own_row_with_its_bitrate_in_plain_units() {
     let on = live.presets[0].preset.name.clone();
     let bitrate = brp_app::ui::own_lives::bitrate(u64::from(live.presets[0].preset.bitrate_kbps));
     let mut state = brp_app::ui::state::UiState::new();
+    state.own_open.insert(live.info.id);
     state.quality_open.insert(live.info.id);
     let (_, shapes) = settled_room(&ctx, (1440.0, 1000.0), &snapshot, &mut state);
     let (tick, cost) = (text_rect(&shapes, &on), text_rect(&shapes, &bitrate));

@@ -258,12 +258,12 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                                                 egui::Label::new(
                                                     egui::RichText::new(format!("{percent}%"))
                                                         .small()
-                                                        .color(theme::SECONDARY),
+                                                        .color(theme::secondary()),
                                                 ),
                                             );
                                             // The thumb is sized from the row's height otherwise.
                                             ui.spacing_mut().interact_size.y = 18.0;
-                                            ui.visuals_mut().selection.bg_fill = theme::ACCENT;
+                                            ui.visuals_mut().selection.bg_fill = theme::accent();
                                             ui.add(
                                                 egui::Slider::new(&mut percent, 0..=FULL_VOLUME)
                                                     .show_value(false),
@@ -285,7 +285,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
             if picker.too_many_for_volumes() {
                 ui.add_space(8.0);
                 ui.colored_label(
-                    theme::WARNING,
+                    theme::warning(),
                     format!(
                         "Only {MAX_SEPARATE_APPLICATIONS} applications can have their own volume \
                          at once. The rest stay at full."

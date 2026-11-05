@@ -3,25 +3,6 @@
 Work that is planned but not started. [DESIGN.md](../DESIGN.md) describes what the interface does
 today. Sizes are rough: small is a change to one area, large crosses crates.
 
-## Reduced motion
-
-Honour the operating system's setting. This is the one accessibility gap in the motion system, and
-it was deferred rather than rejected.
-
-- **Why:** `DESIGN.md` keeps travel to a few points everywhere because egui exposes no signal. That
-  limits the problem without solving it for someone who needs motion gone.
-- **How:** reuse `crates/app/src/reduced_motion.rs`, which only the start wall uses so far. It reads
-  `SPI_GETCLIENTAREAANIMATION` on Windows. On Linux it reads the desktop portal's
-  `org.freedesktop.appearance reduced-motion`, then `org.gnome.desktop.interface enable-animations`.
-  It reads once per launch. KDE's portal returns both keys, but whether KDE's animation setting
-  changes them is untested; if it does not, add `org.kde.kdeglobals.KDE AnimationDurationFactor`.
-- **Where:** every spring goes through `drive` in `crates/app/src/ui/motion.rs`, so there is one place
-  to apply it. `flowing_rect` would return its target and `rise` would return nothing, while opacity
-  changes stay, because reduced motion means gentler rather than none.
-- **Size:** small.
-- **Done when:** with the setting on, a tile and a dialog arrive by fading with no travel, and a test
-  holds it through a stubbed signal. Check on Windows and on a Linux desktop.
-
 ## Spotlight
 
 Double-click a tile to give it the main area, with the other tiles in a strip beside it.
