@@ -149,6 +149,7 @@ fn encode_loop(
 ) {
     let mut assembler = FrameAssembler::default();
     let mut assembling = 0;
+    let mut encoded = 0;
     // A codec that starts failing usually keeps failing, fifty times a second.
     let mut warned = false;
     // Five packet durations (100 ms): long enough not to spin on an idle line, short enough that
@@ -168,7 +169,12 @@ fn encode_loop(
             assembling = generation;
         }
         for frame in assembler.push(chunk) {
+            // libopus's 6.5 ms lookahead puts the end of the replaced capture into the first
+            // packet after a swap. The viewer's jitter buffer plays that slot as silence.
+            let carries_replaced = encoded != 0 && encoded != generation;
+            encoded = generation;
             match encoder.encode(&frame) {
+                Ok(_) if carries_replaced => {}
                 Ok(packets) => {
                     for packet in packets {
                         inner.stats.packets_encoded.fetch_add(1, Ordering::Relaxed);
@@ -261,6 +267,19 @@ mod tests {
         publisher.stop();
     }
 
+    fn next_packet(rx: &mut Receiver<Arc<EncodedFrame>>) -> Arc<EncodedFrame> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match rx.try_recv() {
+                Ok(packet) => return packet,
+                Err(_) => {
+                    assert!(std::time::Instant::now() < deadline, "nothing was encoded");
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_replaced_capture_leaves_nothing_in_the_frames_after_it() {
         let publisher =
@@ -271,20 +290,27 @@ mod tests {
         let mut selected = publisher.sink();
         selected(chunk(AudioFrame::FRAME_LEN, 50_000, 0.5));
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let first = loop {
-            match rx.try_recv() {
-                Ok(packet) => break packet,
-                Err(_) => {
-                    assert!(std::time::Instant::now() < deadline, "nothing was encoded");
-                    thread::sleep(Duration::from_millis(5));
-                }
-            }
-        };
         assert_eq!(
-            first.capture_ts_us, 50_000,
+            next_packet(&mut rx).capture_ts_us,
+            50_000,
             "the first frame began with the replaced capture's samples"
         );
+        publisher.stop();
+    }
+
+    #[test]
+    fn the_first_packet_after_a_swap_is_dropped_for_the_encoder_lookahead_it_carries() {
+        let publisher =
+            AudioPublisher::start(Box::new(brp_codec::fake::FakeAudioEncoder::default()));
+        let mut rx = publisher.subscribe();
+        let mut deselected = publisher.sink();
+        deselected(chunk(AudioFrame::FRAME_LEN, 1_000, 1.0));
+        assert_eq!(next_packet(&mut rx).capture_ts_us, 1_000);
+
+        let mut selected = publisher.sink();
+        selected(chunk(AudioFrame::FRAME_LEN, 50_000, 0.5));
+        selected(chunk(AudioFrame::FRAME_LEN, 70_000, 0.5));
+        assert_eq!(next_packet(&mut rx).capture_ts_us, 70_000);
         publisher.stop();
     }
 
