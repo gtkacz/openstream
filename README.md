@@ -134,7 +134,8 @@ carrying a publisher's audio shows a volume slider and mute, mirrored next to
 that member in the room rail, and the dock has a "Mute all" for
 every publisher at once. On Linux, capture links to the selected applications'
 PipeWire output, always excluding OpenStream's own. On Windows, the default remains
-one WASAPI process-loopback client in exclude mode; a selection enumerates
+one WASAPI process-loopback client in exclude mode, which pauses while another
+OpenStream window has a room open, because it would be heard; a selection enumerates
 audio sessions and opens one include-tree client per selected application root,
 mixed into the same publisher stream. Windows can only include a process together
 with everything it started, so an application whose tree holds another application's

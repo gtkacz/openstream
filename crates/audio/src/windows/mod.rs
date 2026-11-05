@@ -26,6 +26,7 @@ use crate::process_tree::held_back_notice;
 use crate::selection::{AppKey, AudioSelection, AudioSource, SendVolumeSupport, SendVolumes};
 
 const EVENT_TIMEOUT_MS: u32 = 1000;
+const OTHER_WINDOW_NOTICE: &str = "Not sharing audio: the room would hear your other OpenStream window. Choose applications to share instead.";
 
 pub struct ProcessLoopbackCapture {
     process_id: u32,
@@ -45,13 +46,23 @@ impl ProcessLoopbackCapture {
         let error = Arc::new(Mutex::new(None));
         let (ready_tx, ready_rx) = mpsc::channel();
         let (flag, error_slot, process_id) = (stop.clone(), error.clone(), self.process_id);
+        let notice = Arc::new(Mutex::new(None));
+        // Held until the watcher's first look, so nothing is sent before it is known to be safe.
+        let held = Arc::new(AtomicBool::new(true));
+        let (watch_held, watch_notice, watch_stop) = (held.clone(), notice.clone(), stop.clone());
+        let mut sink = sink;
+        let gated: AudioSink = Box::new(move |chunk| {
+            if !held.load(Ordering::Relaxed) {
+                sink(chunk);
+            }
+        });
         let thread = thread::Builder::new()
             .name("brp-audio-wasapi".into())
             .spawn(move || {
                 if let Err(capture_error) = run_client(ClientRequest {
                     process_id,
                     include_tree: false,
-                    sink,
+                    sink: gated,
                     stop: flag,
                     ready: ready_tx.clone(),
                 }) {
@@ -63,7 +74,20 @@ impl ProcessLoopbackCapture {
             .map_err(|error| {
                 AudioError::Windows(format!("failed to spawn the WASAPI thread: {error}"))
             })?;
-        finish_start(stop, error, Arc::default(), vec![thread], ready_rx)
+        let watcher = thread::Builder::new()
+            .name("brp-audio-wasapi-windows".into())
+            .spawn(move || watch_other_windows(process_id, watch_held, watch_notice, watch_stop));
+        let watcher = match watcher {
+            Ok(watcher) => watcher,
+            Err(spawn_error) => {
+                stop.store(true, Ordering::Relaxed);
+                let _ = thread.join();
+                return Err(AudioError::Windows(format!(
+                    "failed to spawn the window watcher: {spawn_error}"
+                )));
+            }
+        };
+        finish_start(stop, error, notice, vec![thread, watcher], ready_rx)
     }
 
     fn start_selected(
@@ -184,6 +208,42 @@ fn finish_start(
         let _ = thread.join();
     }
     Err(failure)
+}
+
+/// Holds "all applications" capture back while another OpenStream window has an audio session, since
+/// that window is outside the one process tree exclude mode can leave out.
+///
+/// shortcut: a window that starts playing is heard until the next poll notices it, up to
+/// `AUDIO_SESSION_POLL_INTERVAL`. Exclude mode offers no way to leave out a second tree.
+fn watch_other_windows(
+    process_id: u32,
+    held: Arc<AtomicBool>,
+    notice: Arc<Mutex<Option<String>>>,
+    stop: Arc<AtomicBool>,
+) {
+    if let Err(error) = initialize_mta().ok() {
+        tracing::warn!(%error, "could not watch for other OpenStream windows");
+        held.store(false, Ordering::Relaxed);
+        return;
+    }
+    let mut warned = false;
+    while !stop.load(Ordering::Relaxed) {
+        match sessions::another_window_audible(process_id) {
+            Ok(another) => {
+                held.store(another, Ordering::Relaxed);
+                *lock(&notice) = another.then(|| OTHER_WINDOW_NOTICE.to_string());
+            }
+            // Almost nobody has a second window, so a listing that fails must not silence everyone.
+            Err(error) => {
+                if !warned {
+                    tracing::warn!(%error, "could not look for other OpenStream windows");
+                    warned = true;
+                }
+                held.store(false, Ordering::Relaxed);
+            }
+        }
+        thread::sleep(AUDIO_SESSION_POLL_INTERVAL);
+    }
 }
 
 fn watch_selected(
