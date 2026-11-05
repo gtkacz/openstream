@@ -1215,7 +1215,8 @@ fn the_start_form_is_centred_in_the_body() {
     let join_label = text_rect(&shapes, "Join room");
     // The Join button is 40 tall around its label, so its bottom edge is 20 below the label's centre.
     let form = (title.top() + join_label.center().y + 20.0) / 2.0;
-    let body = (24.0 + 36.0 + 8.0 + 800.0 - 24.0) / 2.0;
+    // Below the panel's margin, the gap above the header, its 32-point row, and the row's spacing.
+    let body = (24.0 + 12.0 + 32.0 + 8.0 + 800.0 - 24.0) / 2.0;
     // A little loose: the headline's line box stands a little taller than its letters.
     assert!(
         (form - body).abs() <= 2.0,
@@ -1239,6 +1240,35 @@ fn the_start_screen_shares_one_column_on_a_very_wide_window() {
         (title.left() - 680.0).abs() <= 1.0,
         "form starts at {}",
         title.left()
+    );
+}
+
+#[test]
+fn on_a_very_wide_window_the_icons_reach_its_corner_on_the_row_of_the_logo() {
+    use brp_app::ui::theme::icons;
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut state = start::StartState::new("Alex".into());
+    let mut output = ctx.run_ui(window(2560.0, 1440.0), |ui| {
+        start::draw(ui, &mut state, &[], 0, &UpdateState::new(false));
+    });
+    let shapes = std::mem::take(&mut output.shapes);
+    output.textures_delta.clear();
+    // The panel's margin is 24, so the 32-point Settings button ends at 2536.
+    let settings = text_rect(&shapes, icons::SETTINGS);
+    assert!(
+        settings.left() >= 2504.0 && settings.right() <= 2536.0,
+        "{settings:?}"
+    );
+    let logo = text_rect(&shapes, "OpenStream");
+    assert!(
+        logo.left() > 680.0 && logo.left() < 730.0,
+        "the logo stays above the form: {logo:?}"
+    );
+    assert!(logo.top() >= 36.0, "room above the logo: {logo:?}");
+    assert!(
+        (logo.center().y - settings.center().y).abs() <= 2.0,
+        "one row: {logo:?} and {settings:?}"
     );
 }
 

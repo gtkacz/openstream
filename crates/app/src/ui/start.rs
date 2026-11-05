@@ -137,9 +137,11 @@ pub fn abbreviate_ticket(ticket: &str) -> String {
 const WALL_MIN_WINDOW_WIDTH: f32 = 960.0;
 const FORM_WIDTH: f32 = 380.0;
 const COLUMN_GAP: f32 = 64.0;
-/// The brand, the form and the settings button all share this column, so on a very wide
-/// window they stay on two common edges instead of drifting to the corners of the screen.
+/// The brand and the form share this column, so on a very wide window they stay on one common
+/// edge instead of drifting to the corner of the screen. The window's own buttons do sit at its.
 const CONTENT_WIDTH: f32 = 1200.0;
+/// Room above the logo and the window's buttons, past the panel's margin.
+const HEADER_TOP_GAP: f32 = 12.0;
 
 /// Draws the start screen and returns the button clicked, if any. Clicking a recent room fills
 /// the ticket field and joins it.
@@ -180,13 +182,23 @@ pub fn draw(
             if with_wall {
                 wall::draw(ui, wall_area(window, column));
             }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(space), |ui| {
+                ui.add_space(HEADER_TOP_GAP);
+                theme::split_row(
+                    ui,
+                    theme::CONTROL_HEIGHT,
+                    |_| {},
+                    |ui| {
+                        if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
+                            action = Some(StartAction::OpenSettings);
+                        }
+                        theme::fullscreen_button(ui);
+                    },
+                );
+            });
             ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
-                theme::split_row(ui, theme::CONTROL_HEIGHT, theme::brand, |ui| {
-                    if theme::icon_button(ui, icons::SETTINGS, "Settings", true).clicked() {
-                        action = Some(StartAction::OpenSettings);
-                    }
-                    theme::fullscreen_button(ui);
-                });
+                ui.add_space(HEADER_TOP_GAP);
+                theme::split_row(ui, theme::CONTROL_HEIGHT, theme::brand, |_| {});
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let width = ui.available_width().min(FORM_WIDTH);
                     let inset = if with_wall {
@@ -490,8 +502,8 @@ mod tests {
             raw.events = events;
             raw
         };
-        // The 1200-point column ends at 1320, and the 36-point button sits at its top right.
-        let on_settings = egui::pos2(1302.0, 42.0);
+        // The panel's margin ends at 1416, and the 32-point button sits at its top right, 12 down.
+        let on_settings = egui::pos2(1400.0, 52.0);
         let on_the_wall = egui::pos2(1000.0, 450.0);
         for _ in 0..3 {
             run(

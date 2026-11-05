@@ -68,10 +68,10 @@ Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/ico
 - **Window.** The main window opens fullscreen, which hides its title bar, so the start screen and the
   dock each carry a button beside Settings that leaves it, and F11 does the same. Esc does not, because
   in this window it already closes dialogs and declines invites.
-- **Start.** The brand, the form, and the Settings button share one column of at most 1200 points, so
-  they stay on two common edges on a wide window. At 960 points and wider, a wall of stills runs from
-  the form's gap to the window's top, right, and bottom edges, passing under Settings, over a horizon
-  of light along the foot of the window.
+- **Start.** The brand and the form share one column of at most 1200 points, so they stay on one common
+  edge on a wide window, while Settings and the fullscreen button sit at the window's top right. At 960
+  points and wider, a wall of stills runs from the form's gap to the window's top, right, and bottom
+  edges, passing under those buttons, over a horizon of light along the foot of the window.
 - **Invite.** A link that names a room replaces the form with one question, in the same place: the
   name the room would see, Join as the main action with the keyboard on it, and Not now, which leads back
   to the full form. It asks rather than saying "You're invited" because a stranger's web page can
