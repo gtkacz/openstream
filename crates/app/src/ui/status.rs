@@ -31,15 +31,16 @@ pub fn draw(
     let height = ui
         .ctx()
         .data(|data| data.get_temp::<f32>(height_id))
-        .unwrap_or(theme::CONTROL_HEIGHT + 21.0);
+        .unwrap_or(theme::CONTROL_HEIGHT + 25.0);
     egui::Panel::bottom("status")
         .exact_size(height)
         .frame(
             egui::Frame::NONE
-                .fill(theme::GROUND)
-                .inner_margin(egui::Margin::symmetric(12, 10)),
+                .fill(theme::ground())
+                .inner_margin(egui::Margin::symmetric(12, 12)),
         )
         .show(ui, |ui| {
+            theme::paint_material(ui, ui.max_rect().expand2(egui::vec2(12.0, 12.0)));
             let content = ui.scope(|ui| {
                 notices(ui, snapshot, state, update_state, update_clicked);
                 if compact {
@@ -48,7 +49,7 @@ pub fn draw(
                     wide_row(ui, snapshot, state, commands, open_settings);
                 }
             });
-            let needed = content.response.rect.height() + 21.0;
+            let needed = content.response.rect.height() + 25.0;
             if (needed - height).abs() > 0.5 {
                 ui.ctx()
                     .data_mut(|data| data.insert_temp(height_id, needed));
@@ -86,7 +87,7 @@ fn compact_row(
 
 /// What the dock can afford to say at this width. It sheds words rather than taking a second row,
 /// because that height would come out of the video. The least useful go first, and the main action's
-/// label last. The widths are the controls measured in IBM Plex Sans, with Stop sharing showing.
+/// label last. The widths are the controls measured in IBM Plex Mono, with Stop sharing showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DockFit {
     audio_status: bool,
@@ -99,11 +100,11 @@ struct DockFit {
 impl DockFit {
     fn for_width(width: f32) -> Self {
         Self {
-            audio_status: width >= 1050.0,
-            tools_labelled: width >= 890.0,
-            audio_labelled: width >= 700.0,
-            upload: width >= 580.0,
-            share_labelled: width >= 470.0,
+            audio_status: width >= 1240.0,
+            tools_labelled: width >= 900.0,
+            audio_labelled: width >= 720.0,
+            upload: width >= 600.0,
+            share_labelled: width >= 480.0,
         }
     }
 }
@@ -188,13 +189,13 @@ fn notices(
                 *update_clicked = true;
             }
             if let Some(error) = &snapshot.audio_output_error {
-                ui.colored_label(theme::ERROR, format!("No audio output: {error}"));
+                ui.colored_label(theme::error(), format!("No audio output: {error}"));
             }
             if let Some(error) = audio_error {
-                ui.colored_label(theme::ERROR, format!("Audio failed: {error}"));
+                ui.colored_label(theme::error(), format!("Audio failed: {error}"));
             }
             if let Some(notice) = audio_limit {
-                ui.colored_label(theme::WARNING, notice);
+                ui.colored_label(theme::warning(), notice);
             }
         });
         ui.add_space(4.0);
@@ -221,9 +222,11 @@ fn master_mute(
 
 fn upload(ui: &mut egui::Ui, state: &UiState) {
     ui.spacing_mut().item_spacing.x = 4.0;
-    ui.label(theme::figure(own_lives::bitrate(state.upload_kbps)))
-        .on_hover_text("What you are sending to the room");
-    ui.label(theme::icon(icons::UPLOAD).color(theme::SECONDARY));
+    ui.label(theme::figure(format!(
+        "↑ {}",
+        own_lives::bitrate(state.upload_kbps)
+    )))
+    .on_hover_text("What you are sending to the room");
 }
 
 /// Clicking the open sheet's button closes it; clicking the other's switches straight to it.

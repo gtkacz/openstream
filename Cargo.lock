@@ -486,6 +486,7 @@ dependencies = [
 name = "brp"
 version = "1.5.0"
 dependencies = [
+ "ab_glyph",
  "ashpd",
  "brp-audio",
  "brp-capture",

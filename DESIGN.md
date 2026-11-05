@@ -6,87 +6,112 @@ URL schemes, wire protocols, and release machinery.
 
 ## Direction
 
-A control room under deep water: exact, calm, quick. Live video is the richest thing on screen, so
-tiles sit on a black canvas and everything else stays in dark sea tones. The one hue is sky blue
-(`#5CC8FF`): it marks a live signal, the primary action, and whatever is switched on or focused.
-Amber and red mean warnings and errors. No glows, glass, or decorative gradients, with one exception:
-the start wall dissolves toward the form, because a hard edge beside the form reads as a mistake.
+A terminal for a network: amber phosphor on a character grid, with the connections between people
+drawn as a live circuit. It comes from the CRT, the oscilloscope, and retro-futurist control rooms,
+and from the way VPN and blockchain software show links rather than hide them.
 
-Every window is one ground (`#0A1017`) with tone steps for depth, and lines only between the rail,
-the dock, and the canvas. Spacing sits on a 4-point grid. Main controls are 36 points tall, with
-8-point corners; cards and tiles have 12, dialogs 16, chips 6. An icon button is square. Text has
-primary, secondary, and muted roles, all at 4.5:1 or better where they are used. Long names truncate
-with a tooltip, never displacing actions.
+Four rules keep that from becoming costume:
+
+- **The tube stops at the tile's edge.** Live video stays pixel exact. Nothing analog touches it, with
+  one exception below.
+- **Analog artefacts mean something went wrong.** A picture reduces to characters only when its
+  signal is really gone.
+- **Anything that looks like data is data.** Delay, paths, packets, and the traffic strip are all
+  measured. The room map has no geography, because that would mean locating people by IP address,
+  and it is a star around you, because your own links are the only ones you can know.
+- **Things you touch stay on springs; things the network does tick.** Hover and press ease
+  continuously. Packets and traffic step at about 12 frames a second.
+
+Colour comes from the phosphor, chosen in Settings: amber by default, green, or white. A palette holds
+a ground, three surface steps, a rule, a wire, and three text roles, all tints of the phosphor, and
+everything in the interface reads through it, so a change applies at once. The one colour that does
+not change is the alarm, `#FF2D78`, because an alarm must read the same on every tube. It marks lost
+signal and failures and nothing else.
+
+Every window is one ground with tone steps for depth, under static scanlines and grain that sit below
+the text so it keeps its edges. Corners are square. Spacing sits on a 4-point grid, and the type sits
+on a character grid of 8 by 16 points. Main controls are 32 points tall and the start form's are 40.
+Text has primary, secondary, and muted roles, all at 4.5:1 or better where they are used. Long names
+truncate with a tooltip, never displacing actions.
+
+Controls are bracketed labels, `[ Copy link ]`, in reverse video on hover and press. The one main
+action on a screen is a solid block. A bar that frames its controls already, like a tile's toolbar,
+drops the brackets. Marks are characters too: `[x]` for a check and `(*)` for a radio. A field's caret
+is a blinking block over the next character, in reverse video.
 
 ## Type
 
-[IBM Plex Sans](https://github.com/IBM/plex) everywhere: engineered without being themed, with an
-unambiguous `&`, `(`, `1`, `l`, and `I`. Regular for text, Medium for controls and labels, SemiBold
-for titles, embedded in the binary so nothing is fetched. Non-Latin nicknames fall back to egui's
-bundled faces where Plex has no glyph.
+[IBM Plex Mono](https://github.com/IBM/plex) everywhere: Regular for text, Medium for controls and
+labels, SemiBold for titles, embedded in the binary so nothing is fetched. At 14 points with the
+tweak in `theme.rs`, one character is exactly 8 points wide, which lands on whole pixels at 1×, 1.25×,
+1.5×, and 2×. Figures hold still because every character shares that width. Non-Latin nicknames fall
+back to egui's bundled faces where Plex has no glyph.
 
-Plex was chosen over the more usual Inter because egui cannot switch on OpenType features, so
-tabular figures have to be a font's default. Every Plex digit is 600 units wide, which lets a figure
-that changes while it is watched (upload, encoder counters, the stats readout) hold still in the
-interface's own face. A test holds this.
+Icons are a [Lucide](https://lucide.dev) subset, used only where a label will not fit, in the colour
+of their text role. An icon with no visible label names itself in a tooltip and to screen readers.
 
-A monospace UI would read as a terminal, and would not align anything: alignment here is about
-where boxes sit, not how wide letters are, and labels would run about a quarter wider, which pushes
-the rail and dock out of their widths. The bundled Hack appears only for room tickets, where the
-characters are the data.
-
-Icons are a [Lucide](https://lucide.dev) subset, one stroke, in the colour of their text role. An
-icon with no visible label names itself in a tooltip and to screen readers.
+Each person is known by a glyph: a 7 by 7 mirrored pattern drawn from their key, so it is theirs
+across rooms and in everyone else's window, with no colour of its own.
 
 ## App icon
 
 A CRT drawn in scanlines: thirteen rows make a disc, the O, and the rows left unlit make the S, whose
 curve is a 1:3 oscilloscope figure. The mark is one compound shape in one colour, so it holds as a
 silhouette. The scanlines blur together at favicon size, so there the disc fills in and keeps only
-the S. Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/icon/README.md).
+the S. Inside the app the mark takes the phosphor's colour. The desktop icon keeps its own colours.
+Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/icon/README.md).
 
 ## Layout
 
 - **Start.** The brand, the form, and the Settings button share one column of at most 1200 points, so
-  they stay on two common edges on a wide window. At 960 points and wider, a wall of still frames
-  runs from the form's gap to the window's top, right, and bottom edges, passing under Settings.
+  they stay on two common edges on a wide window. At 960 points and wider, a wall of stills runs from
+  the form's gap to the window's top, right, and bottom edges, passing under Settings, over a horizon
+  of light along the foot of the window.
 - **Invite.** A link that names a room replaces the form with one question, in the same place: the
   name the room would see, Join as the accent with the keyboard on it, and Not now, which leads back
   to the full form. It asks rather than saying "You're invited" because a stranger's web page can
   send someone here too.
-- **Room.** The rail lists everyone, you first, with the streams they offer; your own streams carry
-  their controls there, in the same shape as everyone else's. The dock holds what you do to the
-  room: share, audio, upload, mute, Settings. Sharing no longer costs the video any height.
-- **Dock.** Always one row, because a second would come out of the video. As the width falls it
-  sheds words instead: the audio status first, then the tools' labels, the audio labels, the upload
-  figure, and the main action's label last. Accent says what to do next: Share monitor carries it
-  only while you are not sharing and someone else is, and the canvas's own Share button carries it
-  while nobody is. The audio switch and its application chooser are one control on one surface.
+- **Rail.** The rail is a circuit with you at its root. Your streams branch off first, and everyone
+  else in the room branches below, each with what they offer. A wire shows how someone reaches you:
+  solid for direct, a node in the middle for relayed, dashes while the path is unknown, red dashes
+  once the signal is lost. Packets travel along it only when something is really flowing, closer
+  together the more there is, so a quiet link stays lit and still. A person's row gives their delay;
+  a stream's row gives its rate, its quality, and a `[ ]` to watch it, and once watched a traffic
+  strip of what really arrived, where a tall bright bar is a keyframe and a gap is a moment with no
+  frames at all. Your own stream unfolds its controls from its row, and a failure opens it by itself.
+  Below all this a ledger keeps the room's last few events on a mission clock counted from when the
+  room opened.
+- **Dock.** It holds what you do to the room: share, audio, upload, mute, Settings. Always one row,
+  because a second would come out of the video. As the width falls it sheds words instead: the audio
+  status first, then the tools' labels, the audio labels, the upload figure, and the main action's
+  label last. Accent says what to do next: Share monitor carries it only while you are not sharing
+  and someone else is, and the canvas's own Share button carries it while nobody is. The audio switch
+  and its application chooser are one control on one surface.
 - **Tiles.** A tile is the shape of its picture, known from the stream's preset before its first
-  frame, so its corners, name chip, and controls sit on the video rather than around a letterbox. All
-  tiles share one height, one 8-point gap apart. The column count is whichever shows the most
-  picture in the area, so two wide streams stack in a normal window and sit side by side in a short
-  wide one; the current count is kept while it stays within 10% of the best, so a window resized near
-  a tie does not flip the layout. The block sits centred, and so does a last row that is not full. A
-  name chip stays on every grid tile so screens can be told apart. A tile with no picture yet carries
-  a wash, so it reads as a tile rather than words adrift on the canvas. Controls rise from the bottom
-  edge on hover or Tab, hug their content, and lose their labels below 640 points of tile width. In a
-  pop-out the window is whatever shape it was dragged to, so the picture still letterboxes there, and
-  the chip leaves with the controls.
-- **Empty canvas.** It holds whatever gets something onto it, at the place the video will appear.
-  Alone in a room: the invite link and Share. With others and no streams: Share. With streams on
-  offer: one target per stream, which starts it with a click.
+  frame, so its name chip and controls sit on the video rather than around a letterbox. All tiles
+  share one height, one 8-point gap apart. The column count is whichever shows the most picture in the
+  area, so two wide streams stack in a normal window and sit side by side in a short wide one; the
+  current count is kept while it stays within 10% of the best, so a window resized near a tie does not
+  flip the layout. The block sits centred, and so does a last row that is not full. A name chip stays
+  on every grid tile so screens can be told apart, with the path and delay beside the name. Controls
+  rise from the bottom edge on hover or Tab, hug their content, and lose their labels below 430 points
+  of tile width. In a pop-out the window is whatever shape it was dragged to, so the picture still
+  letterboxes there, and the chip leaves with the controls.
+- **Room map.** With others in the room and nothing on screen, the canvas is a map of the room: you at
+  the centre and everyone else as far away as their round trip is long, on a logarithmic scale with
+  rings at 10, 50, and 200 ms. Each person's label carries what they offer as one-click buttons. A
+  ring flares when a heartbeat really arrives, and someone dims as their last one ages. Below 640 by
+  440 points, or above 8 people, it could not be read, and the canvas lists the streams instead.
+- **Empty canvas.** Alone in a room: the invite link and Share, on a black backing that keeps them
+  legible over the light.
 - **Dialogs.** Settings has two columns, labels on one edge and controls on another, stacking below
   400 points. Actions end on the content's right edge with the main one last.
 - **Compact, below 800 points.** The rail folds away. The dock opens a Room or Share sheet that
   slides up over the bottom of the video, which keeps playing above it. A sheet is only as tall as
   what it holds, up to 60% of the window, past which it scrolls.
-- **Signature.** A small line between two nodes says how a person's video reaches you: straight for
-  direct, a node in the middle for relayed, dashes while the path is unknown. The rail and a tile
-  waiting for its video draw it with one function.
-- **Start wall.** Frames of the things people share, tilted in perspective, say what the product is
-  for. It is atmosphere rather than a control, so clicking a tile does nothing. The stills are embedded
-  and are not covered by the MIT licence: see [crates/app/assets/stills](crates/app/assets/stills/README.md).
+- **Start wall.** Frames of the things people share say what the product is for, drawn as 1-bit dots
+  in the phosphor's colour. It is atmosphere rather than a control. The stills are embedded and are
+  not covered by the MIT licence: see [crates/app/assets/stills](crates/app/assets/stills/README.md).
 
 ## Alignment
 
@@ -95,22 +120,21 @@ row's top rather than its centre. Almost every misalignment this interface has h
 alignment is done by construction and held by tests in `crates/app/tests/ui_flow.rs`:
 
 - A row is sized before its contents are placed, with `theme::split_row`. Controls in a row share one
-  height, 36 points.
-- Two lines beside something, such as a name and its detail beside an avatar, are measured and painted
-  at computed positions. Centring something of unknown height, like the start form, uses the height
-  measured last pass and asks for another pass when it changes, so no misplaced frame reaches the
-  screen.
+  height, 32 points.
+- Rows in the rail are measured and painted at computed positions. Centring something of unknown
+  height, like the start form, uses the height measured last pass and asks for another pass when it
+  changes, so no misplaced frame reaches the screen.
 - A label's capitals and an icon beside it stay within a point of each other and of the middle of the
   button, at 1×, 1.25×, 1.5×, and 2×. The font's offset is calibrated on rendered pixels, because the
   metrics leave out rounding.
 - Anything that must wrap avoids `ui.scope` and `add_enabled_ui`: a child scope cannot wrap in its
   parent's row. That rules out `theme::tactile` in a wrapped row, which is why the Share sheet stacks.
 - Groups end on shared edges: the invite buttons split the rail's width equally, ending where the
-  cards below end, and everything in a card starts on its one left edge.
+  rows below end, and a row's figures all end on the rail's inner edge.
 
 ## Motion
 
-Everything animated is a critically damped spring (`crates/app/src/ui/motion.rs`). New input only
+Everything you touch is a critically damped spring (`crates/app/src/ui/motion.rs`). New input only
 moves a spring's target, so motion continues from the value on screen at its current velocity, and
 anything can be reversed mid-flight without a jump. Nothing overshoots, because nothing here is
 thrown. No input is ever locked out for an animation to finish.
@@ -122,43 +146,62 @@ thrown. No input is ever locked out for an animation to finish.
 - **Tiles.** When the grid changes, tiles and their video flow to their new places in about 360 ms,
   with X and Y independent. A tile is its target plus an offset that decays to nothing, and only a
   change of place adds to the offset, so resizing the window or dragging the rail stays 1:1 with no
-  lag whatever shape the tile keeps. A tile asked for from a card grows out of that card. A closed
-  tile darkens to the canvas and shrinks where it stood, in the video shader rather than under a wash,
-  which would also darken a neighbour moving into its space.
+  lag whatever shape the tile keeps.
+- **The tube.** A tile warms up where it stands: the picture opens from a bright line as its stream
+  connects. A closed tile collapses back to that line and then to nothing, in the video shader, so
+  nothing washes over a neighbour moving into its space.
+- **Lost signal.** Four seconds of silence on the connection and the picture starts reducing to
+  characters, cell by cell, losing its colour first; the picture's own brightness picks each
+  character, and a white page inverts rather than becoming a block. It reads `No signal` in the alarm
+  colour with how long it has been. At twelve seconds the connection is given up on and it says it is
+  reconnecting, which leaves room for a Wi-Fi reconnect or a cellular handoff to come back on the same
+  connection. A signal that comes back returns the picture at once, and someone gone for about 20
+  seconds has left the room and the tile goes with them.
 - **Surfaces.** Tile controls rise from the bottom edge and sink back the same way. Compact sheets
   grow from the dock, with the video tracking their edge. Dialogs rise 12 points over a deepening
   scrim and leave the way they came, without blocking the room while they go. A click on the backdrop
   does not dismiss them, because they hold drafts; Esc and the close button do.
-- **Between states.** Screens dissolve into each other. Stream cards grow into the rail while what is
-  below makes room, and quality details unfold and fold from wherever they have got to. The dock's
-  notice line opens and shuts the same way, so the video gives up that height smoothly. The Connecting
-  wash fades off the picture as video arrives, still saying what it last said. Join and Create cross-fade their surfaces. Stop sharing is always in the dock, so
-  starting a stream shoves nothing sideways.
+- **Between states.** Screens dissolve into each other. Rows grow into the rail while what is below
+  makes room, and quality details unfold and fold from wherever they have got to. The dock's notice
+  line opens and shuts the same way, so the video gives up that height smoothly. The Connecting wash
+  fades off the picture as video arrives, still saying what it last said. Stop sharing is always in
+  the dock, so starting a stream shoves nothing sideways.
 - **The connection line.** A path that resolves is watched doing it: the dashes close into a line and
-  a relay's node grows out of it. A tile waiting for video shows the same line with a pulse crossing
-  it from the publisher, blue while connecting and amber while reconnecting.
-- **The start wall.** Columns drift at their own speeds in alternating directions. Hovering a tile
-  lifts and brightens it and pauses its column, and the wall leans slightly toward the pointer. Each
-  still fades in as it finishes loading, and all of them are released when a room opens.
+  a relay's node grows out of it.
+- **The light.** Behind the start screen and the room map, a soft field is drawn in characters from
+  the same ramp a lost picture uses (`crates/app/src/render/backdrop.rs`). It resolves out of noise
+  when it opens, its characters churn while it runs, and the pointer leaves a trail of scrambled cells
+  behind it, with a ring of them running out from a click. On the room map one sweep goes round as it
+  opens. It stays low on the start screen, behind a form, and runs hotter on the map, where it is the
+  picture. It never sits behind video.
+- **The chrome's glow.** The interface is drawn again at a quarter of the size, blurred, and screened
+  over the window, which gives text and lines a soft halo. Screened rather than added, because adding
+  pushes amber towards yellow.
+- **The start wall.** Columns drift at their own speeds in alternating directions. A still's dots come
+  on in steps as it loads. Hovering a tile pauses its column and burns through to the full picture
+  across most of the tile, with a bright rim at the edge of what is showing; once the pointer has gone
+  it knits back cell by cell, and a click sends heat running outward. All of it is released when a
+  room opens.
 - **At rest, nothing moves.** A settled spring asks for no frames, so an idle window sleeps. Pulses
-  and spinners run only while something is in flight, capped at 20 frames a second. The one standing
-  motion is the start wall, which drifts at about 60 frames a second, only while the window has
-  focus, and settles to a stop without it.
+  and spinners run only while something is in flight. The standing motion is the light at about 30
+  frames a second, the wall at about 60, and the circuit at about 12, only while the window has focus,
+  and each settles to a stop without it. A full frame with the light takes about 1.3 ms on a desktop
+  GPU and under 20 ms on a software renderer at 1080p.
 
-egui has no reduced-motion signal, so travel is kept to a few points everywhere except the start wall,
-which reads the operating system's setting itself and stays still when asked. Applying that setting
-to every other spring is on the [roadmap](docs/ROADMAP.md).
+The operating system's reduced-motion setting is read once per launch
+(`crates/app/src/reduced_motion.rs`) and honoured everywhere. Things that would travel arrive in place
+and fade instead, what is below a growing row jumps rather than slides, and the tube fades rather than
+collapses. Drift, churn, packets, the light's opening, and the caret's blink all hold still, and a
+still shows its picture whole while the pointer is on it. Standing motion waits for the answer, so
+nobody who asked for less sees a burst of it first.
 
 ## References
 
-- IBM Plex Sans and Lucide files, licences, and how to regenerate the subset:
+- IBM Plex Mono and Lucide files, licences, and how to regenerate the subset:
   [crates/app/assets/fonts](crates/app/assets/fonts/README.md).
-- Taste skill: True-black flat, seed 25039755, adapted to native egui. Its signature element here is
-  the connection path. Its pill buttons gave way to small radii, its neutral ground and accent-free
-  buttons gave way to the requested oceanic palette, and its Inter gave way to Plex for the digits.
-- [Awesome DESIGN.md](https://github.com/voltagent/awesome-design-md), particularly Raycast (dark
-  surface ladder, tight radii, the white primary) and Linear (near-black canvas, neutral chrome),
-  taken as measures rather than copied. Vercel's system is mostly light and fits less well here.
+- The light and the wall's reveal take their look from React Bits' Gradient ASCII and Dither Veil.
+  Both are written from scratch for this renderer, and need to stay that way: React Bits is MIT with a
+  Commons Clause, which forbids redistributing its components in ported form.
 - Apple's *Designing Fluid Interfaces* and Emil Kowalski's animation guidance: springs,
   interruptibility, symmetric paths, feedback on press. Velocity handoff and momentum projection
   are not used yet, because nothing here is thrown; the [roadmap](docs/ROADMAP.md)'s collapsible rail

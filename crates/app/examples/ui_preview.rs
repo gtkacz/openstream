@@ -2,8 +2,10 @@
 //! cargo run -p brp --example ui_preview -- /tmp/openstream start 1280 800
 //! A fifth argument captures that many 60 Hz frames in, to see motion part way through.
 //! A sixth sets the display scale; the width and height stay in physical pixels.
-//! Screens: start, recent, invite, focus, room, quality, menu, watching, grid, sheet, sharesheet, empty,
-//! settings, custom, picker, applications.
+//! Screens: start, recent, invite, focus, room, map, quality, menu, watching, grid, sheet, sharesheet,
+//! empty, settings, custom, picker, applications.
+//! `PREVIEW_POINTER=x,y` holds the pointer there, to see the start wall's reveal.
+//! `PREVIEW_LOST=0.5` reduces a tile to characters by that much, as a lost signal does.
 use std::{collections::HashSet, error::Error, io::Write};
 
 use brp_app::ui::{self, start::StartState, state::UiState, update::UpdateState};
@@ -92,6 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut click_at = None;
     if screen == "quality" {
+        state.own_open.insert(1);
         state.quality_open.insert(1);
     }
     let recent = if screen == "recent" {
@@ -104,9 +107,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     if matches!(
         screen,
-        "room" | "quality" | "menu" | "watching" | "grid" | "sheet" | "sharesheet"
+        "map" | "room" | "quality" | "menu" | "watching" | "grid" | "sheet" | "sharesheet"
     ) {
         snapshot.members.push(MemberView {
+            signal_lost: false,
             id: SecretKey::from_bytes(&[2; 32]).public(),
             nickname: "Morgan".into(),
             lives: vec![LiveInfo {
@@ -120,6 +124,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 presets: template_presets(2560, 1440, 60, Codec::Hevc),
             }],
             seen_ago_ms: 0,
+            rtt_ms: None,
+            watching_me: false,
             path: PathKind::Unknown,
             has_audio: false,
             audio_mix: Some(brp_proto::AudioMix::Only {
@@ -155,10 +161,45 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         snapshot.members.extend(others);
     }
+    if screen == "map" {
+        let template = snapshot.members[0].clone();
+        snapshot.members[0].path = PathKind::Direct;
+        snapshot.members[0].rtt_ms = Some(23);
+        snapshot.members[0].watching_me = true;
+        let mut rae = template.clone();
+        rae.id = SecretKey::from_bytes(&[4; 32]).public();
+        rae.nickname = "Rae".into();
+        rae.path = PathKind::Relayed;
+        rae.rtt_ms = Some(64);
+        rae.watching_me = true;
+        let mut blender = rae.lives[0].clone();
+        blender.id = 2;
+        blender.title = "Blender".into();
+        rae.lives.push(blender);
+        let mut sam = template.clone();
+        sam.id = SecretKey::from_bytes(&[3; 32]).public();
+        sam.nickname = "Sam".into();
+        sam.path = PathKind::Direct;
+        sam.rtt_ms = Some(41);
+        let mut jo = template.clone();
+        jo.id = SecretKey::from_bytes(&[5; 32]).public();
+        jo.nickname = "Jo".into();
+        jo.lives.clear();
+        snapshot.members.extend([rae, sam, jo]);
+    }
+    if screen == "grid" {
+        snapshot.members[0].path = PathKind::Direct;
+        snapshot.members[0].rtt_ms = Some(23);
+        snapshot.members[1].rtt_ms = Some(64);
+        snapshot.members[2].rtt_ms = Some(41);
+    }
     if screen == "quality" {
         snapshot.members[0].has_audio = true;
     }
-    if matches!(screen, "room" | "quality" | "menu" | "sheet" | "sharesheet") {
+    if matches!(
+        screen,
+        "map" | "room" | "quality" | "menu" | "sheet" | "sharesheet"
+    ) {
         let mut info = snapshot.members[0].lives[0].clone();
         info.title = "Monitor 1".into();
         snapshot.own_lives.push(OwnLiveView {
@@ -220,7 +261,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     // The real video path on made-up frames, so overlays are judged against what a picture really
     // does in its tile rather than a colour painted across the tile's whole rect.
-    let mut tiles = brp_app::render::tiles::TileRenderer::new(&device, format);
+    let mut tiles = brp_app::render::tiles::TileRenderer::new(&device, &queue, format);
+    let mut backdrop = brp_app::render::backdrop::Backdrop::new(&device, &queue, format);
+    let mut bloom = brp_app::render::bloom::Bloom::new(&device, format);
+    let lost = std::env::var("PREVIEW_LOST")
+        .ok()
+        .and_then(|text| text.parse::<f32>().ok());
     for (index, watch) in snapshot
         .watches
         .iter()
@@ -228,18 +274,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         .enumerate()
     {
         let (u, v) = [(150, 110), (160, 140), (100, 150)][index % 3];
-        tiles.upload(
-            &device,
-            &queue,
-            (watch.publisher, watch.live_id),
-            &test_card(u, v),
-        );
+        let frame = test_card(u, v);
+        tiles.upload(&device, &queue, (watch.publisher, watch.live_id), &frame);
     }
     let mut tile_rects: Vec<(brp_app::render::tiles::TileKey, egui::Rect)> = Vec::new();
+    let burn_at = std::env::var("PREVIEW_POINTER").ok().and_then(|text| {
+        let (x, y) = text.split_once(',')?;
+        Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))
+    });
+    if burn_at.is_some() {
+        ui::motion::set_less_motion(&ctx, false);
+    }
     // Warm up egui's multi-pass layout and window placement before capturing.
     for frame in 0..frames {
         let input = egui::RawInput {
-            events: if matches!(screen, "watching" | "grid") {
+            events: if let Some(at) = burn_at {
+                vec![egui::Event::PointerMoved(at)]
+            } else if matches!(screen, "watching" | "grid") {
                 vec![egui::Event::PointerMoved(egui::pos2(
                     width as f32 * 0.7 / scale,
                     height as f32 * 0.3 / scale,
@@ -261,6 +312,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 egui::Pos2::ZERO,
                 egui::vec2(width as f32, height as f32) / scale,
             )),
+            focused: true,
             time: Some(f64::from(frame) / 60.0),
             ..Default::default()
         };
@@ -307,6 +359,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             pixels_per_point: output.pixels_per_point,
         };
         let mut encoder = device.create_command_encoder(&Default::default());
+        let mut backdrop_on = false;
         let commands = renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &descriptor);
         {
             let view = texture.create_view(&Default::default());
@@ -321,7 +374,39 @@ fn main() -> Result<(), Box<dyn Error>> {
                     (*key, pixels, 1.0)
                 })
                 .collect();
-            tiles.update_fits(&queue, &placements);
+            for (key, _, _) in &placements {
+                let fx = ctx.data(|data| data.get_temp(egui::Id::new(("tile-fx", *key))));
+                let mut fx: brp_app::render::tiles::TileFx = fx.unwrap_or_default();
+                if let Some(lost) = lost {
+                    fx.ascii = lost;
+                }
+                tiles.set_fx(*key, fx);
+            }
+            tiles.update_fits(&queue, &placements, output_pixels_per_point);
+            if let Some(request) = brp_app::render::backdrop::take_request(&ctx) {
+                backdrop.skip_opening();
+                backdrop.prepare(
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    (width, height),
+                    output_pixels_per_point,
+                    request,
+                    Default::default(),
+                    true,
+                );
+                backdrop_on = true;
+            }
+            if let Some((pass, screen)) = bloom.begin(
+                &device,
+                &mut encoder,
+                (width, height),
+                output_pixels_per_point,
+            ) {
+                let mut pass = pass.forget_lifetime();
+                renderer.render(&mut pass, &jobs, &screen);
+            }
+            bloom.blur(&mut encoder);
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -335,8 +420,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ..Default::default()
             });
             let mut pass = pass.forget_lifetime();
+            if backdrop_on {
+                backdrop.show(&mut pass);
+            }
             tiles.draw(&mut pass, &placements);
             renderer.render(&mut pass, &jobs, &descriptor);
+            bloom.show(&mut pass);
         }
         queue.submit(commands.into_iter().chain([encoder.finish()]));
         for id in output.textures_delta.free.drain() {

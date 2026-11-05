@@ -27,8 +27,11 @@ A room is a gossip topic. Whoever creates it gets a ticket naming the room and
 one member already in it; anyone in the room can hand out a ticket. Membership
 and the catalog of lives travel over iroh-gossip as presence messages signed
 with the sender's iroh key, and members silent past the expiry window drop out.
-Media connections are accepted only from current members. iroh relays and hole
-punching are on by default; `--no-relay` turns relays off for a local network.
+Media connections are accepted only from current members. Each member keeps one
+open to every other member from the moment it joins, carrying only a keep-alive
+until something is watched, so the room can show each person's delay and notice
+within four seconds when someone goes silent. iroh relays and hole punching are
+on by default; `--no-relay` turns relays off for a local network.
 
 Encoder selection probes NVENC, AMD AMF, Intel QSV, then Media Foundation on
 Windows, VideoToolbox on macOS, or VAAPI on Linux, then software AV1, and the
@@ -71,7 +74,8 @@ cargo build --release
 ```
 
 The Settings button on the start screen and in the dock opens a dialog
-for the nickname, the relay choice (public relays, a custom relay URL, or no
+for the nickname, the phosphor colour (amber, green, or white), the relay choice
+(public relays, a custom relay URL, or no
 relay), whether links join without asking, the capture frame rate ceiling, and the
 audio output device. Settings
 apply when the next room opens. The start screen lists recent rooms with a Join
@@ -90,15 +94,17 @@ replaced. Closing the window during a download cancels it, or, if the files
 were already being swapped, finishes the swap without relaunching; the next
 launch runs the new version.
 
-In the window, the room rail lists you and every member, with a direct-or-relayed
-badge and their lives; switch on a live to watch it and pick its preset, and hover
-a tile for the preset selector and the stats overlay. Under "Quality & encoding",
+In the window, the room rail is a circuit of you and every member, showing how each
+reaches you, their delay, and their lives, with real traffic on every wire. Tick a
+live to watch it and pick its preset under it, and hover a tile for the preset
+selector and the stats overlay. With nothing on screen, the canvas is a map of the
+room by delay, where one click starts a stream. Under "Quality & encoding",
 a publisher can also offer "Source 4:4:4", which keeps full-resolution colour for
 text and thin lines, and "Source lossless". Both need NVENC with H.264 or HEVC, and
 are not listed on a machine without it. Versions of OpenStream too old to decode
 them do not see them either. Lossless means no loss after the conversion from RGB
 to limited-range YUV, and takes as much bandwidth as the picture needs. Your own lives sit under your
-name with a frame-rate control, a codec selector, template checkboxes (untick
+name, and clicking one unfolds a frame-rate control, a codec selector, template checkboxes (untick
 Source to cap what viewers can ask for), a bitrate per preset, the measured encode
 rate, and a stop button; Stop sharing in the dock ends every live at once. Below
 800 points of window width the rail folds into a Room sheet opened from the dock,

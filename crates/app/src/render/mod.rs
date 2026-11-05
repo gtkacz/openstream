@@ -1,6 +1,10 @@
 //! wgpu device plus the tile and egui renderers. `GpuContext` is the half every window shares;
 //! `surface::WindowSurface` is the half each window owns.
+pub mod backdrop;
+pub mod bloom;
+pub mod glyphs;
 pub mod grid;
+mod passes;
 pub mod surface;
 pub mod tiles;
 pub mod ui;

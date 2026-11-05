@@ -7,6 +7,7 @@ pub mod motion;
 pub mod own_lives;
 pub mod picker;
 pub mod popout;
+pub mod room_map;
 pub mod settings;
 pub mod start;
 pub mod state;
@@ -63,7 +64,7 @@ pub fn draw(
     let mut open_settings = false;
     let mut update_clicked = false;
     let compact = theme::is_compact(ui.ctx());
-    motion::dissolve_in(ui.ctx(), "room", theme::GROUND);
+    motion::dissolve_in(ui.ctx(), "room", theme::ground());
     if !compact {
         members::draw(ui, snapshot, ticket, state, &mut commands);
     }
@@ -171,7 +172,7 @@ pub fn volume_control(
         ui.scope(|ui| {
             // The thumb is sized from the row's height, which is a control's and far too tall for it.
             ui.spacing_mut().interact_size.y = 18.0;
-            ui.visuals_mut().selection.bg_fill = theme::ACCENT;
+            ui.visuals_mut().selection.bg_fill = theme::accent();
             ui.add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(false));
         });
     });

@@ -5,6 +5,7 @@ use super::update::{self, UpdateState};
 use super::wall;
 use crate::launch::Intent;
 use crate::link;
+use crate::render::backdrop::{self, BackdropKind, BackdropRequest};
 use crate::settings::RecentRoom;
 
 /// Which button the user clicked.
@@ -155,13 +156,19 @@ pub fn draw(
     } else {
         "start"
     };
-    super::motion::dissolve_in(ui.ctx(), screen, theme::GROUND);
+    super::motion::dissolve_in(ui.ctx(), screen, theme::ground());
+    backdrop::request(
+        ui.ctx(),
+        BackdropRequest {
+            kind: BackdropKind::Horizon,
+            shown: 1.0,
+        },
+    );
+    if ui.input(|input| input.focused) && super::motion::ambient_allowed(ui.ctx()) {
+        ui.ctx().request_repaint_after(backdrop::FRAME);
+    }
     egui::CentralPanel::default()
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::GROUND)
-                .inner_margin(egui::Margin::same(24)),
-        )
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(24)))
         .show(ui, |ui| {
             let space = ui.max_rect();
             let column = egui::Rect::from_center_size(
@@ -222,15 +229,11 @@ fn form(
         invite_form(ui, state, action);
         return;
     }
+    ui.label(egui::RichText::new("Share your screen").font(theme::semibold(28.0)));
     ui.label(
-        egui::RichText::new("Share your screen")
-            .font(theme::semibold(30.0))
-            .extra_letter_spacing(-0.5),
-    );
-    ui.label(
-        egui::RichText::new("A room for your screens, windows, and audio")
-            .size(16.0)
-            .color(theme::SECONDARY),
+        egui::RichText::new("Peer to peer, with no account to make")
+            .size(14.0)
+            .color(theme::secondary()),
     );
     ui.add_space(24.0);
     theme::section_heading(ui, "Your name");
@@ -316,17 +319,13 @@ fn form(
 /// What a link opens: one question, the name the room would see, and a way out. Worded as a question
 /// rather than "You're invited" because a stranger's web page can send someone here too.
 fn invite_form(ui: &mut egui::Ui, state: &mut StartState, action: &mut Option<StartAction>) {
-    ui.label(
-        egui::RichText::new("Join this room?")
-            .font(theme::semibold(30.0))
-            .extra_letter_spacing(-0.5),
-    );
+    ui.label(egui::RichText::new("Join this room?").font(theme::semibold(28.0)));
     ui.label(
         egui::RichText::new(
             "A link sent you here. People in the room can see your name and IP address.",
         )
-        .size(16.0)
-        .color(theme::SECONDARY),
+        .size(14.0)
+        .color(theme::secondary()),
     );
     ui.add_space(24.0);
     theme::section_heading(ui, "Your name");
@@ -380,7 +379,7 @@ fn open_status(ui: &mut egui::Ui, state: &StartState) {
     }
     if !state.error.is_empty() {
         ui.add_space(8.0);
-        ui.colored_label(theme::ERROR, &state.error);
+        ui.colored_label(theme::error(), &state.error);
     }
 }
 

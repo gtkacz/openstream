@@ -22,6 +22,9 @@ pub struct ViewerStats {
     pub frames_received: AtomicU64,
     pub frames_decoded: AtomicU64,
     pub keyframe_requests: AtomicU64,
+    /// What the rail's traffic strip draws: bytes and keyframes as they arrive.
+    pub bytes_received: AtomicU64,
+    pub keyframes_received: AtomicU64,
 }
 
 pub struct ViewerSink {
@@ -113,6 +116,14 @@ impl DecodeLoop {
             {
                 Ok(Some(frame)) => {
                     self.stats.frames_received.fetch_add(1, Ordering::Relaxed);
+                    self.stats
+                        .bytes_received
+                        .fetch_add(u64::from(frame.header.len), Ordering::Relaxed);
+                    if frame.header.keyframe {
+                        self.stats
+                            .keyframes_received
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                     reorder.push(
                         IncomingFrame {
                             header: frame.header,

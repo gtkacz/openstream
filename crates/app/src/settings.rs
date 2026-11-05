@@ -38,6 +38,8 @@ pub struct Settings {
     /// A `brp://` link joins its room at once instead of asking. Off by default because any web page
     /// can fire one, and joining shows the room this person's name and IP address.
     pub auto_join_links: bool,
+    /// The colour of the tube.
+    pub phosphor: crate::ui::theme::Phosphor,
 }
 
 impl Default for Settings {
@@ -50,6 +52,7 @@ impl Default for Settings {
             recent_rooms: Vec::new(),
             check_updates: true,
             auto_join_links: false,
+            phosphor: crate::ui::theme::Phosphor::default(),
         }
     }
 }
@@ -288,6 +291,7 @@ mod tests {
 
     fn full() -> Settings {
         Settings {
+            phosphor: crate::ui::theme::Phosphor::Green,
             nickname: Some("alice".into()),
             fps: 30,
             relay: RelayChoice::Custom("https://relay.example.com/".into()),

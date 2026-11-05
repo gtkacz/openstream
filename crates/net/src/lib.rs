@@ -12,7 +12,7 @@ pub use client::{AudioStream, MediaClient, PathKind, ViewerSubscription};
 pub use endpoint::{RelaySetting, bind_endpoint};
 pub use error::NetError;
 pub use policy::{AllowAll, ConnectionPolicy};
-pub use server::MediaServer;
+pub use server::{MediaServer, Viewers};
 pub use source::{
     AudioSubscription, KeyframeLimit, LiveSource, ReceivedFrame, SubscribeRejected, Subscription,
 };

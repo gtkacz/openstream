@@ -24,7 +24,52 @@ pub type TilePlacement = (TileKey, PixelRect, f32);
 struct Fit {
     scale: [f32; 2],
     shown: f32,
+    flash: f32,
+    origin: [f32; 2],
+    size: [f32; 2],
+    ink: [f32; 4],
+    hot: [f32; 4],
+    ascii: f32,
+    time: f32,
+    cell_w: f32,
+    cell_h: f32,
+    lod: f32,
+    count: f32,
+    invert: f32,
     _pad: f32,
+}
+
+/// What one tile's picture is doing beyond being shown, set by the interface each frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TileFx {
+    /// How far the picture has reduced to characters.
+    pub ascii: f32,
+    /// How far the tube has warmed up, from a line to the whole picture.
+    pub warm: f32,
+}
+
+impl Default for TileFx {
+    fn default() -> Self {
+        Self {
+            ascii: 0.0,
+            warm: 1.0,
+        }
+    }
+}
+
+/// A tube switching off: the picture collapses to a bright line, then the line to nothing. Switching
+/// on is the same thing backwards.
+fn tube(power: f32) -> (f32, f32, f32) {
+    const LINE: f32 = 0.006;
+    let off = 1.0 - power.clamp(0.0, 1.0);
+    if off <= 0.0 {
+        (1.0, 1.0, 1.0)
+    } else if off < 0.55 {
+        let k = off / 0.55;
+        (1.0, 1.0 - (1.0 - LINE) * k * k, 1.0 + 3.0 * k)
+    } else {
+        (1.0 - (off - 0.55) / 0.45, LINE, 4.0)
+    }
 }
 
 struct Tile {
@@ -35,6 +80,8 @@ struct Tile {
     uv: wgpu::Texture,
     fit: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Sampled from each frame, so a white page reduces to text on dark instead of a block.
+    mean_luma: f32,
 }
 
 /// Owns the tile pipeline and one GPU-backed tile per watched live, keyed by `TileKey`. The caller
@@ -44,6 +91,12 @@ pub struct TileRenderer {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    atlas: wgpu::TextureView,
+    atlas_sampler: wgpu::Sampler,
+    started: std::time::Instant,
+    /// A picture fades rather than collapses, and its characters hold still.
+    gentle: bool,
+    fx: HashMap<TileKey, TileFx>,
     tiles: HashMap<TileKey, Tile>,
     /// Lives already reported as too large to show, so a stream of them logs once.
     refused: HashSet<TileKey>,
@@ -61,7 +114,7 @@ pub fn fit_scale(video: (u32, u32), viewport: (u32, u32)) -> [f32; 2] {
 }
 
 impl TileRenderer {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nv12"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -95,6 +148,13 @@ impl TileRenderer {
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
+                    count: None,
+                },
+                tex(4),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
@@ -139,6 +199,11 @@ impl TileRenderer {
             pipeline,
             layout,
             sampler,
+            atlas: super::glyphs::atlas(device, queue),
+            atlas_sampler: super::glyphs::sampler(device),
+            started: std::time::Instant::now(),
+            gentle: false,
+            fx: HashMap::new(),
             tiles: HashMap::new(),
             refused: HashSet::new(),
         }
@@ -172,6 +237,14 @@ impl TileRenderer {
         if needs_alloc {
             let tile = self.allocate(device, frame.width, frame.height, frame.chroma);
             self.tiles.insert(key, tile);
+        }
+        if let Some(tile) = self.tiles.get_mut(&key) {
+            let stride = (frame.y.len() / 251).max(1);
+            let samples = frame.y.iter().step_by(stride);
+            let (sum, count) = samples.fold((0u64, 0u64), |(sum, count), luma| {
+                (sum + u64::from(*luma), count + 1)
+            });
+            tile.mean_luma = sum as f32 / count.max(1) as f32 / 255.0;
         }
         let Some(tile) = self.tiles.get(&key) else {
             return;
@@ -220,20 +293,69 @@ impl TileRenderer {
 
     /// Writes each placed tile's letterbox scale and how shown it is. Call before the render pass is
     /// recorded.
-    pub fn update_fits(&self, queue: &wgpu::Queue, placements: &[TilePlacement]) {
+    pub fn update_fits(
+        &self,
+        queue: &wgpu::Queue,
+        placements: &[TilePlacement],
+        pixels_per_point: f32,
+    ) {
+        let rgba = |color: egui::Color32| {
+            let [r, g, b, _] = color.to_array();
+            [
+                f32::from(r) / 255.0,
+                f32::from(g) / 255.0,
+                f32::from(b) / 255.0,
+                1.0,
+            ]
+        };
+        let cell_h = 12.0 * pixels_per_point;
         for (key, rect, shown) in placements {
             if let Some(tile) = self.tiles.get(key) {
+                let fx = self.fx.get(key).copied().unwrap_or_default();
+                let power = shown.min(fx.warm);
+                let (wide, tall, flash) = if self.gentle {
+                    (1.0, 1.0, 1.0)
+                } else {
+                    tube(power)
+                };
+                let [x, y] = fit_scale(
+                    (tile.width, tile.height),
+                    (rect.width as u32, rect.height as u32),
+                );
                 let fit = Fit {
-                    scale: fit_scale(
-                        (tile.width, tile.height),
-                        (rect.width as u32, rect.height as u32),
-                    ),
-                    shown: *shown,
-                    _pad: 0.,
+                    scale: [x * wide, y * tall],
+                    shown: if self.gentle { power } else { 1. },
+                    flash,
+                    origin: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    ink: rgba(crate::ui::theme::accent()),
+                    hot: rgba(crate::ui::theme::text()),
+                    ascii: fx.ascii,
+                    time: if self.gentle {
+                        0.0
+                    } else {
+                        self.started.elapsed().as_secs_f32()
+                    },
+                    cell_w: cell_h * 0.6,
+                    cell_h,
+                    lod: (super::glyphs::CELL_HEIGHT as f32 / cell_h).log2().max(0.0),
+                    count: super::glyphs::RAMP.chars().count() as f32,
+                    invert: if tile.mean_luma > 0.5 { 1.0 } else { 0.0 },
+                    _pad: 0.0,
                 };
                 queue.write_buffer(&tile.fit, 0, bytemuck::bytes_of(&fit));
             }
         }
+    }
+
+    /// What the interface wants this tile's picture to do this frame.
+    pub fn set_fx(&mut self, key: TileKey, fx: TileFx) {
+        self.fx.insert(key, fx);
+    }
+
+    /// Passes on that the system asked for less motion.
+    pub fn set_gentle(&mut self, gentle: bool) {
+        self.gentle = gentle;
     }
 
     /// Draws every placed tile that has received a frame. Tiles without a frame stay black.
@@ -292,6 +414,18 @@ impl TileRenderer {
             contents: bytemuck::bytes_of(&Fit {
                 scale: [1.; 2],
                 shown: 1.,
+                flash: 1.,
+                origin: [0.; 2],
+                size: [1.; 2],
+                ink: [1.; 4],
+                hot: [1.; 4],
+                ascii: 0.,
+                time: 0.,
+                cell_w: 7.,
+                cell_h: 12.,
+                lod: 0.,
+                count: 10.,
+                invert: 0.,
                 _pad: 0.,
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -318,6 +452,14 @@ impl TileRenderer {
                     binding: 3,
                     resource: fit.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&self.atlas),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
+                },
             ],
         });
         Tile {
@@ -328,6 +470,7 @@ impl TileRenderer {
             uv,
             fit,
             bind_group,
+            mean_luma: 0.0,
         }
     }
 }

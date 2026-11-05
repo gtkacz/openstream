@@ -80,6 +80,7 @@ pub struct Room {
     membership: Arc<Mutex<Membership>>,
     registry: Arc<LiveRegistry>,
     watcher: Arc<Watcher>,
+    viewers: brp_net::Viewers,
     capture: Arc<dyn CaptureBackend>,
     encoders: Arc<dyn EncoderFactory>,
     target_fps: u32,
@@ -144,8 +145,10 @@ impl Room {
         };
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
+        let media = MediaServer::new(registry.clone(), policy);
+        let viewers = media.viewers();
         let router = Router::builder(endpoint.clone())
-            .accept(MEDIA_ALPN, MediaServer::new(registry.clone(), policy))
+            .accept(MEDIA_ALPN, media)
             .accept(iroh_gossip::ALPN, gossip.clone())
             .spawn();
 
@@ -218,6 +221,19 @@ impl Room {
                 }
             }
         };
+        // Everyone in the room gets a connection from the start, so how far away they are is known
+        // before anything of theirs is on screen.
+        let links = {
+            let watcher = watcher.clone();
+            let every = config.timings.housekeeping;
+            async move {
+                let mut tick = tokio::time::interval(every);
+                loop {
+                    tick.tick().await;
+                    watcher.link_to_members();
+                }
+            }
+        };
         let audio_consumer = {
             let watcher = watcher.clone();
             async move {
@@ -231,6 +247,7 @@ impl Room {
             tokio::spawn(housekeeping),
             tokio::spawn(expiry_consumer),
             tokio::spawn(audio_consumer),
+            tokio::spawn(links),
         ];
 
         Ok(Self {
@@ -242,6 +259,7 @@ impl Room {
             membership,
             registry,
             watcher,
+            viewers,
             capture: config.capture,
             encoders: config.encoders,
             target_fps: config.target_fps,
@@ -310,9 +328,16 @@ impl Room {
         // than hiding new contents behind an already-current version.
         let version = self.version();
         let now = Instant::now();
+        let viewers = lock(&self.viewers).clone();
         let members = lock(&self.membership)
             .members()
             .map(|m| MemberView {
+                rtt_ms: self
+                    .watcher
+                    .path_rtt(&m.id)
+                    .map(|rtt| rtt.as_millis() as u32),
+                signal_lost: self.watcher.signal_lost(&m.id),
+                watching_me: viewers.get(&m.id).is_some_and(|count| *count > 0),
                 id: m.id,
                 nickname: m.presence.nickname.clone(),
                 has_audio: m.has_audio(),

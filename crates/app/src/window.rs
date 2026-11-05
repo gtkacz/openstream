@@ -31,6 +31,8 @@ use crate::popouts::PopOuts;
 use crate::reduced_motion;
 use crate::relaunch::Relaunch;
 use crate::render::GpuContext;
+use crate::render::backdrop::{self, Backdrop, BackdropRequest, Pointer};
+use crate::render::bloom::Bloom;
 use crate::render::grid;
 use crate::render::surface::WindowSurface;
 use crate::render::tiles::{TileKey, TilePlacement, TileRenderer};
@@ -39,9 +41,11 @@ use crate::repaint::{NextFrame, RepaintSchedule, next_frame};
 use crate::room_view::RoomView;
 use crate::settings::{Settings, SettingsStore, normalised_nickname, now_unix};
 use crate::ui::applications::{self as applications_ui, PickerOutcome};
+use crate::ui::motion;
 use crate::ui::settings::{self as settings_ui, SettingsDialog};
 use crate::ui::start::{self, StartAction, StartState};
 use crate::ui::state::{UiState, live_title};
+use crate::ui::theme;
 use crate::ui::update::{PROGRESS_STEP_BYTES, UpdateState};
 use crate::ui::wall;
 use crate::ui::{self, UiOutput, popout};
@@ -156,6 +160,12 @@ pub struct App {
     main: Option<WindowSurface>,
     /// Shared by every window: a frame is uploaded once whichever window shows it.
     tiles: Option<TileRenderer>,
+    /// What the system asked for, once it has said, for windows opened after that.
+    less_motion: Option<bool>,
+    /// The light behind the start screen and room map.
+    backdrop: Option<Backdrop>,
+    /// The chrome's glow.
+    bloom: Option<Bloom>,
     popouts: PopOuts<WindowId>,
     popout_windows: HashMap<WindowId, PopOutWindow>,
 }
@@ -194,6 +204,9 @@ impl App {
             gpu: None,
             main: None,
             tiles: None,
+            less_motion: None,
+            backdrop: None,
+            bloom: None,
             popouts: PopOuts::new(),
             popout_windows: HashMap::new(),
             store,
@@ -485,6 +498,7 @@ impl App {
         };
         if let Phase::Room(view) = &self.phase {
             view.upload_frames(gpu, tiles);
+            view.sample_traffic(&mut self.state);
         }
         let popped = self.popouts.popped();
         let size = main.size();
@@ -530,7 +544,17 @@ impl App {
             }
         });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
-        let presented = present(gpu, tiles, main, &mut ui_frame, &placements);
+        apply_tile_fx(main.ui.ctx(), tiles, &placements);
+        let lit = backdrop::take_request(main.ui.ctx());
+        let presented = present(
+            gpu,
+            tiles,
+            main,
+            &mut ui_frame,
+            &placements,
+            self.backdrop.as_mut().zip(lit),
+            self.bloom.as_mut(),
+        );
         if !self.state.gone_tiles.is_empty() {
             let gone = std::mem::take(&mut self.state.gone_tiles);
             tiles.retain(|key| !gone.contains(key));
@@ -662,12 +686,14 @@ impl App {
         let fullscreen = popout.fullscreen;
         let surface = &mut popout.surface;
         let size = surface.size();
+        theme::keep_up_with_phosphor(surface.ui.ctx());
         let mut output = UiOutput::default();
         let mut ui_frame = surface.ui.run(&surface.window, [size.0, size.1], |root| {
             output = popout::draw(root, &view.snapshot, &mut self.state, key, fullscreen);
         });
         let placements = pixel_placements(&output, ui_frame.screen.pixels_per_point, size);
-        let presented = present(gpu, tiles, surface, &mut ui_frame, &placements);
+        apply_tile_fx(surface.ui.ctx(), tiles, &placements);
+        let presented = present(gpu, tiles, surface, &mut ui_frame, &placements, None, None);
         match next_frame(presented, ui_frame.repaint_delay) {
             NextFrame::Immediately => surface.window.request_redraw(),
             NextFrame::After(delay) => {
@@ -765,6 +791,9 @@ impl App {
                 return;
             }
         };
+        if let Some(less) = self.less_motion {
+            motion::set_less_motion(surface.ui.ctx(), less);
+        }
         if fullscreen {
             surface
                 .window
@@ -825,7 +854,9 @@ impl ApplicationHandler<AppEvent> for App {
                 return;
             }
         };
-        self.tiles = Some(TileRenderer::new(&gpu.device, gpu.format));
+        self.tiles = Some(TileRenderer::new(&gpu.device, &gpu.queue, gpu.format));
+        self.backdrop = Some(Backdrop::new(&gpu.device, &gpu.queue, gpu.format));
+        self.bloom = Some(Bloom::new(&gpu.device, gpu.format));
         self.gpu = Some(gpu);
         self.main = Some(main);
         let proxy = self.proxy.clone();
@@ -913,8 +944,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::NewFrame => {}
             AppEvent::MotionPreference { less } => {
+                self.less_motion = Some(less);
                 if let Some(main) = &self.main {
-                    wall::allow_motion(main.ui.ctx(), !less);
+                    motion::set_less_motion(main.ui.ctx(), less);
+                }
+                for popout in self.popout_windows.values() {
+                    motion::set_less_motion(popout.surface.ui.ctx(), less);
                 }
             }
         }
@@ -1046,6 +1081,15 @@ fn pixel_placements(
         .collect()
 }
 
+/// Hands the renderer what the interface decided each tile's picture should do.
+fn apply_tile_fx(ctx: &egui::Context, tiles: &mut TileRenderer, placements: &[TilePlacement]) {
+    tiles.set_gentle(motion::asked_for_less(ctx));
+    for (key, _, _) in placements {
+        let fx = ctx.data(|data| data.get_temp(egui::Id::new(("tile-fx", *key))));
+        tiles.set_fx(*key, fx.unwrap_or_default());
+    }
+}
+
 /// Records and submits one window's frame: the placed tiles, then egui on top. A lost surface
 /// skips the frame; the next `Resized` reconfigures it. Returns whether the frame was presented,
 /// so a caller does not re-request its own redraw for a surface that has nothing to reconfigure
@@ -1056,6 +1100,8 @@ fn present(
     surface: &mut WindowSurface,
     ui_frame: &mut UiFrame,
     placements: &[TilePlacement],
+    backdrop: Option<(&mut Backdrop, BackdropRequest)>,
+    bloom: Option<&mut Bloom>,
 ) -> bool {
     let Some(texture) = surface.acquire() else {
         // The frame's texture deltas must still be applied and freed or they assert on drop.
@@ -1069,11 +1115,47 @@ fn present(
         return false;
     };
     let target = texture.texture.create_view(&Default::default());
-    tiles.update_fits(&gpu.queue, placements);
+    tiles.update_fits(&gpu.queue, placements, ui_frame.screen.pixels_per_point);
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
     let buffers = surface
         .ui
         .prepare(&gpu.device, &gpu.queue, &mut encoder, ui_frame);
+    let size = surface.size();
+    let pixels_per_point = ui_frame.screen.pixels_per_point;
+    let backdrop = backdrop.map(|(backdrop, request)| {
+        let ctx = surface.ui.ctx();
+        let (at, down, focused) = ctx.input(|input| {
+            (
+                input.pointer.latest_pos(),
+                input.pointer.primary_down(),
+                input.focused,
+            )
+        });
+        let pointer = Pointer {
+            at: at.map(|at| egui::pos2(at.x * pixels_per_point, at.y * pixels_per_point)),
+            down,
+        };
+        backdrop.prepare(
+            &gpu.device,
+            &gpu.queue,
+            &mut encoder,
+            size,
+            pixels_per_point,
+            request,
+            pointer,
+            focused && motion::ambient_allowed(ctx),
+        );
+        &*backdrop
+    });
+    let bloom = bloom.map(|bloom| {
+        if let Some((pass, screen)) = bloom.begin(&gpu.device, &mut encoder, size, pixels_per_point)
+        {
+            let mut pass = pass.forget_lifetime();
+            surface.ui.paint_scaled(&mut pass, ui_frame, &screen);
+        }
+        bloom.blur(&mut encoder);
+        &*bloom
+    });
     {
         let mut pass = encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1093,8 +1175,14 @@ fn present(
                 multiview_mask: None,
             })
             .forget_lifetime();
+        if let Some(backdrop) = backdrop {
+            backdrop.show(&mut pass);
+        }
         tiles.draw(&mut pass, placements);
         surface.ui.paint(&mut pass, ui_frame);
+        if let Some(bloom) = bloom {
+            bloom.show(&mut pass);
+        }
     }
     gpu.queue
         .submit(buffers.into_iter().chain(std::iter::once(encoder.finish())));

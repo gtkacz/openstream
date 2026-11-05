@@ -121,6 +121,26 @@ pub fn press(ctx: &Context, id: Id, down: bool) -> f32 {
     follow(ctx, id, down, if down { PRESS_DOWN } else { PRESS_UP })
 }
 
+const LESS_MOTION: &str = "motion-less";
+
+/// Passes on what the operating system asks for. It takes a moment to find out.
+pub fn set_less_motion(ctx: &Context, less: bool) {
+    ctx.data_mut(|data| data.insert_temp(Id::new(LESS_MOTION), less));
+}
+
+/// Things that would travel just arrive instead, and fade if they fade. Reduced motion means gentler
+/// rather than none, so colour and opacity carry on as usual.
+pub fn asked_for_less(ctx: &Context) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(Id::new(LESS_MOTION)))
+        .unwrap_or(false)
+}
+
+/// Whether motion nobody asked for may run: drift, churn, packets. False until the answer is in, so
+/// nobody who asked for less sees a burst of it while the answer is on its way.
+pub fn ambient_allowed(ctx: &Context) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(Id::new(LESS_MOTION))) == Some(false)
+}
+
 /// How much smaller than its place a tile is on the first frame of arriving and the last of leaving.
 pub const GROW_FROM: f32 = 0.03;
 
@@ -134,17 +154,10 @@ struct Flow {
 /// A rect at `target` plus an offset that decays to nothing, on four independent edges. Only a change
 /// of `place` adds to the offset, which keeps the rect where it is on screen and lets it travel from
 /// there, at the velocity it already has. Any other change of `target`, such as a resized window or a
-/// sliding sheet, moves it 1:1 with no lag behind the pointer. A new rect starts at `origin`, or
-/// grows out of its own place. Offsets are held in fractions of `area`, the unit rest is judged in.
-pub fn flowing_rect(
-    ctx: &Context,
-    id: Id,
-    area: Rect,
-    target: Rect,
-    place: Id,
-    origin: Option<Rect>,
-) -> Rect {
-    if area.width() <= 0.0 || area.height() <= 0.0 {
+/// sliding sheet, moves it 1:1 with no lag behind the pointer. A new rect grows out of its own place.
+/// Offsets are held in fractions of `area`, the unit rest is judged in.
+pub fn flowing_rect(ctx: &Context, id: Id, area: Rect, target: Rect, place: Id) -> Rect {
+    if area.width() <= 0.0 || area.height() <= 0.0 || asked_for_less(ctx) {
         return target;
     }
     let flow_id = id.with("flow");
@@ -164,7 +177,7 @@ pub fn flowing_rect(
     let moved_from = stored
         .filter(|flow| frame <= flow.frame + 1 && flow.place != place)
         .map(|flow| flow.target);
-    let start = origin.unwrap_or_else(|| target.shrink2(target.size() * GROW_FROM));
+    let start = target.shrink2(target.size() * GROW_FROM);
     let edge = |salt: &str, to: f32, from: f32, was: Option<f32>, span: f32| {
         let spring = id.with(salt);
         if let Some(was) = was {
@@ -266,8 +279,11 @@ fn grow<R>(
             .max_rect(Rect::from_min_size(origin, vec2(width, f32::INFINITY)))
             .layout(*ui.layout()),
     );
+    // Asked for less motion, what is below jumps out of the way rather than sliding, and only the
+    // opacity eases.
+    let travel = if asked_for_less(ui.ctx()) { 1.0 } else { shown };
     if shown < 1.0 {
-        let window = Rect::from_min_size(origin, vec2(width, measured * shown));
+        let window = Rect::from_min_size(origin, vec2(width, measured * travel));
         child.set_clip_rect(child.clip_rect().intersect(window));
         child.set_opacity(shown);
     }
@@ -277,7 +293,7 @@ fn grow<R>(
     let height = if remeasure { content } else { measured };
     ui.ctx()
         .data_mut(|data| data.insert_temp(measured_id, height));
-    ui.advance_cursor_after_rect(Rect::from_min_size(origin, vec2(width, height * shown)));
+    ui.advance_cursor_after_rect(Rect::from_min_size(origin, vec2(width, height * travel)));
     output
 }
 
@@ -293,7 +309,10 @@ pub fn dissolve_in(ctx: &Context, name: &str, ground: egui::Color32) {
 }
 
 /// How far a rect should sit below its resting place while it is `shown` that much.
-pub fn rise(shown: f32, distance: f32) -> Vec2 {
+pub fn rise(ctx: &Context, shown: f32, distance: f32) -> Vec2 {
+    if asked_for_less(ctx) {
+        return Vec2::ZERO;
+    }
     vec2(0.0, (1.0 - shown) * distance)
 }
 
@@ -399,7 +418,7 @@ mod tests {
         let area = Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1000.0, 800.0));
         let mut rect = target;
         let (_, moving) = pass(ctx, time, |ctx| {
-            rect = flowing_rect(ctx, Id::new("tile"), area, target, Id::new(place), None);
+            rect = flowing_rect(ctx, Id::new("tile"), area, target, Id::new(place));
             0.0
         });
         (rect, moving)
@@ -414,6 +433,31 @@ mod tests {
             flowing(ctx, f64::from(frame) / 60.0, target, place);
         }
         2.0
+    }
+
+    #[test]
+    fn asked_for_less_motion_a_rect_goes_straight_to_its_place_and_nothing_rises() {
+        let ctx = Context::default();
+        set_less_motion(&ctx, true);
+        let target = at(100.0, 400.0);
+        let (first, _) = flowing(&ctx, 0.0, target, "a");
+        assert_eq!(first, target);
+        let (moved, _) = flowing(&ctx, 1.0 / 60.0, at(600.0, 400.0), "b");
+        assert_eq!(moved, at(600.0, 400.0));
+        assert_eq!(rise(&ctx, 0.2, 12.0), Vec2::ZERO);
+    }
+
+    #[test]
+    fn ambient_motion_waits_for_the_answer_and_springs_do_not() {
+        let ctx = Context::default();
+        assert!(!ambient_allowed(&ctx), "nobody has said yet");
+        assert!(!asked_for_less(&ctx), "only standing motion waits");
+        assert!(rise(&ctx, 0.5, 12.0).y > 0.0);
+        set_less_motion(&ctx, false);
+        assert!(ambient_allowed(&ctx));
+        set_less_motion(&ctx, true);
+        assert!(!ambient_allowed(&ctx));
+        assert!(asked_for_less(&ctx));
     }
 
     #[test]

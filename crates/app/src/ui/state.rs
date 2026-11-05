@@ -42,6 +42,12 @@ pub struct DrawnTile {
 /// status line.
 #[derive(Debug, Default)]
 pub struct UiState {
+    /// What each watched stream has carried, sampled as the window draws.
+    pub traffic: HashMap<TileKey, StreamTraffic>,
+    /// The room's events, newest last.
+    pub ledger: Ledger,
+    /// This participant's streams with their controls unfolded in the rail.
+    pub own_open: HashSet<u32>,
     /// Kept while the sheet slides shut, so its content does not change on the way out.
     pub sheet: CompactSheet,
     pub sheet_open: bool,
@@ -61,10 +67,6 @@ pub struct UiState {
     /// How many tiles the grid last held and in how many columns, kept so a window resized near a
     /// tie does not flip the layout. A different number of tiles is a fresh choice.
     pub grid_columns: Option<(usize, usize)>,
-    /// Where a tile about to appear should grow out of: the card that asked for it. Only taken when
-    /// that tile appears, so a watch that fails leaves its entry for that stream's next tile, which
-    /// grows from the old card once. Cosmetic, and clearing it sooner would race the watch arriving.
-    pub tile_origins: HashMap<TileKey, egui::Rect>,
     /// What the grid drew on its last pass.
     pub drawn_tiles: HashMap<TileKey, DrawnTile>,
     /// Tiles fading out where they stood.
@@ -85,6 +87,163 @@ pub struct UiState {
     upload_meter: BitrateMeter,
     /// One meter per running encoder, keyed by (live id, preset id); dropped when the encoder stops.
     preset_meters: HashMap<(u32, u32), BitrateMeter>,
+}
+
+/// One bar of the traffic strip: how much arrived in a moment, and whether a keyframe did.
+#[derive(Debug, Clone, Copy)]
+pub struct TrafficBar {
+    pub megabits_per_second: f32,
+    pub keyframe: bool,
+}
+
+/// Real bytes off the wire. No frames means no bars, which is what a still screen looks like.
+#[derive(Debug, Default)]
+pub struct StreamTraffic {
+    last_bytes: u64,
+    last_keyframes: u64,
+    last_at: Option<Instant>,
+    pub bytes_per_second: f64,
+    pub bars: std::collections::VecDeque<TrafficBar>,
+}
+
+impl StreamTraffic {
+    const BARS: usize = 50;
+    const EVERY: f64 = 1.0 / 12.0;
+
+    pub fn sample(&mut self, bytes: u64, keyframes: u64, now: Instant) {
+        let Some(at) = self.last_at else {
+            self.last_at = Some(now);
+            self.last_bytes = bytes;
+            self.last_keyframes = keyframes;
+            return;
+        };
+        let elapsed = now.duration_since(at).as_secs_f64();
+        if elapsed < Self::EVERY {
+            return;
+        }
+        let rate = bytes.saturating_sub(self.last_bytes) as f64 / elapsed;
+        self.bytes_per_second = self.bytes_per_second * 0.85 + rate * 0.15;
+        if self.bytes_per_second < 1_000.0 {
+            self.bytes_per_second = 0.0;
+        }
+        self.bars.push_back(TrafficBar {
+            megabits_per_second: (rate * 8.0 / 1e6) as f32,
+            keyframe: keyframes > self.last_keyframes,
+        });
+        if self.bars.len() > Self::BARS {
+            self.bars.pop_front();
+        }
+        self.last_at = Some(now);
+        self.last_bytes = bytes;
+        self.last_keyframes = keyframes;
+    }
+}
+
+/// A round trip in words. Peers on one network often take under a millisecond, which is not zero.
+pub fn delay_text(rtt_ms: u32) -> String {
+    if rtt_ms == 0 {
+        "<1 ms".to_string()
+    } else {
+        format!("{rtt_ms} ms")
+    }
+}
+
+/// Whether a watched stream has stopped arriving.
+pub fn signal_lost(state: WatchState) -> bool {
+    matches!(state, WatchState::SignalLost | WatchState::Reconnecting)
+}
+
+/// Who joined, how they connect, and what failed, as it happens. Timed from when the room
+/// opened, like a mission clock, which needs no time zone and says how long the room has run.
+#[derive(Debug, Default)]
+pub struct Ledger {
+    started: Option<Instant>,
+    pub lines: std::collections::VecDeque<(String, bool)>,
+    seen: HashMap<iroh::PublicKey, (brp_net::PathKind, bool, String)>,
+    watching: HashSet<TileKey>,
+    primed: bool,
+}
+
+impl Ledger {
+    const KEEP: usize = 5;
+
+    fn add(&mut self, message: String, bad: bool) {
+        let started = *self.started.get_or_insert_with(Instant::now);
+        let seconds = started.elapsed().as_secs();
+        self.lines.push_back((
+            format!("{:02}:{:02} {message}", seconds / 60, seconds % 60),
+            bad,
+        ));
+        if self.lines.len() > Self::KEEP {
+            self.lines.pop_front();
+        }
+    }
+
+    /// Compares the snapshot with what was last seen. Safe to run twice in a frame, because a second
+    /// run sees no difference.
+    pub fn note(&mut self, snapshot: &RoomSnapshot) {
+        use brp_net::PathKind;
+        let path_words = |path: PathKind, rtt: Option<u32>| match (path, rtt) {
+            (PathKind::Direct, Some(rtt)) => format!("direct {}", delay_text(rtt)),
+            (PathKind::Relayed, Some(rtt)) => format!("relayed {}", delay_text(rtt)),
+            (PathKind::Direct, None) => "direct".to_string(),
+            (PathKind::Relayed, None) => "relayed".to_string(),
+            (PathKind::Unknown, _) => "finding a path".to_string(),
+        };
+        if !self.primed {
+            self.primed = true;
+            self.add("Room open".to_string(), false);
+        }
+        let mut present = HashSet::new();
+        for member in &snapshot.members {
+            present.insert(member.id);
+            let lost = member.signal_lost;
+            match self.seen.get(&member.id).cloned() {
+                None => {
+                    let path = path_words(member.path, member.rtt_ms);
+                    self.add(format!("{} joined · {path}", member.nickname), false);
+                }
+                Some((path, was_lost, _)) => {
+                    if lost && !was_lost {
+                        self.add(format!("{}: no signal", member.nickname), true);
+                    } else if was_lost && !lost {
+                        self.add(format!("{} reconnected", member.nickname), false);
+                    } else if path != member.path && member.path != PathKind::Unknown {
+                        let path = path_words(member.path, member.rtt_ms);
+                        self.add(format!("{} · {path}", member.nickname), false);
+                    }
+                }
+            }
+            self.seen
+                .insert(member.id, (member.path, lost, member.nickname.clone()));
+        }
+        let gone: Vec<_> = self
+            .seen
+            .keys()
+            .filter(|id| !present.contains(*id))
+            .copied()
+            .collect();
+        for id in gone {
+            if let Some((_, _, name)) = self.seen.remove(&id) {
+                self.add(format!("{name} left"), false);
+            }
+        }
+        let watching: HashSet<TileKey> = snapshot
+            .watches
+            .iter()
+            .map(|w| (w.publisher, w.live_id))
+            .collect();
+        for key in watching.difference(&self.watching.clone()) {
+            let name = snapshot
+                .members
+                .iter()
+                .find(|m| m.id == key.0)
+                .map_or("Someone", |m| m.nickname.as_str());
+            let title = name.to_string();
+            self.add(format!("Watching {title}"), false);
+        }
+        self.watching = watching;
+    }
 }
 
 impl UiState {
@@ -413,6 +572,9 @@ mod tests {
             lives: Vec::new(),
             seen_ago_ms: 0,
             path: PathKind::Unknown,
+            rtt_ms: None,
+            signal_lost: false,
+            watching_me: false,
             has_audio: false,
             audio_mix: None,
             gain: 1.0,
