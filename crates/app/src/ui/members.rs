@@ -17,7 +17,7 @@ use super::motion;
 use super::own_lives;
 use super::state::{Outcome, UiState, delay_text, ordered_members};
 use super::theme::{self, icons};
-use crate::commands::RoomCommand;
+use crate::commands::{RoomCommand, WindowCommand};
 use crate::link;
 
 const ROW_HEIGHT: f32 = 24.0;
@@ -40,6 +40,7 @@ pub fn draw(
     ticket: &str,
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
+    window_commands: &mut Vec<WindowCommand>,
 ) {
     egui::Panel::left("members")
         .default_size(320.0)
@@ -51,7 +52,7 @@ pub fn draw(
             theme::paint_material(ui, ui.max_rect().expand(16.0));
             theme::brand(ui);
             ui.add_space(8.0);
-            contents(ui, snapshot, ticket, state, commands);
+            contents(ui, snapshot, ticket, state, commands, window_commands);
         });
 }
 
@@ -63,6 +64,7 @@ pub fn contents(
     ticket: &str,
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
+    window_commands: &mut Vec<WindowCommand>,
 ) -> f32 {
     let top = ui.min_rect().top();
     // Two equal columns, so the pair ends on the same edge as the rows below it.
@@ -82,6 +84,13 @@ pub fn contents(
             || ticket.to_string(),
         );
     });
+    ui.add_space(8.0);
+    if theme::text_button(ui, "Leave room", true)
+        .on_hover_text("Stop sharing and watching, then return to the start screen")
+        .clicked()
+    {
+        window_commands.push(WindowCommand::LeaveRoom);
+    }
     ui.add_space(8.0);
     // `snapshot.members` excludes this participant, so count it in.
     theme::section_heading(ui, &format!("{} in this room", snapshot.members.len() + 1));

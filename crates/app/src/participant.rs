@@ -100,6 +100,9 @@ pub fn run(
     // Abort only requests cancellation; wait for every share task so its Arc<Room> clone is gone
     // before the room is unwrapped (a cancelled JoinError is expected).
     let _ = runtime.block_on(ticker);
+    if let Some(leaving) = shutdown.pending_leave {
+        let _ = runtime.block_on(leaving);
+    }
     for task in shutdown.tasks {
         task.abort();
         let _ = runtime.block_on(task);

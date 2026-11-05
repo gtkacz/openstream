@@ -46,6 +46,8 @@ pub enum RoomCommand {
 /// [`RoomCommand`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowCommand {
+    /// Leaves the room and returns to the start screen after cleanup.
+    LeaveRoom,
     /// Moves the live out of the grid into a new window.
     PopOut(TileKey),
     /// Moves the live into a new window that starts borderless fullscreen.

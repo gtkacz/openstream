@@ -66,7 +66,14 @@ pub fn draw(
     let compact = theme::is_compact(ui.ctx());
     motion::dissolve_in(ui.ctx(), "room", theme::ground());
     if !compact {
-        members::draw(ui, snapshot, ticket, state, &mut commands);
+        members::draw(
+            ui,
+            snapshot,
+            ticket,
+            state,
+            &mut commands,
+            &mut window_commands,
+        );
     }
     status::draw(
         ui,
@@ -78,7 +85,14 @@ pub fn draw(
         &mut update_clicked,
     );
     if compact {
-        compact_sheet(ui, snapshot, ticket, state, &mut commands);
+        compact_sheet(
+            ui,
+            snapshot,
+            ticket,
+            state,
+            &mut commands,
+            &mut window_commands,
+        );
     }
     let grid = tiles::draw(
         ui,
@@ -109,6 +123,7 @@ fn compact_sheet(
     ticket: &str,
     state: &mut UiState,
     commands: &mut Vec<RoomCommand>,
+    window_commands: &mut Vec<WindowCommand>,
 ) {
     let limit = (ui.ctx().content_rect().height() * 0.6).max(160.0);
     // Sized by a spring rather than slid, so the video above tracks the sheet's edge on every
@@ -138,7 +153,9 @@ fn compact_sheet(
         .exact_size(height * shown)
         .frame(theme::rail())
         .show(ui, |ui| match state.sheet {
-            state::CompactSheet::Room => members::contents(ui, snapshot, ticket, state, commands),
+            state::CompactSheet::Room => {
+                members::contents(ui, snapshot, ticket, state, commands, window_commands)
+            }
             state::CompactSheet::Share => own_lives::share_sheet(ui, snapshot, state, commands),
         })
         .inner

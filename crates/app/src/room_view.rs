@@ -36,6 +36,29 @@ pub struct RoomView {
 }
 
 impl RoomView {
+    /// Cancels work that owns room clones before closing streams and the endpoint.
+    pub async fn leave(self) {
+        let Self {
+            room,
+            pending_share,
+            pending_listing,
+            handles,
+            ..
+        } = self;
+        drop(handles);
+        let tasks: Vec<_> = pending_share.into_iter().chain(pending_listing).collect();
+        for task in &tasks {
+            task.abort();
+        }
+        for task in tasks {
+            let _ = task.await;
+        }
+        match Arc::try_unwrap(room) {
+            Ok(room) => room.leave().await,
+            Err(_) => tracing::warn!("room still referenced; skipping the orderly leave"),
+        }
+    }
+
     pub fn new(room: Arc<Room>) -> Self {
         let snapshot = room.snapshot();
         let last_ticket = room.ticket();
@@ -389,6 +412,65 @@ mod tests {
         refresh_ticket_cache(&mut last, &mut cached, relayed.clone());
         assert_eq!(cached, relayed.to_string());
         assert_eq!(last, relayed);
+    }
+
+    #[tokio::test]
+    async fn leaving_waits_for_background_room_references_and_allows_rejoining() {
+        let alice = Room::create(config("alice")).await.unwrap();
+        let bob_config = config("bob");
+        let bob_secret = bob_config.secret.clone();
+        let bob = Arc::new(Room::join(bob_config, alice.ticket()).await.unwrap());
+        let weak = Arc::downgrade(&bob);
+        let mut view = RoomView::new(bob);
+        let share_room = view.room.clone();
+        view.pending_share = Some(tokio::spawn(async move {
+            let _room = share_room;
+            std::future::pending::<()>().await;
+        }));
+        // Blocking enumeration cannot be cancelled once it starts; leave must await it too.
+        let listing_room = view.room.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        view.pending_listing = Some(tokio::task::spawn_blocking(move || {
+            let _room = listing_room;
+            let _ = started_tx.send(());
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        }));
+        started_rx.await.unwrap();
+        let mut leaving = tokio::spawn(view.leave());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut leaving)
+                .await
+                .is_err()
+        );
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), leaving)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            weak.upgrade().is_none(),
+            "all room references must be released"
+        );
+
+        let mut config = config("bob");
+        config.secret = bob_secret;
+        let rejoined = Room::join(config, alice.ticket()).await.unwrap();
+        wait_until("bob rejoins", Duration::from_secs(10), || {
+            alice
+                .snapshot()
+                .members
+                .iter()
+                .any(|member| member.id == rejoined.id())
+                && rejoined
+                    .snapshot()
+                    .members
+                    .iter()
+                    .any(|member| member.id == alice.id())
+        })
+        .await;
+        rejoined.leave().await;
+        alice.leave().await;
     }
 
     #[tokio::test]

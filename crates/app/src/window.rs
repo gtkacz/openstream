@@ -69,14 +69,14 @@ pub fn default_window_size(os: &str) -> winit::dpi::Size {
     }
 }
 
-/// Fullscreen from the first frame. The inner size is what leaving fullscreen returns to.
+/// Open maximized, while keeping the window decorations and system controls available.
 fn main_window_attributes() -> WindowAttributes {
     with_app_icon(
         Window::default_attributes()
             .with_title("OpenStream")
             .with_theme(Some(winit::window::Theme::Dark))
             .with_inner_size(default_window_size(std::env::consts::OS))
-            .with_fullscreen(Some(Fullscreen::Borderless(None))),
+            .with_maximized(true),
     )
 }
 
@@ -95,6 +95,8 @@ pub enum AppEvent {
     ShareFinished(Result<(), String>),
     /// The open task finished: the room to show, or the error for the start screen.
     RoomOpened(Result<Arc<Room>, String>),
+    /// The previous room's tasks and endpoint have finished closing.
+    RoomLeft,
     /// The launch check found a newer release.
     UpdateAvailable(Release),
     /// Bytes of the release archive received so far, throttled by the download task.
@@ -110,6 +112,7 @@ pub enum AppEvent {
 /// What the window shows: the start screen, or a room.
 enum Phase {
     Start,
+    Leaving,
     // Boxed: `RoomView` is much larger than `Start`, and clippy's large_enum_variant lint
     // treats the size gap as a wasted-space signal for every `Phase` on the stack.
     Room(Box<RoomView>),
@@ -129,6 +132,8 @@ pub struct Shutdown {
     pub tasks: Vec<JoinHandle<()>>,
     /// Awaited, never aborted: a room it produces after the window closed must still be left.
     pub pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
+    /// Cleanup already in progress must finish even if the window closes.
+    pub pending_leave: Option<JoinHandle<()>>,
     /// The updated binary to start once the room has been left.
     pub relaunch: Option<Relaunch>,
 }
@@ -146,6 +151,7 @@ pub struct App {
     phase: Phase,
     state: UiState,
     pending_open: Option<JoinHandle<Result<Arc<Room>, String>>>,
+    pending_leave: Option<JoinHandle<()>>,
     store: SettingsStore,
     settings_dialog: SettingsDialog,
     /// The intent an open in flight was started with; a join remembers the ticket that got us in,
@@ -209,6 +215,7 @@ impl App {
             phase: Phase::Start,
             state: UiState::new(),
             pending_open: None,
+            pending_leave: None,
             repaint: RepaintSchedule::new(),
             dirty: Arc::new(DirtyStreams::new()),
             visibility: HashMap::new(),
@@ -259,12 +266,13 @@ impl App {
                     .chain(view.pending_listing)
                     .collect(),
             ),
-            Phase::Start => (None, Vec::new()),
+            Phase::Start | Phase::Leaving => (None, Vec::new()),
         };
         Shutdown {
             room,
             tasks,
             pending_open: self.pending_open,
+            pending_leave: self.pending_leave,
             relaunch: self.relaunch,
         }
     }
@@ -272,6 +280,9 @@ impl App {
     /// Builds the launch from the current settings and the retained command line flags, so a
     /// dialog Save applies to the next room without a restart, then opens it in the background.
     fn open(&mut self, intent: Intent) {
+        if self.pending_leave.is_some() {
+            return;
+        }
         self.pending_intent = Some(intent.clone());
         let launch = match Launch::from_settings(&self.store.settings, &self.args) {
             Ok(launch) => launch,
@@ -406,6 +417,39 @@ impl App {
         }
     }
 
+    fn leave_room(&mut self) {
+        if !matches!(self.phase, Phase::Room(_)) {
+            return;
+        }
+        self.remember_way_back();
+        let Phase::Room(view) = std::mem::replace(&mut self.phase, Phase::Leaving) else {
+            unreachable!();
+        };
+        for id in self.popout_windows.keys().copied() {
+            self.repaint.remove(id);
+            self.visibility.remove(&id);
+        }
+        self.popout_windows.clear();
+        self.popouts = PopOuts::new();
+        if let Some(tiles) = &mut self.tiles {
+            tiles.retain(|_| false);
+        }
+        self.dirty.drain();
+        self.state = UiState::new();
+        self.start = StartState::new(self.start.nickname.clone());
+        self.settings_dialog.open = false;
+        self.remembered_ticket = None;
+        if let Some(main) = &self.main {
+            main.window.set_title("OpenStream");
+        }
+        let proxy = self.proxy.clone();
+        self.pending_leave = Some(self.runtime.spawn(async move {
+            view.leave().await;
+            let _ = proxy.send_event(AppEvent::RoomLeft);
+        }));
+        self.request_redraw_all();
+    }
+
     fn request_redraw_all(&self) {
         if let Some(main) = &self.main {
             main.window.request_redraw();
@@ -524,6 +568,13 @@ impl App {
         let mut picked = None;
         let mut ui_frame = main.ui.run(&main.window, [size.0, size.1], |root| {
             match &self.phase {
+                Phase::Leaving => {
+                    egui::CentralPanel::default()
+                        .frame(theme::rail())
+                        .show(root, |ui| {
+                            ui.centered_and_justified(|ui| ui.label("Leaving room…"));
+                        });
+                }
                 Phase::Start => {
                     start_action = start::draw(
                         root,
@@ -742,8 +793,13 @@ impl App {
         event_loop: &ActiveEventLoop,
         commands: Vec<WindowCommand>,
     ) {
+        if commands.contains(&WindowCommand::LeaveRoom) {
+            self.leave_room();
+            return;
+        }
         for command in commands {
             match command {
+                WindowCommand::LeaveRoom => unreachable!(),
                 WindowCommand::PopOut(key) => self.open_popout(event_loop, key, false),
                 WindowCommand::PopOutFullscreen(key) => self.open_popout(event_loop, key, true),
                 WindowCommand::ToggleFullscreen(key) => {
@@ -781,7 +837,7 @@ impl App {
         };
         let title = match &self.phase {
             Phase::Room(view) => live_title(&view.snapshot, key),
-            Phase::Start => None,
+            Phase::Start | Phase::Leaving => None,
         }
         .unwrap_or_else(|| "stream".to_string());
         let attributes = with_app_icon(
@@ -889,8 +945,17 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
         match event {
+            AppEvent::RoomLeft => {
+                self.pending_leave = None;
+                self.dirty.drain();
+                self.phase = Phase::Start;
+            }
             AppEvent::RoomOpened(Ok(room)) => {
-                self.pending_open = None;
+                // Sending the event can wake this thread before the task returns its cloned
+                // outcome. Join it so only the view owns the room when Leave is clicked.
+                if let Some(open) = self.pending_open.take() {
+                    let _ = self.runtime.block_on(open);
+                }
                 self.state = UiState::new();
                 if let Some(main) = &self.main {
                     main.window
@@ -907,11 +972,13 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::ShareFinished(outcome) => {
                 if let Phase::Room(view) = &mut self.phase {
-                    view.pending_share = None;
-                }
-                self.state.share_pending = false;
-                if let Err(message) = outcome {
-                    self.state.status = message;
+                    if let Some(share) = view.pending_share.take() {
+                        let _ = self.runtime.block_on(share);
+                    }
+                    self.state.share_pending = false;
+                    if let Err(message) = outcome {
+                        self.state.status = message;
+                    }
                 }
             }
             AppEvent::UpdateAvailable(release) => {
@@ -929,7 +996,7 @@ impl ApplicationHandler<AppEvent> for App {
                         Phase::Room(view) => {
                             Some(self.runtime.block_on(view.room.rejoin_ticket()).to_string())
                         }
-                        Phase::Start => None,
+                        Phase::Start | Phase::Leaving => None,
                     };
                     self.relaunch = Some(Relaunch::new(install, ticket.as_deref(), &self.args));
                 }
@@ -1238,9 +1305,10 @@ mod tests {
     use iroh::SecretKey;
 
     #[test]
-    fn the_main_window_opens_fullscreen_with_a_size_to_leave_it_for() {
+    fn the_main_window_opens_maximized() {
         let attributes = main_window_attributes();
-        assert_eq!(attributes.fullscreen, Some(Fullscreen::Borderless(None)));
+        assert_eq!(attributes.maximized, true);
+        assert_eq!(attributes.fullscreen, None);
         assert_eq!(
             attributes.inner_size,
             Some(default_window_size(std::env::consts::OS))

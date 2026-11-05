@@ -377,6 +377,43 @@ fn run_room(
 }
 
 #[test]
+fn leave_room_is_clickable_in_the_rail_and_compact_room_sheet() {
+    use brp_app::ui::state::{CompactSheet, UiState};
+    for (width, height) in [(1280.0, 800.0), (390.0, 844.0), (799.0, 600.0)] {
+        let ctx = egui::Context::default();
+        brp_app::ui::theme::install(&ctx);
+        let snapshot = busy_room();
+        let mut state = UiState::new();
+        state.sheet = CompactSheet::Room;
+        state.sheet_open = true;
+        let mut shapes = Vec::new();
+        for frame in 0..60 {
+            let (output, drawn) = run_room(
+                &ctx,
+                timed(window(width, height), frame),
+                &snapshot,
+                &mut state,
+            );
+            assert!(output.window_commands.is_empty());
+            shapes = drawn;
+        }
+        let button = text_rect(&shapes, "Leave room");
+        assert!(button.left() >= 0.0 && button.right() <= width);
+        assert!(button.top() >= 0.0 && button.bottom() <= height);
+        let mut commands = Vec::new();
+        for (frame, pressed) in [(60, true), (61, false)] {
+            let raw = click_at(
+                timed(window(width, height), frame),
+                button.center(),
+                pressed,
+            );
+            commands.extend(run_room(&ctx, raw, &snapshot, &mut state).0.window_commands);
+        }
+        assert_eq!(commands, [brp_app::commands::WindowCommand::LeaveRoom]);
+    }
+}
+
+#[test]
 fn the_video_keeps_most_of_the_window_while_sharing_at_every_width() {
     // One row of controls, its separator, and the gaps around the tile, at every width.
     const LARGEST_DOCK: f32 = 74.0;
