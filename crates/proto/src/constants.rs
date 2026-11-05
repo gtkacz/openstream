@@ -12,6 +12,11 @@ pub const RECEIVE_QUEUE_DURATION: Duration = Duration::from_millis(500);
 pub const RECEIVE_QUEUE_MIN_FRAMES: usize = 8;
 /// Half a second at 240 fps. The rate comes from the publisher, so it cannot set the size alone.
 pub const RECEIVE_QUEUE_MAX_FRAMES: usize = 120;
+/// The most one publisher's connection may hold in frames a viewer has started reading and not
+/// yet dropped. Frame counts alone let a hostile publisher park `MAX_FRAME_BYTES` in every queued
+/// frame and every stream QUIC lets it open, gigabytes in all. Half a second of 4K lossless is
+/// about 100 MB, so two such watches of one publisher still fit.
+pub const RECEIVE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 pub const SENDER_BACKLOG_FRAMES: usize = 2;
 pub const FORCED_KEYFRAME_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// The longest a viewer that keeps falling behind waits between keyframe requests. Every viewer of

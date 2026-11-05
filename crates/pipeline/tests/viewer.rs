@@ -33,8 +33,8 @@ fn encoded_frames(n: u64) -> Vec<EncodedFrame> {
 }
 
 fn received(frame: &EncodedFrame) -> ReceivedFrame {
-    ReceivedFrame {
-        header: FrameHeader {
+    ReceivedFrame::new(
+        FrameHeader {
             live_id: 1,
             preset_id: 1,
             kind: FrameKind::Video,
@@ -43,8 +43,8 @@ fn received(frame: &EncodedFrame) -> ReceivedFrame {
             keyframe: frame.keyframe,
             len: frame.data.len() as u32,
         },
-        payload: frame.data.clone(),
-    }
+        frame.data.clone(),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -175,8 +175,8 @@ mod tests {
     use crate::mixer::Mixer;
 
     fn received(packet: &EncodedFrame) -> ReceivedFrame {
-        ReceivedFrame {
-            header: FrameHeader {
+        ReceivedFrame::new(
+            FrameHeader {
                 live_id: 1,
                 preset_id: AUDIO_PRESET_ID,
                 kind: FrameKind::Audio,
@@ -185,8 +185,8 @@ mod tests {
                 keyframe: true,
                 len: packet.data.len() as u32,
             },
-            payload: packet.data.clone(),
-        }
+            packet.data.clone(),
+        )
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

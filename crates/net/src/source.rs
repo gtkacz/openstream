@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::mpsc::Receiver;
+
+use crate::client::Charge;
 /// Supplies encoded frames to the media server.
 pub trait LiveSource: Send + Sync + 'static {
     fn subscribe(&self, live_id: u32, preset_id: u32) -> Result<Subscription, SubscribeRejected>;
@@ -66,10 +68,22 @@ pub enum SubscribeRejected {
     NoAudio,
 }
 /// One frame read from the media stream, before reordering.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ReceivedFrame {
     pub header: FrameHeader,
     pub payload: Vec<u8>,
+    pub(crate) _charge: Charge,
+}
+
+impl ReceivedFrame {
+    /// A frame that counts against no connection's receive budget.
+    pub fn new(header: FrameHeader, payload: Vec<u8>) -> Self {
+        Self {
+            header,
+            payload,
+            _charge: Charge::default(),
+        }
+    }
 }
 
 #[cfg(test)]
