@@ -1,23 +1,21 @@
-use brp_proto::FrameHeader;
+use brp_net::ReceivedFrame;
+use brp_proto::constants::RECEIVE_QUEUE_MAX_FRAMES;
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
 };
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IncomingFrame {
-    pub header: FrameHeader,
-    pub data: Vec<u8>,
-}
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct Drained {
-    pub ready: Vec<IncomingFrame>,
+    pub ready: Vec<ReceivedFrame>,
     pub request_keyframe: bool,
 }
 pub struct Reorder {
     max_wait: Duration,
     /// `None` while waiting for a keyframe: at start-up and after a gap times out.
     next: Option<u64>,
-    pending: BTreeMap<u64, IncomingFrame>,
+    /// Frames keep their receive-budget charge here, so a publisher that holds a gap open with
+    /// frames far ahead cannot grow this past its connection's budget.
+    pending: BTreeMap<u64, ReceivedFrame>,
     gap: Option<Gap>,
 }
 
@@ -40,7 +38,7 @@ impl Reorder {
         }
     }
 
-    pub fn push(&mut self, frame: IncomingFrame, now: Instant) -> Drained {
+    pub fn push(&mut self, frame: ReceivedFrame, now: Instant) -> Drained {
         let mut out = Drained::default();
         match self.next {
             None if frame.header.keyframe => self.restart_from(frame, &mut out),
@@ -51,6 +49,14 @@ impl Reorder {
             }
             Some(next) => {
                 if frame.header.seq < next || self.pending.contains_key(&frame.header.seq) {
+                    return out;
+                }
+                // No late frame closes a gap wider than a full receive queue, and waiting on it
+                // would let a publisher pile frames up here while trickling `next` forward.
+                if !frame.header.keyframe
+                    && frame.header.seq > next.saturating_add(RECEIVE_QUEUE_MAX_FRAMES as u64)
+                {
+                    self.give_up(&mut out);
                     return out;
                 }
                 self.pending.insert(frame.header.seq, frame);
@@ -74,11 +80,15 @@ impl Reorder {
         if let Some(gap) = self.gap
             && now.duration_since(gap.since) >= self.max_wait
         {
-            self.pending.clear();
-            self.gap = None;
-            self.next = None;
-            out.request_keyframe = true;
+            self.give_up(out);
         }
+    }
+
+    fn give_up(&mut self, out: &mut Drained) {
+        self.pending.clear();
+        self.gap = None;
+        self.next = None;
+        out.request_keyframe = true;
     }
 
     fn note_gap(&mut self, now: Instant) {
@@ -93,7 +103,7 @@ impl Reorder {
     }
 
     /// A keyframe makes everything before it irrelevant; decoding resumes from it.
-    fn restart_from(&mut self, keyframe: IncomingFrame, out: &mut Drained) {
+    fn restart_from(&mut self, keyframe: ReceivedFrame, out: &mut Drained) {
         let seq = keyframe.header.seq;
         self.pending = self.pending.split_off(&(seq + 1));
         self.next = Some(seq + 1);
@@ -128,15 +138,15 @@ impl Reorder {
 
 #[cfg(test)]
 mod tests {
-    use brp_proto::FrameKind;
+    use brp_proto::{FrameHeader, FrameKind};
 
     use super::*;
 
     const WAIT: Duration = Duration::from_millis(200);
 
-    fn f(seq: u64, keyframe: bool) -> IncomingFrame {
-        IncomingFrame {
-            header: FrameHeader {
+    fn f(seq: u64, keyframe: bool) -> ReceivedFrame {
+        ReceivedFrame::new(
+            FrameHeader {
                 live_id: 1,
                 preset_id: 1,
                 kind: FrameKind::Video,
@@ -145,8 +155,8 @@ mod tests {
                 keyframe,
                 len: 0,
             },
-            data: Vec::new(),
-        }
+            Vec::new(),
+        )
     }
 
     fn seqs(d: &Drained) -> Vec<u64> {
@@ -256,5 +266,20 @@ mod tests {
         assert!(r.push(f(0, true), t).ready.is_empty());
         r.push(f(1, false), t);
         assert!(r.push(f(1, false), t).ready.is_empty());
+    }
+
+    #[test]
+    fn a_frame_further_ahead_than_a_full_queue_gives_up_on_the_gap() {
+        let mut r = Reorder::new(WAIT);
+        let t = Instant::now();
+        r.push(f(0, true), t);
+        let beyond = 1 + RECEIVE_QUEUE_MAX_FRAMES as u64 + 1;
+        let given_up = r.push(f(beyond, false), t);
+        assert!(given_up.ready.is_empty() && given_up.request_keyframe);
+        assert!(
+            r.push(f(1, false), t).ready.is_empty(),
+            "waits for a keyframe"
+        );
+        assert_eq!(seqs(&r.push(f(beyond + 1, true), t)), vec![beyond + 1]);
     }
 }

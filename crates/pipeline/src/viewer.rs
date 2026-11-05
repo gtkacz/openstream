@@ -12,7 +12,7 @@ use brp_proto::{EncodedFrame, ViewerMessage};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Receiver, Sender};
 
-use crate::reorder::{Drained, IncomingFrame, Reorder};
+use crate::reorder::{Drained, Reorder};
 use crate::slot::LatestSlot;
 
 pub type FrameNotify = Arc<dyn Fn() + Send + Sync>;
@@ -124,13 +124,7 @@ impl DecodeLoop {
                             .keyframes_received
                             .fetch_add(1, Ordering::Relaxed);
                     }
-                    reorder.push(
-                        IncomingFrame {
-                            header: frame.header,
-                            data: frame.payload,
-                        },
-                        Instant::now(),
-                    )
+                    reorder.push(frame, Instant::now())
                 }
                 Ok(None) => break,
                 Err(_elapsed) => reorder.poll(Instant::now()),
@@ -148,7 +142,7 @@ impl DecodeLoop {
                 seq: frame.header.seq,
                 capture_ts_us: frame.header.capture_ts_us,
                 keyframe: frame.header.keyframe,
-                data: frame.data,
+                data: frame.payload,
             };
             match self.decoder.decode(&encoded) {
                 Ok(raws) => {
@@ -205,9 +199,9 @@ mod tests {
         }
     }
 
-    fn incoming(seq: u64, capture_ts_us: u64, keyframe: bool) -> IncomingFrame {
-        IncomingFrame {
-            header: FrameHeader {
+    fn incoming(seq: u64, capture_ts_us: u64, keyframe: bool) -> ReceivedFrame {
+        ReceivedFrame::new(
+            FrameHeader {
                 live_id: 1,
                 preset_id: 1,
                 kind: FrameKind::Video,
@@ -216,8 +210,8 @@ mod tests {
                 keyframe,
                 len: 0,
             },
-            data: Vec::new(),
-        }
+            Vec::new(),
+        )
     }
 
     #[tokio::test]

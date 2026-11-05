@@ -18,6 +18,6 @@ pub use jitter::{JitterBuffer, Slot};
 pub use mixer::{Mixer, Track, TrackKey};
 pub use pacer::Pacer;
 pub use publisher::{Publisher, PublisherStats};
-pub use reorder::{Drained, IncomingFrame, Reorder};
+pub use reorder::{Drained, Reorder};
 pub use slot::{LatestSlot, SlotWait};
 pub use viewer::{FrameNotify, Viewer, ViewerSink, ViewerStats};
