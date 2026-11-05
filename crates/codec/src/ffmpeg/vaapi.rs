@@ -1,4 +1,5 @@
 use crate::error::CodecError;
+use crate::ffmpeg::encoder::take_capture_ts;
 use crate::ffmpeg::ffi::{
     BufferRef, CodecContext, Frame, Packet, again, check, cstring, init_logging, set_opt,
     set_opt_int,
@@ -152,19 +153,14 @@ impl VaapiEncoder {
             }
             check("avcodec_receive_packet", result)?;
             let pts = unsafe { (*self.packet.0).pts };
-            let timestamp = self
-                .in_flight
-                .pop_front()
-                .map_or(0, |(_, timestamp)| timestamp);
             output.push(EncodedFrame {
                 seq: self.next_seq,
-                capture_ts_us: timestamp,
+                capture_ts_us: take_capture_ts(&mut self.in_flight, pts),
                 keyframe: self.packet.is_keyframe(),
                 data: self.packet.data().to_vec(),
             });
             self.next_seq += 1;
             self.packet.unref();
-            let _ = pts;
         }
     }
 }

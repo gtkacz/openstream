@@ -219,7 +219,7 @@ impl FfmpegEncoder {
             }
             check("avcodec_receive_packet", result)?;
             let pts = unsafe { (*self.packet.0).pts };
-            let capture_ts_us = self.take_capture_ts(pts);
+            let capture_ts_us = take_capture_ts(&mut self.in_flight, pts);
             out.push(EncodedFrame {
                 seq: self.next_seq,
                 capture_ts_us,
@@ -230,15 +230,18 @@ impl FfmpegEncoder {
             self.packet.unref();
         }
     }
-    fn take_capture_ts(&mut self, pts: i64) -> u64 {
-        while let Some(&(front_pts, timestamp)) = self.in_flight.front() {
-            self.in_flight.pop_front();
-            if front_pts >= pts {
-                return timestamp;
-            }
+}
+
+/// The capture timestamp of the frame a packet came from. Matched by pts rather than taken in
+/// order, so a frame rate control dropped does not leave every later packet one frame stale.
+pub(crate) fn take_capture_ts(in_flight: &mut VecDeque<(i64, u64)>, pts: i64) -> u64 {
+    while let Some(&(front_pts, timestamp)) = in_flight.front() {
+        in_flight.pop_front();
+        if front_pts >= pts {
+            return timestamp;
         }
-        0
     }
+    0
 }
 
 /// One private option an encoder is opened with.
@@ -364,12 +367,13 @@ impl VideoEncoder for FfmpegEncoder {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Mutex;
     use std::sync::atomic::Ordering;
 
     use super::{
         EncoderOption, SoftwareEncoderSlot, TOTAL_COMMITTED_LP, claim_software_encoder_lp,
-        low_latency_options,
+        low_latency_options, take_capture_ts,
     };
 
     #[test]
@@ -482,5 +486,14 @@ mod tests {
         drop(b);
         drop(c);
         assert_eq!(TOTAL_COMMITTED_LP.load(Ordering::Relaxed), before);
+    }
+
+    #[test]
+    fn a_frame_rate_control_dropped_does_not_shift_later_timestamps() {
+        let mut in_flight = VecDeque::from([(0, 100), (1, 200), (2, 300), (3, 400)]);
+        assert_eq!(take_capture_ts(&mut in_flight, 0), 100);
+        assert_eq!(take_capture_ts(&mut in_flight, 2), 300, "pts 1 was dropped");
+        assert_eq!(take_capture_ts(&mut in_flight, 3), 400);
+        assert!(in_flight.is_empty());
     }
 }
