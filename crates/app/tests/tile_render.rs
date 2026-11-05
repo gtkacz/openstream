@@ -406,6 +406,51 @@ fn the_horizon_lights_the_foot_of_the_window_and_leaves_the_top_dark() {
     assert!(foot > top + 30.0, "foot {foot} against top {top}");
 }
 
+/// Every window draws this from its first frame, so a shader a platform's compiler rejects would stop
+/// the app at launch. With nothing drawn to glow, it has to leave the window as it found it.
+#[test]
+fn the_chromes_glow_runs_on_this_gpu_and_adds_nothing_when_there_is_nothing_to_glow() {
+    use brp_app::render::bloom::Bloom;
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let size = (320, 180);
+    let mut bloom = Bloom::new(&device, format);
+    let pixels = draw_to_pixels(&device, &queue, size, format, |encoder, view| {
+        drop(
+            bloom
+                .begin(&device, encoder, size, 1.0)
+                .expect("a place to draw"),
+        );
+        bloom.blur(encoder);
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.25,
+                        g: 0.25,
+                        b: 0.25,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+        bloom.show(&mut pass.forget_lifetime());
+    });
+    assert!(
+        pixels
+            .chunks(4)
+            .all(|pixel| pixel[0] == 64 && pixel[3] == 255)
+    );
+}
+
 #[test]
 fn a_tile_that_lost_its_signal_reduces_to_characters_in_the_phosphors_colour() {
     let Some((device, queue)) = gpu() else {
