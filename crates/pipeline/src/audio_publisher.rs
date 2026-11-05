@@ -63,7 +63,7 @@ pub struct AudioPublisher {
     // Held outside `Inner` so the worker thread's `Arc<Inner>` never keeps the sender alive:
     // once every publisher clone and sink closure is gone, the receiver disconnects and the
     // encode loop exits on its own.
-    chunks: SyncSender<AudioChunk>,
+    chunks: SyncSender<(u64, AudioChunk)>,
 }
 
 struct Inner {
@@ -73,11 +73,14 @@ struct Inner {
     stop: AtomicBool,
     stats: AudioPublisherStats,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// The newest sink's. A capture swap keeps this publisher, so chunks still queued or
+    /// half-assembled from the replaced capture are told apart by it and never sent.
+    generation: AtomicU64,
 }
 
 impl AudioPublisher {
     pub fn start(encoder: Box<dyn AudioEncoder>) -> Self {
-        let (tx, rx) = mpsc::sync_channel::<AudioChunk>(CHUNK_QUEUE);
+        let (tx, rx) = mpsc::sync_channel::<(u64, AudioChunk)>(CHUNK_QUEUE);
         let inner = Arc::new(Inner {
             params: encoder.params(),
             encoder_name: encoder.name(),
@@ -85,6 +88,7 @@ impl AudioPublisher {
             stop: AtomicBool::new(false),
             stats: AudioPublisherStats::default(),
             thread: Mutex::new(None),
+            generation: AtomicU64::new(0),
         });
         let worker = inner.clone();
         let handle = thread::Builder::new()
@@ -96,12 +100,13 @@ impl AudioPublisher {
     }
 
     /// The closure a capture backend calls. Never blocks the capture thread: a full queue drops
-    /// the chunk and counts it.
+    /// the chunk and counts it. Taking a new sink retires every earlier one.
     pub fn sink(&self) -> AudioSink {
         let inner = self.inner.clone();
         let chunks = self.chunks.clone();
+        let generation = inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
         Box::new(move |chunk| {
-            if chunks.try_send(chunk).is_err() {
+            if chunks.try_send((generation, chunk)).is_err() {
                 inner.stats.chunks_dropped.fetch_add(1, Ordering::Relaxed);
             }
         })
@@ -139,21 +144,29 @@ impl AudioPublisher {
 
 fn encode_loop(
     inner: Arc<Inner>,
-    chunks: mpsc::Receiver<AudioChunk>,
+    chunks: mpsc::Receiver<(u64, AudioChunk)>,
     mut encoder: Box<dyn AudioEncoder>,
 ) {
     let mut assembler = FrameAssembler::default();
+    let mut assembling = 0;
     // A codec that starts failing usually keeps failing, fifty times a second.
     let mut warned = false;
     // Five packet durations (100 ms): long enough not to spin on an idle line, short enough that
     // an explicit `stop()` is noticed quickly.
     let poll = Duration::from_millis(AUDIO_PACKET_DURATION.as_millis() as u64 * 5);
     while !inner.stop.load(Ordering::Relaxed) {
-        let chunk = match chunks.recv_timeout(poll) {
-            Ok(chunk) => chunk,
+        let (generation, chunk) = match chunks.recv_timeout(poll) {
+            Ok(received) => received,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        if generation != inner.generation.load(Ordering::Relaxed) {
+            continue;
+        }
+        if generation != assembling {
+            assembler = FrameAssembler::default();
+            assembling = generation;
+        }
         for frame in assembler.push(chunk) {
             match encoder.encode(&frame) {
                 Ok(packets) => {
@@ -245,6 +258,33 @@ mod tests {
         assert_eq!(got[1].capture_ts_us, 20_000);
         assert_eq!(publisher.stats().packets_encoded.load(Ordering::Relaxed), 3);
         assert_eq!(publisher.subscriber_count(), 1);
+        publisher.stop();
+    }
+
+    #[test]
+    fn a_replaced_capture_leaves_nothing_in_the_frames_after_it() {
+        let publisher =
+            AudioPublisher::start(Box::new(brp_codec::fake::FakeAudioEncoder::default()));
+        let mut rx = publisher.subscribe();
+        let mut deselected = publisher.sink();
+        deselected(chunk(AudioFrame::FRAME_LEN / 2, 1_000, 1.0));
+        let mut selected = publisher.sink();
+        selected(chunk(AudioFrame::FRAME_LEN, 50_000, 0.5));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let first = loop {
+            match rx.try_recv() {
+                Ok(packet) => break packet,
+                Err(_) => {
+                    assert!(std::time::Instant::now() < deadline, "nothing was encoded");
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        };
+        assert_eq!(
+            first.capture_ts_us, 50_000,
+            "the first frame began with the replaced capture's samples"
+        );
         publisher.stop();
     }
 
