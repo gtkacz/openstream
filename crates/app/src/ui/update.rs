@@ -77,8 +77,8 @@ pub fn notice(release: &Release, can_apply: bool) -> String {
 pub fn progress_text(received: u64, total: Option<u64>) -> String {
     let received = received / BYTES_PER_MB;
     match total {
-        Some(total) => format!("downloading {received} MB / {} MB", total / BYTES_PER_MB),
-        None => format!("downloading {received} MB"),
+        Some(total) => format!("Downloading {received} MB of {} MB…", total / BYTES_PER_MB),
+        None => format!("Downloading {received} MB…"),
     }
 }
 
@@ -173,8 +173,8 @@ mod tests {
     fn progress_text_truncates_to_whole_megabytes() {
         assert_eq!(
             progress_text(12_999_999, Some(41_000_000)),
-            "downloading 12 MB / 41 MB"
+            "Downloading 12 MB of 41 MB…"
         );
-        assert_eq!(progress_text(999_999, None), "downloading 0 MB");
+        assert_eq!(progress_text(999_999, None), "Downloading 0 MB…");
     }
 }

@@ -17,38 +17,43 @@ pub struct Cli {
 }
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Share one live headlessly and print the ticket.
+    /// Share one stream without a window and print the ticket.
     Publish(PublishArgs),
-    /// Open a new room in the participant window.
+    /// Create a room and open it in a window.
     Create(CreateArgs),
-    /// Join a room with a ticket or link in the participant window.
+    /// Join a room in a window, using a ticket or invite link.
     Join(JoinArgs),
 }
 #[derive(Args, Debug)]
 pub struct PublishArgs {
+    /// Frame rate ceiling for the capture.
     #[arg(long, default_value_t = DEFAULT_FPS)]
     pub fps: u32,
+    /// Bitrate of the Source quality, in kilobits per second.
     #[arg(long)]
     pub bitrate_kbps: Option<u32>,
+    /// Video codec for every quality.
     #[arg(long, value_enum)]
     pub codec: Option<CodecArg>,
+    /// What to share.
     #[arg(long, value_enum, default_value_t = SourceArg::Monitor)]
     pub source: SourceArg,
+    /// Disables relays (LAN only).
     #[arg(long)]
     pub no_relay: bool,
-    /// Join this room, given as a ticket or link, instead of creating a new one.
+    /// Join this room, given as a ticket or invite link, instead of creating a new one.
     #[arg(long)]
     pub ticket: Option<String>,
-    /// Shown to other participants. Defaults to the short peer id.
+    /// The name other people in the room see. Defaults to the short peer ID.
     #[arg(long)]
     pub nickname: Option<String>,
 }
 #[derive(Args, Debug, Default, Clone)]
 pub struct WindowArgs {
-    /// Shown to other participants. Overrides the saved nickname for this launch.
+    /// The name other people in the room see. Overrides the saved name for this launch.
     #[arg(long)]
     pub nickname: Option<String>,
-    /// Capture ceiling for lives shared from the window; each live's presets can go lower.
+    /// Frame rate ceiling for streams shared from the window; each stream's qualities can go lower.
     /// Overrides the saved setting for this launch.
     #[arg(long)]
     pub fps: Option<u32>,
@@ -63,7 +68,7 @@ pub struct CreateArgs {
 }
 #[derive(Args, Debug)]
 pub struct JoinArgs {
-    /// A ticket, a share link, or a brp:// link.
+    /// A ticket, an invite link, or a brp:// link.
     pub ticket: String,
     #[command(flatten)]
     pub window: WindowArgs,

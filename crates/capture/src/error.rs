@@ -1,7 +1,7 @@
 use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum CaptureError {
-    #[error("portal denied")]
+    #[error("Not sharing: the system share dialog was closed or denied. Share again to reopen it.")]
     PortalDenied,
     #[error("portal: {0}")]
     Portal(String),
@@ -11,13 +11,13 @@ pub enum CaptureError {
     SourceLost(String),
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
-    #[error("windows: {0}")]
+    #[error("Windows: {0}")]
     Windows(String),
     #[error(
-        "screen recording is not allowed: turn on OpenStream under System Settings › Privacy & Security › Screen & System Audio Recording ({0})"
+        "Screen recording is not allowed. Turn on OpenStream under System Settings › Privacy & Security › Screen & System Audio Recording. ({0})"
     )]
     PermissionDenied(String),
-    #[error("macos: {0}")]
+    #[error("macOS: {0}")]
     MacOs(String),
 }
 

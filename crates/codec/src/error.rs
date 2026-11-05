@@ -17,10 +17,10 @@ pub enum CodecError {
     InvalidFrame(String),
     #[error("fake codec payload is corrupt: {0}")]
     FakePayload(#[from] postcard::Error),
-    #[error("no encoder available for {0:?}")]
+    #[error("no encoder available for {}", .0.name())]
     NoEncoder(brp_proto::Codec),
-    #[error("no encoder on this machine can send {0:?} at 4:4:4")]
+    #[error("no encoder on this machine can send {} at 4:4:4", .0.name())]
     NoFullChromaEncoder(brp_proto::Codec),
-    #[error("no decoder available for {0:?}")]
+    #[error("no decoder available for {}", .0.name())]
     NoDecoder(brp_proto::Codec),
 }

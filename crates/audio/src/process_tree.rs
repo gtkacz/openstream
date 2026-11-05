@@ -98,7 +98,8 @@ pub(crate) fn held_back_notice(held_back: &BTreeSet<AppKey>) -> Option<String> {
     }
     let names: Vec<&str> = held_back.iter().map(AppKey::as_str).collect();
     Some(format!(
-        "Not sharing {}: other audio it started would be shared too",
+        "Not sharing {}: other audio it started would be shared too. Stop that audio or \
+                 choose All applications.",
         names.join(", ")
     ))
 }

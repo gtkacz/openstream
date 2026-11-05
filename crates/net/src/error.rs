@@ -1,7 +1,7 @@
 use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum NetError {
-    #[error("failed to bind endpoint: {0}")]
+    #[error("Could not open a network connection. Check your network and try again. ({0})")]
     Bind(String),
     #[error("failed to connect: {0}")]
     Connect(String),

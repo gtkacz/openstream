@@ -189,10 +189,22 @@ fn notices(
                 *update_clicked = true;
             }
             if let Some(error) = &snapshot.audio_output_error {
-                ui.colored_label(theme::error(), format!("No audio output: {error}"));
+                ui.colored_label(
+                    theme::error(),
+                    format!(
+                        "No audio output. Check your audio device or choose another in Settings, \
+                 then rejoin the room. ({error})"
+                    ),
+                );
             }
             if let Some(error) = audio_error {
-                ui.colored_label(theme::error(), format!("Audio failed: {error}"));
+                ui.colored_label(
+                    theme::error(),
+                    format!(
+                        "Not sharing audio. Turn Share audio off and on to try again. \
+                 ({error})"
+                    ),
+                );
             }
             if let Some(notice) = audio_limit {
                 ui.colored_label(theme::warning(), notice);

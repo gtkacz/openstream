@@ -71,7 +71,7 @@ impl StartState {
             StartAction::Join => match link::parse_ticket(&self.ticket) {
                 Ok(ticket) => Intent::Join(ticket),
                 Err(error) => {
-                    self.error = format!("invalid ticket: {error}");
+                    self.error = crate::error::AppError::Ticket(error).to_string();
                     return None;
                 }
             },
@@ -231,7 +231,7 @@ fn form(
     }
     ui.label(egui::RichText::new("Share your screen").font(theme::semibold(28.0)));
     ui.label(
-        egui::RichText::new("Peer to peer, with no account to make")
+        egui::RichText::new("Peer to peer, no account needed")
             .size(14.0)
             .color(theme::secondary()),
     );
@@ -240,7 +240,7 @@ fn form(
     ui.add_enabled_ui(!state.connecting, |ui| {
         theme::field(
             ui,
-            egui::TextEdit::singleline(&mut state.nickname).hint_text("Nickname"),
+            egui::TextEdit::singleline(&mut state.nickname).hint_text("Your name"),
             theme::FORM_HEIGHT,
         );
     });
@@ -270,7 +270,8 @@ fn form(
     ui.add_enabled_ui(!state.connecting, |ui| {
         theme::field(
             ui,
-            egui::TextEdit::singleline(&mut state.ticket).hint_text("Paste a room link or ticket"),
+            egui::TextEdit::singleline(&mut state.ticket)
+                .hint_text("Paste an invite link or ticket"),
             theme::FORM_HEIGHT,
         );
     });
@@ -333,7 +334,7 @@ fn invite_form(ui: &mut egui::Ui, state: &mut StartState, action: &mut Option<St
         .add_enabled_ui(!state.connecting, |ui| {
             theme::field(
                 ui,
-                egui::TextEdit::singleline(&mut state.nickname).hint_text("Nickname"),
+                egui::TextEdit::singleline(&mut state.nickname).hint_text("Your name"),
                 theme::FORM_HEIGHT,
             )
         })
@@ -625,7 +626,11 @@ mod tests {
         state.ticket = "not a ticket".into();
         assert_eq!(state.submit(StartAction::Join), None);
         assert!(!state.connecting);
-        assert!(state.error.starts_with("invalid ticket"), "{}", state.error);
+        assert!(
+            state.error.starts_with("That link or ticket is not valid"),
+            "{}",
+            state.error
+        );
     }
 
     #[test]

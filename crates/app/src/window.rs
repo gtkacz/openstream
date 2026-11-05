@@ -218,8 +218,10 @@ impl App {
             relaunch: None,
         };
         if let Some(message) = &app.store.load_error {
-            app.start
-                .show_error(&format!("settings not loaded, defaults in use: {message}"));
+            app.start.show_error(&format!(
+                "Settings not loaded, so defaults are in use. Fix the file and restart, or \
+                 choose Save changes in Settings to replace it. ({message})"
+            ));
         }
         if let Some(message) = &start_error {
             app.start.show_error(message);
@@ -307,7 +309,8 @@ impl App {
                 });
                 if let Err(error) = spawned {
                     tracing::warn!(%error, "could not open the link in a new window");
-                    self.state.status = format!("could not open the link: {error}");
+                    self.state.status =
+                        format!("Could not open the link in a new window. Try again. ({error})");
                 }
             }
         }
@@ -369,7 +372,7 @@ impl App {
             self.store.settings.nickname = Some(nickname);
         }
         if let Err(error) = self.store.save_unless_load_failed() {
-            self.state.status = format!("settings not saved: {error}");
+            self.state.status = settings_not_saved(&error);
         }
     }
 
@@ -633,7 +636,7 @@ impl App {
             // and a save failure belongs on it. A failure is a status line, not a blocked
             // selection: the choice already applies for this session.
             if persist && let Err(error) = self.store.save_unless_load_failed() {
-                self.state.status = format!("settings not saved: {error}");
+                self.state.status = settings_not_saved(&error);
             }
             if let Some(main) = &self.main {
                 main.window.request_redraw();
@@ -650,7 +653,7 @@ impl App {
         if let Some(settings) = saved {
             self.store.settings = settings;
             if let Err(error) = self.store.save() {
-                self.settings_dialog.error = format!("could not save: {error}");
+                self.settings_dialog.error = settings_not_saved(&error);
                 self.settings_dialog.open = true;
             } else {
                 // The file is now what we wrote, so a stale "not loaded" message no longer holds.
@@ -769,7 +772,7 @@ impl App {
             Phase::Room(view) => live_title(&view.snapshot, key),
             Phase::Start => None,
         }
-        .unwrap_or_else(|| "live".to_string());
+        .unwrap_or_else(|| "stream".to_string());
         let attributes = with_app_icon(
             Window::default_attributes()
                 .with_title(format!("OpenStream · {title}"))
@@ -780,14 +783,20 @@ impl App {
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
-                self.state.status = format!("pop-out failed: {error}");
+                self.state.status = format!(
+                    "Could not open the pop-out, so the stream stays in the grid. Try again. \
+                 ({error})"
+                );
                 return;
             }
         };
         let surface = match WindowSurface::new(gpu, window) {
             Ok(surface) => surface,
             Err(error) => {
-                self.state.status = format!("pop-out failed: {error}");
+                self.state.status = format!(
+                    "Could not open the pop-out, so the stream stays in the grid. Try again. \
+                 ({error})"
+                );
                 return;
             }
         };
@@ -896,7 +905,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.state.share_pending = false;
                 if let Err(message) = outcome {
-                    self.state.status = format!("share failed: {message}");
+                    self.state.status = message;
                 }
             }
             AppEvent::UpdateAvailable(release) => {
@@ -1058,6 +1067,10 @@ impl ApplicationHandler<AppEvent> for App {
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
+}
+
+fn settings_not_saved(error: &crate::error::AppError) -> String {
+    format!("Settings not saved. Check that you can write to the file, then try again. ({error})")
 }
 
 /// The egui-point rects of one pass as pixel viewports on a surface of `size`. Leaving tiles go

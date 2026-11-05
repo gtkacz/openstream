@@ -184,10 +184,7 @@ pub fn audio_controls(
     const SWITCH_INSET: f32 = 10.0;
     let status = audio_status(snapshot);
     let selection = selection_summary(&snapshot.own_audio.selection);
-    let tooltip = match (&status, show_status) {
-        (Some(status), false) => format!("{selection} · {status}"),
-        _ => selection,
-    };
+    let tooltip = chooser_tooltip(selection, status.as_deref(), show_status);
     // Painted under the two controls afterwards rather than framed around them: a frame is a group,
     // which starts at the top of a row instead of its centre and cannot wrap with the row.
     let backing = ui.painter().add(egui::Shape::Noop);
@@ -219,6 +216,15 @@ pub fn audio_controls(
     );
     if let (true, Some(status)) = (show_status, &status) {
         ui.weak(status);
+    }
+}
+
+/// What the room hears, plus the status when the dock has no room to show it. With nothing selected
+/// the two say the same thing, so it is said once.
+fn chooser_tooltip(selection: String, status: Option<&str>, show_status: bool) -> String {
+    match status {
+        Some(status) if !show_status && status != selection => format!("{selection} · {status}"),
+        _ => selection,
     }
 }
 
@@ -314,15 +320,15 @@ fn live_rows(
             if failing {
                 ui.colored_label(
                     theme::error(),
-                    egui::RichText::new("Needs attention").small(),
+                    egui::RichText::new("needs attention").small(),
                 );
             } else if streaming {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                ui.colored_label(theme::live(), egui::RichText::new("Live").small());
+                ui.colored_label(theme::live(), egui::RichText::new("live").small());
                 theme::live_dot(ui, true);
             } else {
                 ui.label(
-                    egui::RichText::new("Ready")
+                    egui::RichText::new("ready")
                         .small()
                         .color(theme::secondary()),
                 );
@@ -371,17 +377,11 @@ fn live_rows(
             }
 
             let mut codec = current_codec;
-            theme::dropdown(
-                ui,
-                ("codec", info.id),
-                codec_name(codec),
-                Some(72.0),
-                |ui| {
-                    for candidate in [Codec::Hevc, Codec::H264, Codec::Av1] {
-                        ui.selectable_value(&mut codec, candidate, codec_name(candidate));
-                    }
-                },
-            );
+            theme::dropdown(ui, ("codec", info.id), codec.name(), Some(72.0), |ui| {
+                for candidate in [Codec::Hevc, Codec::H264, Codec::Av1] {
+                    ui.selectable_value(&mut codec, candidate, candidate.name());
+                }
+            });
             if codec != current_codec {
                 edits.push(RoomCommand::SetPresets {
                     live_id: info.id,
@@ -405,6 +405,9 @@ fn live_rows(
                 format!("{} failed: {error}", preset.preset.name),
             );
         }
+    }
+    if failing {
+        ui.colored_label(theme::error(), "Choose another codec or quality");
     }
     if live.presets.iter().any(|preset| {
         preset
@@ -511,7 +514,6 @@ fn preset_detail(ui: &mut egui::Ui, live_id: u32, view: &PresetView, state: &UiS
     let dimensions = format!("{} × {}", preset.width, preset.height);
     match (&view.encoder, &view.last_error) {
         (Some(encoder), _) => {
-            let plural = if encoder.subscribers == 1 { "" } else { "s" };
             let measured = state.preset_kbps(live_id, preset.id).unwrap_or(0);
             // Two fixed lines, because wrapped as one they break next to a separator.
             ui.label(theme::figure(format!(
@@ -520,28 +522,38 @@ fn preset_detail(ui: &mut egui::Ui, live_id: u32, view: &PresetView, state: &UiS
             )))
             .on_hover_text(encoder.name);
             ui.label(theme::figure(format!(
-                "{} · {} viewer{plural}",
+                "{} · {} watching",
                 bitrate(measured),
                 encoder.subscribers
             )))
             .on_hover_text(format!("{} frames encoded", encoder.frames_encoded))
         }
-        (None, Some(error)) => ui.colored_label(theme::error(), format!("failed: {error}")),
+        (None, Some(error)) => ui.colored_label(theme::error(), format!("Failed: {error}")),
         (None, None) => ui.label(theme::figure(format!("{dimensions} · idle"))),
     };
-}
-
-fn codec_name(codec: Codec) -> &'static str {
-    match codec {
-        Codec::H264 => "H.264",
-        Codec::Hevc => "HEVC",
-        Codec::Av1 => "AV1",
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chooser_tooltip_says_a_status_matching_the_selection_only_once() {
+        let nothing = "No applications selected";
+        assert_eq!(
+            chooser_tooltip(nothing.to_string(), Some(nothing), false),
+            nothing
+        );
+        assert_eq!(
+            chooser_tooltip("All applications".to_string(), Some("2 listeners"), false),
+            "All applications · 2 listeners"
+        );
+        assert_eq!(
+            chooser_tooltip("All applications".to_string(), Some("2 listeners"), true),
+            "All applications",
+            "the status is already on screen beside the chooser"
+        );
+    }
 
     #[test]
     fn a_rate_reads_in_kilobits_until_it_reaches_a_megabit_and_holds_one_decimal_after() {

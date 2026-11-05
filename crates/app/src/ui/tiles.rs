@@ -42,7 +42,7 @@ const TOOLBAR_HEIGHT: f32 = 40.0;
 const BAR_PADDING: f32 = 4.0;
 const TOOLBAR_MARGIN: f32 = 8.0;
 const EMPTY_GAP: f32 = 4.0;
-const PUBLISHER_LEFT: &str = "Publisher left";
+const SHARING_STOPPED: &str = "Sharing stopped";
 /// How long a picture takes to reduce to characters, cell by cell, once its signal is gone.
 const REDUCE_SECONDS: f32 = 1.5;
 const WARM_UP_SECONDS: f32 = 0.42;
@@ -220,7 +220,8 @@ pub fn draw(
                     Placement::Grid,
                 );
                 tile_edge(ui, rect, 1.0);
-                let title = live_title(snapshot, key).unwrap_or_else(|| PUBLISHER_LEFT.to_string());
+                let title =
+                    live_title(snapshot, key).unwrap_or_else(|| SHARING_STOPPED.to_string());
                 state.drawn_tiles.insert(
                     key,
                     DrawnTile {
@@ -312,7 +313,7 @@ fn canvas_contents(
         heading(
             ui,
             "Watching in pop-outs",
-            "Your streams are open in their own windows",
+            "Choose Back to grid in a pop-out to bring its stream here",
         );
         return;
     }
@@ -665,7 +666,7 @@ pub fn tile_overlay(
     let response = ui.allocate_rect(rect, egui::Sense::hover());
     let publisher = snapshot.members.iter().find(|m| m.id == key.0);
     let live = publisher.and_then(|m| m.lives.iter().find(|l| l.id == key.1));
-    let title = live_title(snapshot, key).unwrap_or_else(|| PUBLISHER_LEFT.to_string());
+    let title = live_title(snapshot, key).unwrap_or_else(|| SHARING_STOPPED.to_string());
     let chip = chip_text(snapshot, key, &title);
     let lost = signal_lost(watch.state);
     let now = ui.input(|input| input.time);
@@ -873,7 +874,7 @@ pub fn tile_overlay(
                             }
                             Placement::PopOut { fullscreen } => {
                                 let (glyph, label) = if fullscreen {
-                                    (icons::WINDOWED, "Windowed")
+                                    (icons::WINDOWED, "Exit fullscreen")
                                 } else {
                                     (icons::FULLSCREEN, "Fullscreen")
                                 };

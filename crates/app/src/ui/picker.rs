@@ -20,9 +20,15 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState, commands: &mut Vec<RoomCom
     let Some(picker) = ctx.data(|data| data.get_temp::<SourcePicker>(leaving_id)) else {
         return;
     };
-    let title = match picker.kind {
-        SourceKind::Monitor => "Share a monitor",
-        SourceKind::Window => "Share a window",
+    let (title, nothing_to_share) = match picker.kind {
+        SourceKind::Monitor => (
+            "Share a monitor",
+            "No monitors are available to share. Check that one is connected, then try again.",
+        ),
+        SourceKind::Window => (
+            "Share a window",
+            "No windows are available to share. Open the one you want, then try again.",
+        ),
     };
     let glyph = match picker.kind {
         SourceKind::Monitor => theme::icons::SHARE_MONITOR,
@@ -32,7 +38,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState, commands: &mut Vec<RoomCom
     let mut cancelled = false;
     let Some((_, dismissed)) = theme::dialog(ctx, "source-picker", title, open, |ui| {
         if picker.choices.is_empty() {
-            ui.weak("No screens or windows are available to share");
+            ui.weak(nothing_to_share);
         }
         egui::ScrollArea::vertical()
             .max_height((ctx.content_rect().height() - 200.0).clamp(120.0, MAX_LIST_HEIGHT))

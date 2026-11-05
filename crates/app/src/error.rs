@@ -9,13 +9,15 @@ pub enum AppError {
     Room(#[from] brp_room::RoomError),
     #[error("preset rejected: {0}")]
     Preset(#[from] brp_proto::PresetError),
-    #[error("invalid ticket: {0}")]
+    #[error("That link or ticket is not valid. Ask someone in the room for a new one. ({0})")]
     Ticket(#[from] iroh_tickets::ParseError),
-    #[error("identity file: {0}")]
+    #[error("{0}")]
     Identity(String),
-    #[error("window system: {0}")]
+    #[error(
+        "Could not open a window. Check your display and graphics driver, then try again. ({0})"
+    )]
     Window(String),
-    #[error("settings: {0}")]
+    #[error("{0}")]
     Settings(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use brp_capture::{SourceId, SourceListing};
 use brp_proto::{RoomTicket, SourceKind};
-use brp_room::{Room, RoomSnapshot, WatchHandle};
+use brp_room::{Room, RoomError, RoomSnapshot, WatchHandle};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use winit::event_loop::EventLoopProxy;
@@ -168,11 +168,15 @@ impl RoomView {
                     }
                     Ok(SourceListing::Choices(choices)) => {
                         if !state.open_picker(kind, choices) {
-                            state.status = "a share is already in progress".into();
+                            state.status =
+                                "A share is already in progress. Finish it, then try again.".into();
                         }
                         Ok(())
                     }
-                    Err(error) => Err(error),
+                    Err(error) => {
+                        state.status = share_failure(&error);
+                        Ok(())
+                    }
                 },
                 RoomCommand::SetAudio(enabled) => {
                     self.room.set_audio(enabled);
@@ -201,7 +205,10 @@ impl RoomView {
                         state.open_applications(sources, stored, self.room.send_volume_support());
                         Ok(())
                     }
-                    Err(error) => Err(error),
+                    Err(error) => {
+                        state.status = format!("Could not list applications. Try again. ({error})");
+                        Ok(())
+                    }
                 },
             };
             if let Err(error) = result {
@@ -260,9 +267,21 @@ impl RoomView {
                 .start_live(kind, source, title)
                 .await
                 .map(|_live_id| ())
-                .map_err(|error| error.to_string());
+                .map_err(|error| share_failure(&error));
             let _ = proxy.send_event(AppEvent::ShareFinished(outcome));
         }));
+    }
+}
+
+/// What the dock says when a share cannot start. A refusal and the room's limit already say what
+/// to do, and a generic next step would only contradict them.
+fn share_failure(error: &RoomError) -> String {
+    match error {
+        RoomError::TooManyLives => error.to_string(),
+        RoomError::Capture(capture) if capture.is_refusal() => error.to_string(),
+        _ => format!(
+            "Could not start sharing. Try again or choose another monitor or window. ({error})"
+        ),
     }
 }
 
@@ -279,7 +298,7 @@ fn refresh_ticket_cache(last: &mut RoomTicket, cached: &mut String, current: Roo
 mod tests {
     use super::*;
     use brp_audio::{AudioSelection, FakeOutput, SyntheticTone};
-    use brp_capture::SyntheticSource;
+    use brp_capture::{CaptureError, SyntheticSource};
     use brp_net::RelaySetting;
     use brp_proto::SourceKind;
     use brp_proto::constants::SOURCE_PRESET_ID;
@@ -332,6 +351,22 @@ mod tests {
     fn sample_addr(port: u16) -> EndpointAddr {
         let id = SecretKey::from_bytes(&[port as u8; 32]).public();
         EndpointAddr::new(id).with_ip_addr(SocketAddr::from(([192, 168, 1, 10], port)))
+    }
+
+    #[test]
+    fn a_failed_share_gets_a_next_step_unless_the_error_already_says_what_to_do() {
+        let refused = RoomError::Capture(CaptureError::PortalDenied);
+        assert_eq!(share_failure(&refused), refused.to_string());
+        assert_eq!(
+            share_failure(&RoomError::TooManyLives),
+            RoomError::TooManyLives.to_string()
+        );
+        let failed = share_failure(&RoomError::Capture(CaptureError::Portal("no reply".into())));
+        assert!(
+            failed.starts_with("Could not start sharing. Try again"),
+            "{failed}"
+        );
+        assert!(failed.contains("no reply"), "{failed}");
     }
 
     #[test]

@@ -4,9 +4,9 @@ use thiserror::Error;
 pub enum AudioError {
     #[error("PipeWire: {0}")]
     PipeWire(String),
-    #[error("windows: {0}")]
+    #[error("Windows: {0}")]
     Windows(String),
-    #[error("macos: {0}")]
+    #[error("macOS: {0}")]
     MacOs(String),
     #[error("unsupported on this system: {0}")]
     Unsupported(String),

@@ -18,7 +18,9 @@ fn main() -> ExitCode {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("error: could not start the async runtime: {e}");
+            eprintln!(
+                "error: could not start the async runtime: {e}. Close other programs and try again."
+            );
             return ExitCode::FAILURE;
         }
     };

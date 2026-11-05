@@ -449,6 +449,28 @@ fn a_compact_window_folds_the_room_into_a_sheet_and_keeps_the_video_placed() {
 }
 
 #[test]
+fn a_rejected_save_says_why_where_it_can_be_seen_rather_than_below_the_fold() {
+    use brp_app::{settings::Settings, ui::settings};
+    const HEIGHT: f32 = 480.0;
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut dialog = settings::SettingsDialog::default();
+    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    dialog.error = "Enter a relay URL".to_string();
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        let mut output = ctx.run_ui(window(1280.0, HEIGHT), |ui| {
+            settings::draw(ui.ctx(), &mut dialog, false);
+        });
+        output.textures_delta.clear();
+        shapes = output.shapes;
+    }
+    let error = text_rects(&shapes, "Enter a relay URL");
+    assert_eq!(error.len(), 1, "the form scrolls past this height");
+    assert!(error[0].bottom() <= HEIGHT, "{:?}", error[0]);
+}
+
+#[test]
 fn escape_cancels_settings_but_a_stray_click_on_the_backdrop_keeps_the_draft() {
     use brp_app::{settings::Settings, ui::settings};
     let ctx = egui::Context::default();

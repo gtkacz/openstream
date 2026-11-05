@@ -213,7 +213,7 @@ fn circuit(
                 &live.info.title,
             )
         });
-        let row = row.on_hover_text("Quality and encoding");
+        let row = row.on_hover_text("Quality & encoding");
         if row.clicked() {
             if open {
                 state.own_open.remove(&live.info.id);
@@ -530,14 +530,14 @@ fn stream_row(
     }
     let figure = watch.map(|w| match w.state {
         WatchState::SignalLost | WatchState::Reconnecting => {
-            ("↓ 0 Mb/s".to_string(), theme::error())
+            ("↓ 0 Mbps".to_string(), theme::error())
         }
         WatchState::Connecting => ("connecting".to_string(), theme::secondary()),
         WatchState::Ended => ("ended".to_string(), theme::secondary()),
         WatchState::Live => {
             let rate = state.traffic.get(&key).map_or(0.0, |t| t.bytes_per_second);
             (
-                format!("↓ {:.1} Mb/s", rate * 8.0 / 1e6),
+                format!("↓ {:.1} Mbps", rate * 8.0 / 1e6),
                 theme::secondary(),
             )
         }

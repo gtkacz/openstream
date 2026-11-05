@@ -161,8 +161,8 @@ pub fn swaps_capture(before: &AudioApplications, after: &AudioApplications) -> b
 /// The one-line summary beside the button: what the room hears.
 pub fn selection_summary(selection: &AudioSelection) -> String {
     match selection {
-        AudioSelection::All => "all applications".to_string(),
-        AudioSelection::Only(keys) if keys.is_empty() => "no applications selected".to_string(),
+        AudioSelection::All => "All applications".to_string(),
+        AudioSelection::Only(keys) if keys.is_empty() => "No applications selected".to_string(),
         AudioSelection::Only(keys) => {
             let plural = if keys.len() == 1 { "" } else { "s" };
             format!("{} application{plural}", keys.len())
@@ -213,7 +213,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                 false,
                 "All applications (except OpenStream)",
             );
-            theme::radio(ui, &mut picker.only, true, "Only the applications I select");
+            theme::radio(ui, &mut picker.only, true, "Only selected applications");
             let only = picker.only;
             ui.horizontal(|ui| {
                 // Starts on the radio labels' edge, since this list belongs to the radio above it.
@@ -221,7 +221,10 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) -> Option<PickerOutcome> {
                 ui.vertical(|ui| {
                     if rows.is_empty() {
                         ui.add_space(4.0);
-                        ui.weak("No applications are playing audio");
+                        ui.weak(
+                            "No applications are playing audio. Play something and it \
+                 appears here.",
+                        );
                     }
                     let list_height =
                         (ctx.content_rect().height() - 280.0).clamp(120.0, MAX_LIST_HEIGHT);
@@ -535,10 +538,10 @@ mod tests {
 
     #[test]
     fn the_summary_names_the_mode_and_counts_the_set() {
-        assert_eq!(selection_summary(&AudioSelection::All), "all applications");
+        assert_eq!(selection_summary(&AudioSelection::All), "All applications");
         assert_eq!(
             selection_summary(&AudioSelection::Only(BTreeSet::new())),
-            "no applications selected"
+            "No applications selected"
         );
         assert_eq!(
             selection_summary(&AudioSelection::Only(BTreeSet::from([AppKey::new("a")]))),

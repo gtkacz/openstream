@@ -14,6 +14,16 @@ pub enum Codec {
     Hevc,
     Av1,
 }
+impl Codec {
+    /// What people call it: the name in the interface and in errors.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::Hevc => "HEVC",
+            Self::Av1 => "AV1",
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
     Monitor,

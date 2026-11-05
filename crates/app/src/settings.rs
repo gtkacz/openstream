@@ -73,10 +73,13 @@ impl RelayChoice {
         Ok(match self {
             RelayChoice::Default => RelaySetting::Default,
             RelayChoice::Disabled => RelaySetting::Disabled,
-            RelayChoice::Custom(url) => RelaySetting::Custom(
-                url.parse::<RelayUrl>()
-                    .map_err(|e| AppError::Settings(format!("relay URL {url:?}: {e}")))?,
-            ),
+            RelayChoice::Custom(url) => {
+                RelaySetting::Custom(url.parse::<RelayUrl>().map_err(|e| {
+                    AppError::Settings(format!(
+                        "Enter a relay URL like https://relay.example.com/ ({url:?}: {e})"
+                    ))
+                })?)
+            }
         })
     }
 }
@@ -141,8 +144,13 @@ pub struct RecentRoom {
 
 impl Settings {
     pub fn path() -> Result<PathBuf, AppError> {
-        let dirs = ProjectDirs::from("", "", "brp")
-            .ok_or_else(|| AppError::Settings("no home directory to store settings in".into()))?;
+        let dirs = ProjectDirs::from("", "", "brp").ok_or_else(|| {
+            AppError::Settings(
+                "No home directory to store settings in. Run OpenStream as a user with a \
+                 home directory."
+                    .into(),
+            )
+        })?;
         Ok(dirs.config_dir().join(SETTINGS_FILE))
     }
 
@@ -206,7 +214,7 @@ impl Settings {
     /// What Save refuses: a zero frame rate, or a custom relay URL that does not parse.
     pub fn validate(&self) -> Result<(), String> {
         if self.fps == 0 {
-            return Err("frame rate ceiling must be at least 1".into());
+            return Err("Set the frame rate ceiling to at least 1 fps".into());
         }
         self.relay
             .to_relay_setting()

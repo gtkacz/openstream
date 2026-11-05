@@ -63,13 +63,13 @@ can be opened directly:
 ```
 cargo build --release
 
-# Open a new room in the participant window
+# Create a room and open it in a window
 ./target/release/brp create [--nickname N] [--fps 60] [--no-relay]
 
-# Join a room in the participant window; a ticket, a share link, or a brp:// link
+# Join a room in a window; a ticket, an invite link, or a brp:// link
 ./target/release/brp join <ticket-or-link> [--nickname N] [--fps 60] [--no-relay]
 
-# Share one live headlessly and print the ticket, creating a room or joining one
+# Share one stream without a window and print the ticket, creating a room or joining one
 ./target/release/brp publish --nickname alice [--ticket <ticket-or-link>] [--fps 60] [--bitrate-kbps N] [--codec hevc|h264|av1] [--source monitor|window] [--no-relay]
 ```
 
@@ -306,7 +306,7 @@ addresses of the peer that issued it, or of the members present when you last
 left that room, so treat the file as you would the tickets themselves. On Unix it
 is written with mode `0600`.
 
-A share link carries the ticket in its fragment, which the browser never sends
+An invite link carries the ticket in its fragment, which the browser never sends
 to the page's server, but browser history, chat logs, and clipboard managers
 keep the whole link, so treat a link exactly as you would the ticket. The join
 page is one static file on GitHub Pages that loads nothing from third parties.

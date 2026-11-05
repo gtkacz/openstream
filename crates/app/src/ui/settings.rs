@@ -211,7 +211,8 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     if let Some(error) = &dialog.devices_error {
                         ui.colored_label(
                             theme::error(),
-                            format!("Could not list output devices: {error}"),
+                            format!("Could not list output devices. Check your audio system, then reopen \
+                 Settings. ({error})"),
                         );
                     }
                 });
@@ -232,11 +233,12 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     ui.add_space(ROW_GAP);
                     ui.weak("Changes apply to the next room you open");
                 }
-                if !dialog.error.is_empty() {
-                    ui.add_space(ROW_GAP);
-                    ui.colored_label(theme::error(), &dialog.error);
-                }
             });
+        // Outside the scroll area, because the row Save rejects can be scrolled out of view.
+        if !dialog.error.is_empty() {
+            ui.add_space(ROW_GAP);
+            ui.colored_label(theme::error(), &dialog.error);
+        }
         theme::dialog_footer(
             ui,
             |_| {},

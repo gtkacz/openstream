@@ -11,8 +11,13 @@ use std::str::FromStr;
 /// The key this process runs as, and the lock that makes it this process's alone. Hold the lock for
 /// as long as the key is in use.
 pub fn load_or_create() -> Result<(SecretKey, Option<File>), AppError> {
-    let dirs = ProjectDirs::from("", "", "brp")
-        .ok_or_else(|| AppError::Identity("no home directory to store the identity in".into()))?;
+    let dirs = ProjectDirs::from("", "", "brp").ok_or_else(|| {
+        AppError::Identity(
+            "No home directory to store the identity in. Run OpenStream as a user with a \
+                 home directory."
+                .into(),
+        )
+    })?;
     load_or_create_at(&dirs.config_dir().join("identity.key"))
 }
 
@@ -22,7 +27,7 @@ pub fn load_or_create() -> Result<(SecretKey, Option<File>), AppError> {
 /// key.
 pub fn load_or_create_at(path: &Path) -> Result<(SecretKey, Option<File>), AppError> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        fs::create_dir_all(dir).map_err(|error| not_saved(path, error))?;
     }
     let claim = OpenOptions::new()
         .create(true)
@@ -47,14 +52,27 @@ pub fn load_or_create_at(path: &Path) -> Result<(SecretKey, Option<File>), AppEr
     }
 }
 
+fn not_saved(path: &Path, error: std::io::Error) -> AppError {
+    AppError::Identity(format!(
+        "Could not save {} ({error}). Check that you can write to that folder, then start \
+                 OpenStream again.",
+        path.display()
+    ))
+}
+
 fn saved_or_new(path: &Path) -> Result<SecretKey, AppError> {
     if let Ok(text) = fs::read_to_string(path) {
         return SecretKey::from_str(text.trim()).map_err(|e| {
-            AppError::Identity(format!("{} is not a valid key: {e}", path.display()))
+            AppError::Identity(format!(
+                "{} is not a valid identity key ({e}). Delete it to create a new identity, then \
+                 start OpenStream again.",
+                path.display()
+            ))
         });
     }
     let key = SecretKey::generate();
-    write_private(path, HEXLOWER.encode(&key.to_bytes()).as_bytes())?;
+    write_private(path, HEXLOWER.encode(&key.to_bytes()).as_bytes())
+        .map_err(|error| not_saved(path, error))?;
     tracing::info!(path = %path.display(), id = %key.public().fmt_short(), "created a new identity");
     Ok(key)
 }
@@ -114,6 +132,15 @@ mod tests {
         drop(lock);
         let (again, _) = load_or_create_at(&path).unwrap();
         assert_eq!(first.to_bytes(), again.to_bytes());
+    }
+    #[test]
+    fn a_key_that_cannot_be_saved_names_the_file_and_what_to_do() {
+        let path = temp_path("unwritable");
+        // A file where the folder should be fails the same way on every platform.
+        fs::write(path.parent().unwrap(), "").unwrap();
+        let error = load_or_create_at(&path).unwrap_err().to_string();
+        assert!(error.contains("identity.key"), "{error}");
+        assert!(error.contains("Check that you can write"), "{error}");
     }
     #[test]
     fn corrupt_key_file_is_reported_not_overwritten() {

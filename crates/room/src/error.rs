@@ -13,18 +13,20 @@ pub enum RoomError {
     Audio(#[from] brp_audio::AudioError),
     #[error(transparent)]
     Proto(#[from] brp_proto::ProtoError),
-    #[error("gossip failed: {0}")]
+    #[error("Could not reach the room. Check your connection and try again. ({0})")]
     Gossip(String),
-    #[error("no room member answered within the join timeout")]
+    #[error(
+        "No one in the room answered. Check your connection or ask for a new invite link, then try again."
+    )]
     JoinTimeout,
-    #[error("{0} is not a member of the room")]
+    #[error("That person is no longer in the room")]
     UnknownMember(EndpointId),
-    #[error("unknown live {0}")]
+    #[error("That stream is no longer available")]
     UnknownLive(u32),
-    #[error("unknown preset {0}")]
+    #[error("That quality is no longer available. Choose another.")]
     UnknownPreset(u32),
-    #[error("the room limit of lives per participant is reached")]
+    #[error("You are sharing as many streams as a room allows. Stop one to share another.")]
     TooManyLives,
-    #[error("not watching that live")]
+    #[error("You are not watching that stream")]
     NotWatching,
 }

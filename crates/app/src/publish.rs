@@ -78,7 +78,7 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     let snapshot = room.snapshot();
     let own = &snapshot.own_lives[0];
     println!(
-        "Nickname: {}  Live: {} ({}x{} @ {} fps, {} presets)",
+        "Nickname: {}  Stream: {} ({}x{} @ {} fps, {} presets)",
         snapshot.nickname,
         own.info.title,
         own.info.source_width,
@@ -88,7 +88,9 @@ pub async fn run(args: PublishArgs) -> Result<(), AppError> {
     );
     let ticket = room.ticket().to_string();
     println!(
-        "Ticket:\n{ticket}\n\nLink:\n{}\n\nShare either: brp join <ticket-or-link>. Press Ctrl-C to stop.",
+        "Ticket:\n{ticket}\n\nInvite link:\n{}\n\n\
+         Send either to someone you want in the room. They can open the link or run \
+         brp join <ticket-or-link>.\nPress Ctrl-C to stop.",
         link::share_link(&ticket)
     );
 

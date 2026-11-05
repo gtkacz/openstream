@@ -59,7 +59,11 @@
     const schemeLink = "brp://join/" + ticket;
     document.getElementById("retry").href = schemeLink;
     document.getElementById("ticket").textContent = ticket;
-    document.getElementById("copy").addEventListener("click", () => navigator.clipboard.writeText(ticket));
+    const copy = document.getElementById("copy");
+    copy.addEventListener("click", () => navigator.clipboard.writeText(ticket).then(() => {
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy ticket"; }, 1500);
+    }));
     location.href = schemeLink;
     // A browser with a handler leaves this page; one without stays and gets the fallback.
     setTimeout(() => show("fallback"), 1500);
