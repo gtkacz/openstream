@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "1.7.0"
 edition = "2024"
 license = "MIT"
-rust-version = "1.91"
+rust-version = "1.95"
 
 [workspace.dependencies]
 brp-proto = { path = "crates/proto" }

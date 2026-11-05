@@ -254,7 +254,7 @@ impl Charge {
     pub(crate) fn grow(&mut self, bytes: usize) -> bool {
         let grown = self
             .budget
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
                 held.checked_add(bytes)
                     .filter(|&total| total <= RECEIVE_BUDGET_BYTES)
             })
