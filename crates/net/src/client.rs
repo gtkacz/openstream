@@ -264,6 +264,12 @@ impl Charge {
         }
         grown
     }
+
+    /// Gives back all but `bytes`, once the frame holds no more than that.
+    pub(crate) fn settle(&mut self, bytes: usize) {
+        self.budget.fetch_sub(self.bytes - bytes, Ordering::Relaxed);
+        self.bytes = bytes;
+    }
 }
 
 impl Drop for Charge {
@@ -288,12 +294,13 @@ async fn read_frame(
                     tracing::debug!("frame stream too long");
                     return None;
                 }
-                // Over budget, the rest is read and discarded rather than the stream stopped: a
-                // publisher's sender gives up on a stopped stream, which would freeze this watch.
+                // Over budget, the rest is read and discarded rather than the stream stopped: an
+                // older publisher's sender gives up on a stopped stream, freezing this watch.
                 if let Some((bytes, charge)) = &mut kept {
-                    if charge.grow(chunk.len()) {
-                        bytes.extend_from_slice(&chunk);
-                    } else {
+                    // Charged by capacity: a growing buffer holds up to twice what it was sent.
+                    let capacity = bytes.capacity();
+                    bytes.extend_from_slice(&chunk);
+                    if !charge.grow(bytes.capacity() - capacity) {
                         tracing::debug!("dropping a frame over the receive budget");
                         kept = None;
                     }
@@ -318,7 +325,7 @@ async fn receive_frames(conn: Connection, routes: Routes) {
         let warned = warned.clone();
         let budget = budget.clone();
         tokio::spawn(async move {
-            let Some((bytes, charge)) = read_frame(&mut stream, &budget).await else {
+            let Some((bytes, mut charge)) = read_frame(&mut stream, &budget).await else {
                 return;
             };
             let (header, payload) = match FrameHeader::decode_prefixed(&bytes) {
@@ -348,9 +355,12 @@ async fn receive_frames(conn: Connection, routes: Routes) {
                 .cloned();
             match route {
                 Some(sender) => {
+                    let payload = payload.to_vec();
+                    drop(bytes);
+                    charge.settle(payload.len());
                     let frame = ReceivedFrame {
                         header,
-                        payload: payload.to_vec(),
+                        payload,
                         _charge: charge,
                     };
                     // Never waits for room. QUIC gives its stream credit back as soon as a stream
@@ -373,6 +383,7 @@ async fn receive_frames(conn: Connection, routes: Routes) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::connected_pair;
 
     #[test]
     fn the_queue_holds_half_a_second_of_video_within_its_bounds() {
@@ -424,30 +435,45 @@ mod tests {
         assert!(second.grow(1), "and takes more once a frame is gone");
     }
 
+    #[test]
+    fn a_settled_frame_keeps_only_what_it_still_holds() {
+        let budget = Arc::new(AtomicUsize::new(0));
+        let mut charge = Charge::new(budget.clone());
+        assert!(charge.grow(1_000));
+        charge.settle(400);
+        assert_eq!(budget.load(Ordering::Relaxed), 400);
+        drop(charge);
+        assert_eq!(budget.load(Ordering::Relaxed), 0);
+    }
+
+    /// Larger than a stream's initial receive window, so the publisher's write is still blocked
+    /// while the viewer reads, as a real keyframe's would be.
+    const LARGE_FRAME: usize = 4 * 1024 * 1024;
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_frame_over_the_budget_is_read_through_so_the_publisher_keeps_sending() {
-        use crate::{RelaySetting, bind_endpoint};
-        use iroh::SecretKey;
-
-        let publisher = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
-            .await
-            .unwrap();
-        publisher.set_alpns(vec![MEDIA_ALPN.to_vec()]);
-        let viewer = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
-            .await
-            .unwrap();
-        let (viewer_conn, publisher_conn) =
-            tokio::join!(viewer.connect(publisher.addr(), MEDIA_ALPN), async {
-                publisher.accept().await.unwrap().await
-            });
-        let (viewer_conn, publisher_conn) = (viewer_conn.unwrap(), publisher_conn.unwrap());
-
-        // Larger than a stream's initial receive window, so the write is still blocked when the
-        // viewer refuses it, as a real keyframe's would be.
-        let frame = vec![0u8; 4 * 1024 * 1024];
+    async fn a_frame_being_read_is_charged_for_the_buffer_it_really_holds() {
+        let ((_viewer, viewer_conn), (_publisher, publisher_conn)) = connected_pair().await;
         let writer = tokio::spawn(async move {
             let mut send = publisher_conn.open_uni().await.unwrap();
-            send.write_all(&frame)
+            send.write_all(&vec![0u8; LARGE_FRAME]).await.unwrap();
+            send.finish().unwrap();
+            send.stopped().await.unwrap()
+        });
+        let mut stream = viewer_conn.accept_uni().await.unwrap();
+        let budget = Arc::new(AtomicUsize::new(0));
+        let (bytes, _charge) = read_frame(&mut stream, &budget).await.unwrap();
+
+        assert_eq!(bytes.len(), LARGE_FRAME);
+        assert_eq!(budget.load(Ordering::Relaxed), bytes.capacity());
+        writer.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_frame_over_the_budget_is_read_through_so_the_publisher_keeps_sending() {
+        let ((_viewer, viewer_conn), (_publisher, publisher_conn)) = connected_pair().await;
+        let writer = tokio::spawn(async move {
+            let mut send = publisher_conn.open_uni().await.unwrap();
+            send.write_all(&vec![0u8; LARGE_FRAME])
                 .await
                 .expect("the viewer stopped the stream");
             send.finish().unwrap();
