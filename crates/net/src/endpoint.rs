@@ -45,3 +45,22 @@ pub async fn bind_endpoint(
         .await
         .map_err(|e| NetError::Bind(e.to_string()))
 }
+
+/// Two fresh local endpoints and a direct connection between them: the dialler's, then the
+/// acceptor's. The endpoints are returned because dropping one aborts its connections.
+#[cfg(test)]
+pub(crate) async fn connected_pair() -> (
+    (Endpoint, iroh::endpoint::Connection),
+    (Endpoint, iroh::endpoint::Connection),
+) {
+    let acceptor = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let dialler = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let (dialled, accepted) = tokio::join!(dialler.connect(acceptor.addr(), MEDIA_ALPN), async {
+        acceptor.accept().await.unwrap().await
+    });
+    ((dialler, dialled.unwrap()), (acceptor, accepted.unwrap()))
+}

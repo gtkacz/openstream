@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use brp_proto::constants::{AUDIO_PRESET_ID, MAX_CONTROL_BYTES, REFUSED_NOT_MEMBER};
 use brp_proto::{EncodedFrame, FrameHeader, FrameKind, PublisherMessage, ViewerMessage};
-use iroh::endpoint::{Connection, SendStream};
+use iroh::endpoint::{Connection, SendStream, WriteError};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
@@ -197,11 +197,17 @@ async fn write_frame(
 ) -> Result<(), NetError> {
     let mut stream = conn.open_uni().await.map_err(NetError::connection)?;
     stream.set_priority(priority).map_err(NetError::stream)?;
-    stream
-        .write_all(&header.encode_prefix()?)
-        .await
-        .map_err(NetError::stream)?;
-    stream.write_all(data).await.map_err(NetError::stream)?;
+    let prefix = header.encode_prefix()?;
+    let written = async {
+        stream.write_all(&prefix).await?;
+        stream.write_all(data).await
+    }
+    .await;
+    match written {
+        // A viewer that stops one frame's stream dropped that frame, not the subscription.
+        Err(WriteError::Stopped(_)) => return Ok(()),
+        written => written.map_err(NetError::stream)?,
+    }
     stream.finish().map_err(NetError::stream)?;
     Ok(())
 }
@@ -252,4 +258,31 @@ async fn send_audio(
         write_frame(&conn, header, &packet.data, AUDIO_STREAM_PRIORITY).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::endpoint::connected_pair;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_frame_the_viewer_stops_is_dropped_without_failing_the_sender() {
+        let ((_viewer, viewer_conn), (_publisher, publisher_conn)) = connected_pair().await;
+        // Larger than a stream's initial receive window, so the stop arrives mid-write.
+        let data = vec![0u8; 4 * 1024 * 1024];
+        let header = FrameHeader {
+            live_id: 1,
+            preset_id: 1,
+            kind: FrameKind::Video,
+            seq: 0,
+            capture_ts_us: 0,
+            keyframe: true,
+            len: data.len() as u32,
+        };
+        let (sent, ()) = tokio::join!(write_frame(&publisher_conn, header, &data, 0), async {
+            let mut stream = viewer_conn.accept_uni().await.unwrap();
+            stream.stop(0u32.into()).unwrap();
+        });
+        assert!(sent.is_ok(), "{sent:?}");
+    }
 }
