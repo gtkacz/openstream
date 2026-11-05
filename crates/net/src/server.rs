@@ -2,7 +2,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use brp_proto::constants::{AUDIO_PRESET_ID, MAX_CONTROL_BYTES, REFUSED_NOT_MEMBER};
+use brp_proto::constants::{
+    AUDIO_PRESET_ID, MAX_CONTROL_BYTES, MAX_FRAME_BYTES, REFUSED_NOT_MEMBER,
+};
 use brp_proto::{EncodedFrame, FrameHeader, FrameKind, PublisherMessage, ViewerMessage};
 use iroh::endpoint::{Connection, SendStream, WriteError};
 use iroh::protocol::{AcceptError, ProtocolHandler};
@@ -205,7 +207,10 @@ async fn write_frame(
     .await;
     match written {
         // A viewer that stops one frame's stream dropped that frame, not the subscription.
-        Err(WriteError::Stopped(_)) => return Ok(()),
+        Err(WriteError::Stopped(code)) => {
+            tracing::debug!(seq = header.seq, %code, "the viewer stopped a frame; dropping it");
+            return Ok(());
+        }
         written => written.map_err(NetError::stream)?,
     }
     stream.finish().map_err(NetError::stream)?;
@@ -219,7 +224,20 @@ async fn send_frames(
     preset_id: u32,
     mut frames: Receiver<Arc<EncodedFrame>>,
 ) -> Result<(), NetError> {
+    // An encoder that makes one oversized frame usually keeps making them.
+    let mut warned = false;
     while let Some(frame) = frames.recv().await {
+        // Every viewer refuses these, so sending one only wastes the link.
+        if frame.data.len() > MAX_FRAME_BYTES {
+            if !std::mem::replace(&mut warned, true) {
+                tracing::warn!(
+                    seq = frame.seq,
+                    len = frame.data.len(),
+                    "skipping a frame larger than viewers accept; further ones are silent"
+                );
+            }
+            continue;
+        }
         let len = u32::try_from(frame.data.len())
             .map_err(|_| NetError::Protocol("frame larger than u32"))?;
         let header = FrameHeader {
@@ -284,5 +302,30 @@ mod tests {
             stream.stop(0u32.into()).unwrap();
         });
         assert!(sent.is_ok(), "{sent:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_frame_no_viewer_would_accept_is_skipped_rather_than_sent() {
+        let ((_viewer, viewer_conn), (_publisher, publisher_conn)) = connected_pair().await;
+        let (control, _) = publisher_conn.open_bi().await.unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        for (seq, len) in [(0, MAX_FRAME_BYTES + 1), (1, 16)] {
+            let frame = EncodedFrame {
+                seq,
+                capture_ts_us: 0,
+                keyframe: true,
+                data: vec![0; len],
+            };
+            tx.send(Arc::new(frame)).await.unwrap();
+        }
+        drop(tx);
+        // A clone, so the connection outlives the sender and stays open for the read below.
+        let sender = tokio::spawn(send_frames(publisher_conn.clone(), control, 1, 1, rx));
+
+        let mut stream = viewer_conn.accept_uni().await.unwrap();
+        let bytes = stream.read_to_end(MAX_FRAME_BYTES).await.unwrap();
+        let (header, _) = FrameHeader::decode_prefixed(&bytes).unwrap();
+        assert_eq!(header.seq, 1);
+        sender.await.unwrap().unwrap();
     }
 }
