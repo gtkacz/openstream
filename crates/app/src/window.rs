@@ -1307,7 +1307,7 @@ mod tests {
     #[test]
     fn the_main_window_opens_maximized() {
         let attributes = main_window_attributes();
-        assert_eq!(attributes.maximized, true);
+        assert!(attributes.maximized);
         assert_eq!(attributes.fullscreen, None);
         assert_eq!(
             attributes.inner_size,
