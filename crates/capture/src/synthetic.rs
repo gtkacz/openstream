@@ -143,8 +143,10 @@ mod tests {
         assert!(
             frames
                 .windows(2)
-                .all(|w| w[1].capture_ts_us > w[0].capture_ts_us)
+                .all(|w| w[1].capture_ts_us >= w[0].capture_ts_us)
         );
+        // Catch-up frames can land in the same microsecond after a scheduling delay.
+        assert!(frames.last().unwrap().capture_ts_us > frames[0].capture_ts_us);
     }
 
     #[test]
