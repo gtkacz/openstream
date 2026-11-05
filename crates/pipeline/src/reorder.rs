@@ -40,6 +40,10 @@ impl Reorder {
 
     pub fn push(&mut self, frame: ReceivedFrame, now: Instant) -> Drained {
         let mut out = Drained::default();
+        // No honest stream reaches it, and a frame there would overflow `next`.
+        if frame.header.seq == u64::MAX {
+            return out;
+        }
         match self.next {
             None if frame.header.keyframe => self.restart_from(frame, &mut out),
             // Every frame travels on its own QUIC stream, so the small frames after a keyframe
@@ -281,5 +285,13 @@ mod tests {
             "waits for a keyframe"
         );
         assert_eq!(seqs(&r.push(f(beyond + 1, true), t)), vec![beyond + 1]);
+    }
+
+    #[test]
+    fn a_keyframe_at_the_last_sequence_number_is_ignored() {
+        let mut r = Reorder::new(WAIT);
+        let t = Instant::now();
+        assert!(r.push(f(u64::MAX, true), t).ready.is_empty());
+        assert_eq!(seqs(&r.push(f(7, true), t)), vec![7]);
     }
 }

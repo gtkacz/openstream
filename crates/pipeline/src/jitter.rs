@@ -42,6 +42,10 @@ impl JitterBuffer {
     }
 
     pub fn push(&mut self, packet: EncodedFrame, now: Instant) {
+        // No honest stream reaches it, and playing it would overflow `next_seq`.
+        if packet.seq == u64::MAX {
+            return;
+        }
         if packet.seq < self.next_seq {
             self.late += 1;
             self.target = (self.target + JITTER_STEP).min(JITTER_MAX_DEPTH);
@@ -254,5 +258,24 @@ mod tests {
         jb.push(packet(5), t0);
         jb.push(packet(6), t0);
         assert_eq!(seq_of(jb.pop(t0)), Some(3));
+    }
+
+    #[test]
+    fn the_last_sequence_number_is_never_played() {
+        let t0 = Instant::now();
+        let mut jb = JitterBuffer::new(t0);
+        for seq in u64::MAX - 2..=u64::MAX {
+            jb.push(
+                EncodedFrame {
+                    seq,
+                    capture_ts_us: 0,
+                    keyframe: true,
+                    data: vec![0],
+                },
+                t0,
+            );
+        }
+        let played: Vec<_> = (0..6).filter_map(|_| seq_of(jb.pop(t0))).collect();
+        assert!(!played.contains(&u64::MAX), "{played:?}");
     }
 }
