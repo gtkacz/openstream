@@ -45,7 +45,6 @@ egui-winit = "0.36"
 pollster = "1.0"
 ab_glyph = "0.2"
 bytemuck = { version = "1.25", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
 embed-resource = "3.0"
 windows-capture = "2.0"
 windows = { version = "0.62", features = [

@@ -23,7 +23,8 @@ struct Scene {
     shown: f32,
     glyphs: f32,
     churn: f32,
-    pad: vec2<f32>,
+    quiet_reach: f32,
+    quiet_strength: f32,
     ground: vec4<f32>,
     dim: vec4<f32>,
     phosphor: vec4<f32>,
@@ -31,6 +32,9 @@ struct Scene {
     spark: vec4<f32>,
     stirs: array<vec4<f32>, 16>,
     rings: array<vec4<f32>, 4>,
+    quiet: array<vec4<f32>, 3>,
+    push: array<vec4<f32>, 24>,
+    push_life: array<vec4<f32>, 6>,
 };
 
 struct Vertex {
@@ -76,13 +80,101 @@ struct Light {
     order: f32,
 };
 
-// Rises from the foot of the window, higher towards the right.
-fn horizon(at: vec2<f32>) -> Light {
-    let aspect = scene.window.x / scene.window.y;
-    let up = 1.0 - at.y;
-    let crest = mix(0.27, 0.44, at.x / aspect) + drift(at * 1.4) * 0.07;
-    let fall = 1.0 - smoothstep(0.0, crest, up);
-    return Light(fall * fall * scene.gain, clamp(up * 1.5, 0.0, 1.0));
+// Offset so that negative coordinates hash like positive ones.
+fn lattice(at: vec2<f32>) -> f32 {
+    return chance(vec2<u32>(vec2<i32>(floor(at)) + vec2<i32>(4096)), 7u);
+}
+
+fn noise(at: vec2<f32>) -> f32 {
+    let i = floor(at);
+    let f = fract(at);
+    let u = f * f * (3.0 - 2.0 * f);
+    let low = mix(lattice(i), lattice(i + vec2<f32>(1.0, 0.0)), u.x);
+    let high = mix(lattice(i + vec2<f32>(0.0, 1.0)), lattice(i + vec2<f32>(1.0, 1.0)), u.x);
+    return mix(low, high, u.y);
+}
+
+fn fbm(start: vec2<f32>) -> f32 {
+    var at = start;
+    var sum = 0.0;
+    var amplitude = 0.5;
+    for (var n = 0; n < 4; n++) {
+        sum += amplitude * noise(at);
+        at = at * 2.03 + vec2<f32>(1.7, 9.2);
+        amplitude *= 0.5;
+    }
+    return sum / 0.9375;
+}
+
+// One noise field warped by two others, so the light gathers in folds that drift and change shape
+// rather than sliding past as a fixed pattern.
+fn folds(at: vec2<f32>) -> f32 {
+    let t = scene.drift_clock;
+    let p = at * 1.5;
+    let q = vec2<f32>(
+        fbm(p + vec2<f32>(0.0, t * 0.07)),
+        fbm(p + vec2<f32>(5.2, 1.3) + vec2<f32>(t * 0.06, 0.0)),
+    );
+    let r = vec2<f32>(
+        fbm(p + 2.0 * q + vec2<f32>(1.7, 9.2) - vec2<f32>(t * 0.04)),
+        fbm(p + 2.0 * q + vec2<f32>(8.3, 2.8) + vec2<f32>(t * 0.035)),
+    );
+    return fbm(p + 2.2 * r);
+}
+
+// 1 inside a region the interface sits on, easing to 0 over the reach, so the field thins out
+// towards text instead of stopping at its edge.
+fn quiet(at: vec2<f32>) -> f32 {
+    var most = 0.0;
+    for (var n = 0; n < 3; n++) {
+        let region = scene.quiet[n];
+        let outside = max(max(region.xy - at, at - region.zw), vec2<f32>(0.0));
+        most = max(most, 1.0 - smoothstep(0.0, scene.quiet_reach, length(outside)));
+    }
+    return most * scene.quiet_strength;
+}
+
+// How far, in window heights squared, a push sample's reach spreads.
+const PUSH_NEAR: f32 = 0.0045;
+const PUSH_SCALE: f32 = 0.012;
+// The longest a push can shift the field, so a fast flick bends it rather than tearing it.
+const PUSH_SOFTEN: f32 = 0.06;
+const PUSH_LIGHT: f32 = 0.22;
+const PUSH_STIR: f32 = 0.35;
+// The speed, in window heights a second, at which a push counts as fully fast.
+const PUSH_FAST: f32 = 1.5;
+
+struct Wake {
+    shift: vec2<f32>,
+    strength: f32,
+};
+
+// The recent pointer samples near this place, as how far they push the field and how strongly.
+fn push_at(at: vec2<f32>) -> Wake {
+    var sum = vec2<f32>(0.0);
+    var strongest = 0.0;
+    for (var n = 0; n < 24; n++) {
+        let life = scene.push_life[n / 4][n % 4];
+        if (life <= 0.0) {
+            continue;
+        }
+        let recent = scene.push[n];
+        let off = at - recent.xy;
+        let near = exp(-dot(off, off) / PUSH_NEAR);
+        sum += recent.zw * life * near;
+        strongest = max(strongest, life * near * min(length(recent.zw), PUSH_FAST) / PUSH_FAST);
+    }
+    let shift = sum * PUSH_SCALE;
+    return Wake(shift / (1.0 + length(shift) / PUSH_SOFTEN), strongest);
+}
+
+// The floor leaves sparse faint dots in the dark between folds. The push's light is added before
+// the quiet, so the pointer cannot light the ground under text. Bright places resolve first.
+fn field(at: vec2<f32>, wake: Wake) -> Light {
+    let lit = 0.06 + 0.94 * smoothstep(0.44, 0.8, folds(at - wake.shift))
+        + PUSH_LIGHT * wake.strength;
+    let amount = lit * scene.gain * (1.0 - quiet(at));
+    return Light(amount, 1.0 - 0.8 * clamp(amount, 0.0, 1.0));
 }
 
 // Falls away from a point, the way the delay it sits behind does.
@@ -107,8 +199,10 @@ fn fs_cells(vertex: Vertex) -> @location(0) vec4<f32> {
     let place = vec2<u32>(cell);
     let at = (cell + 0.5) * scene.cell / scene.window.y;
     var light: Light;
+    var wake = Wake(vec2<f32>(0.0), 0.0);
     if (scene.kind < 0.5) {
-        light = horizon(at);
+        wake = push_at(at);
+        light = field(at, wake);
     } else {
         light = scope(at);
     }
@@ -122,7 +216,7 @@ fn fs_cells(vertex: Vertex) -> @location(0) vec4<f32> {
     // A cell resolves through noise rather than fading in, and whatever stirs it goes back to noise.
     let due = light.order * 0.7 + own * 0.3;
     let resolved = clamp((scene.opening * 1.4 - due) / 0.4, 0.0, 1.0);
-    var stirred = 1.0 - resolved;
+    var stirred = max(1.0 - resolved, PUSH_STIR * wake.strength);
     for (var n = 0; n < 16; n++) {
         let stir = scene.stirs[n];
         if (stir.z > 0.0) {

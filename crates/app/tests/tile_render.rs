@@ -1,6 +1,7 @@
 //! The video path against a real GPU: the pipeline has to validate and a leaving tile has to darken.
 //! Passes quietly on a machine with no adapter, such as a headless runner without a software driver.
 
+use brp_app::render::backdrop::{Backdrop, BackdropKind, BackdropRequest, Pointer};
 use brp_app::render::{grid::PixelRect, tiles::TileRenderer};
 use brp_codec::ffmpeg::{FfmpegDecoder, HwDecode, SwsConverter};
 use brp_codec::{EncoderConfig, FrameConverter, InputImage, RawFrame, VideoDecoder};
@@ -363,23 +364,38 @@ fn phosphor_channels() -> (usize, usize) {
     (by_strength(|a, b| a > b), by_strength(|a, b| a < b))
 }
 
-fn mean_channel(pixels: &[u8], width: u32, channel: usize, rows: std::ops::Range<u32>) -> f32 {
-    let (mut sum, mut count) = (0u64, 0u64);
-    for row in rows {
-        let line = &pixels[(row * width * 4) as usize..((row + 1) * width * 4) as usize];
-        for pixel in line.chunks(4) {
-            sum += u64::from(pixel[channel]);
-            count += 1;
-        }
-    }
-    sum as f32 / count as f32
+/// No quiet regions, so the field runs everywhere.
+const OPEN: [egui::Rect; 3] = [egui::Rect::NOTHING; 3];
+
+fn draw_the_field(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: (u32, u32),
+    quiet: [egui::Rect; 3],
+) -> Vec<u8> {
+    let mut backdrop = Backdrop::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
+    backdrop.skip_opening();
+    draw_with(
+        device,
+        queue,
+        &mut backdrop,
+        size,
+        quiet,
+        Default::default(),
+        false,
+    )
 }
 
-fn draw_the_horizon(device: &wgpu::Device, queue: &wgpu::Queue, size: (u32, u32)) -> Vec<u8> {
-    use brp_app::render::backdrop::{Backdrop, BackdropKind, BackdropRequest};
+fn draw_with(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    backdrop: &mut Backdrop,
+    size: (u32, u32),
+    quiet: [egui::Rect; 3],
+    pointer: Pointer,
+    moving: bool,
+) -> Vec<u8> {
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut backdrop = Backdrop::new(device, queue, format);
-    backdrop.skip_opening();
     draw_to_pixels(device, queue, size, format, |encoder, view| {
         backdrop.prepare(
             device,
@@ -388,12 +404,12 @@ fn draw_the_horizon(device: &wgpu::Device, queue: &wgpu::Queue, size: (u32, u32)
             size,
             1.0,
             BackdropRequest {
-                kind: BackdropKind::Horizon,
+                kind: BackdropKind::Field { quiet },
                 shown: 1.0,
                 signal: 1.0,
             },
-            Default::default(),
-            false,
+            pointer,
+            moving,
         );
         let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -418,7 +434,7 @@ fn the_signal_gathers_in_patches_of_the_light_and_the_blues_still_lead() {
         return;
     };
     const WIDTH: usize = 640;
-    let pixels = draw_the_horizon(&device, &queue, (WIDTH as u32, 360));
+    let pixels = draw_the_field(&device, &queue, (WIDTH as u32, 360), OPEN);
     // Every blue in the palette has more blue than green, and only the signal does not.
     let (mut lit, mut bands) = (0, [0usize; 8]);
     for (index, pixel) in pixels.chunks(4).enumerate() {
@@ -438,19 +454,84 @@ fn the_signal_gathers_in_patches_of_the_light_and_the_blues_still_lead() {
 }
 
 #[test]
-fn the_horizon_lights_the_foot_of_the_window_and_leaves_the_top_dark() {
+fn the_field_lights_folds_across_the_window_rather_than_a_band() {
     let Some((device, queue)) = gpu() else {
         eprintln!("no GPU adapter; skipping");
         return;
     };
     let size = (640, 360);
-    let pixels = draw_the_horizon(&device, &queue, size);
+    let pixels = draw_the_field(&device, &queue, size, OPEN);
     let (lit, _) = phosphor_channels();
-    let (top, foot) = (
-        mean_channel(&pixels, size.0, lit, 0..40),
-        mean_channel(&pixels, size.0, lit, 320..360),
+    let lit_in = |rows: std::ops::Range<u32>| {
+        pixels
+            .chunks(4)
+            .skip((rows.start * size.0) as usize)
+            .take(((rows.end - rows.start) * size.0) as usize)
+            .filter(|pixel| pixel[lit] > 96)
+            .count()
+    };
+    let (top, bottom) = (lit_in(0..180), lit_in(180..360));
+    assert!(top > 0 && bottom > 0, "top {top}, bottom {bottom}");
+    assert!(
+        (top + bottom) * 10 < (size.0 * size.1) as usize * 6,
+        "folds, not a flood"
     );
-    assert!(foot > top + 30.0, "foot {foot} against top {top}");
+}
+
+#[test]
+fn a_held_field_draws_the_same_frame_while_the_pointer_moves_and_clicks() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let size = (640, 360);
+    let mut backdrop = Backdrop::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    backdrop.skip_opening();
+    let before = draw_with(
+        &device,
+        &queue,
+        &mut backdrop,
+        size,
+        OPEN,
+        Default::default(),
+        false,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let pointer = Pointer {
+        at: Some(egui::pos2(320.0, 180.0)),
+        down: true,
+    };
+    let after = draw_with(&device, &queue, &mut backdrop, size, OPEN, pointer, false);
+    assert!(before == after, "a held field moved");
+}
+
+#[test]
+fn a_quiet_region_leaves_plain_ground_whatever_the_field_does() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let size = (640, 360);
+    let open = draw_the_field(&device, &queue, size, OPEN);
+    let (lit, _) = phosphor_channels();
+    assert!(
+        open.chunks(4).any(|pixel| pixel[lit] > 96),
+        "nothing to quiet"
+    );
+    let everywhere = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(640.0, 360.0));
+    let quiet = draw_the_field(
+        &device,
+        &queue,
+        size,
+        [everywhere, egui::Rect::NOTHING, egui::Rect::NOTHING],
+    );
+    let ground = brp_app::ui::theme::ground().to_array();
+    let worst = quiet
+        .chunks(4)
+        .map(|pixel| (0..3).map(|c| pixel[c].abs_diff(ground[c])).max().unwrap())
+        .max()
+        .unwrap();
+    assert!(worst <= 4, "{worst} levels off the ground");
 }
 
 /// Every window draws this from its first frame, so a shader a platform's compiler rejects would stop

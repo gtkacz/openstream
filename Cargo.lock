@@ -504,7 +504,6 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "embed-resource",
- "image",
  "iroh",
  "iroh-tickets",
  "objc2 0.6.4",
@@ -2569,8 +2568,6 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
- "zune-core",
- "zune-jpeg",
 ]
 
 [[package]]

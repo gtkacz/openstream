@@ -47,7 +47,6 @@ use crate::ui::start::{self, StartAction, StartState};
 use crate::ui::state::{UiState, live_title};
 use crate::ui::theme;
 use crate::ui::update::{PROGRESS_STEP_BYTES, UpdateState};
-use crate::ui::wall;
 use crate::ui::{self, UiOutput, popout};
 use crate::visibility::Visibility;
 
@@ -960,7 +959,6 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(main) = &self.main {
                     main.window
                         .set_title(&format!("OpenStream · {}", room.snapshot().nickname));
-                    wall::release(main.ui.ctx());
                 }
                 self.remember_open(&room);
                 self.phase = Phase::Room(Box::new(RoomView::new(room)));

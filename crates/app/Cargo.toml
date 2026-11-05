@@ -38,7 +38,6 @@ egui-winit.workspace = true
 pollster.workspace = true
 bytemuck.workspace = true
 ab_glyph.workspace = true
-image.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true

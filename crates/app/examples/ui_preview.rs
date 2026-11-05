@@ -4,7 +4,7 @@
 //! A sixth sets the display scale; the width and height stay in physical pixels.
 //! Screens: start, recent, invite, focus, room, map, quality, menu, watching, grid, sheet, sharesheet,
 //! empty, settings, custom, picker, applications.
-//! `PREVIEW_POINTER=x,y` holds the pointer there, to see the start wall's reveal.
+//! `PREVIEW_POINTER=x,y` holds the pointer there, to see the light's scramble around it.
 //! `PREVIEW_LOST=0.5` reduces a tile to characters by that much, as a lost signal does.
 use std::{collections::HashSet, error::Error, io::Write};
 

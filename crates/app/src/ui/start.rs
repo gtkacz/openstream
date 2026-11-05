@@ -2,7 +2,6 @@
 
 use super::theme::{self, icons};
 use super::update::{self, UpdateState};
-use super::wall;
 use crate::launch::Intent;
 use crate::link;
 use crate::render::backdrop::{self, BackdropKind, BackdropRequest};
@@ -133,10 +132,9 @@ pub fn abbreviate_ticket(ticket: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// Wide enough to set the wall beside the form instead of dropping it.
-const WALL_MIN_WINDOW_WIDTH: f32 = 960.0;
+/// Wide enough to keep the form on the brand's edge with the field beside it, rather than centred.
+const FORM_BESIDE_FIELD_MIN_WIDTH: f32 = 960.0;
 const FORM_WIDTH: f32 = 380.0;
-const COLUMN_GAP: f32 = 64.0;
 /// The brand and the form share this column, so on a very wide window they stay on one common
 /// edge instead of drifting to the corner of the screen. The window's own buttons do sit at its.
 const CONTENT_WIDTH: f32 = 1200.0;
@@ -159,17 +157,11 @@ pub fn draw(
         "start"
     };
     super::motion::dissolve_in(ui.ctx(), screen, theme::ground());
-    backdrop::request(
-        ui.ctx(),
-        BackdropRequest {
-            kind: BackdropKind::Horizon,
-            shown: 1.0,
-            signal: 1.0,
-        },
-    );
     if ui.input(|input| input.focused) && super::motion::ambient_allowed(ui.ctx()) {
         ui.ctx().request_repaint_after(backdrop::FRAME);
     }
+    // The brand, the form and the window's buttons, measured as they are laid out.
+    let mut quiet = [egui::Rect::NOTHING; 3];
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(24)))
         .show(ui, |ui| {
@@ -178,11 +170,7 @@ pub fn draw(
                 space.center(),
                 egui::vec2(space.width().min(CONTENT_WIDTH), space.height()),
             );
-            let window = ui.ctx().content_rect();
-            let with_wall = window.width() >= WALL_MIN_WINDOW_WIDTH;
-            if with_wall {
-                wall::draw(ui, wall_area(window, column));
-            }
+            let form_on_the_left = ui.ctx().content_rect().width() >= FORM_BESIDE_FIELD_MIN_WIDTH;
             ui.scope_builder(egui::UiBuilder::new().max_rect(space), |ui| {
                 ui.add_space(HEADER_TOP_GAP);
                 theme::split_row(
@@ -194,15 +182,24 @@ pub fn draw(
                             action = Some(StartAction::OpenSettings);
                         }
                         theme::fullscreen_button(ui);
+                        quiet[2] = ui.min_rect();
                     },
                 );
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
                 ui.add_space(HEADER_TOP_GAP);
-                theme::split_row(ui, theme::CONTROL_HEIGHT, theme::brand, |_| {});
+                theme::split_row(
+                    ui,
+                    theme::CONTROL_HEIGHT,
+                    |ui| {
+                        theme::brand(ui);
+                        quiet[0] = ui.min_rect();
+                    },
+                    |_| {},
+                );
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let width = ui.available_width().min(FORM_WIDTH);
-                    let inset = if with_wall {
+                    let inset = if form_on_the_left {
                         0.0
                     } else {
                         ((ui.available_width() - width) / 2.0).max(0.0)
@@ -210,25 +207,27 @@ pub fn draw(
                     theme::vertically_centred(ui, "start-form", |ui| {
                         ui.horizontal(|ui| {
                             ui.add_space(inset);
-                            ui.vertical(|ui| {
-                                ui.set_width(width);
-                                form(ui, state, recent, now_unix, update_state, &mut action);
-                            });
+                            quiet[1] = ui
+                                .vertical(|ui| {
+                                    ui.set_width(width);
+                                    form(ui, state, recent, now_unix, update_state, &mut action);
+                                })
+                                .response
+                                .rect;
                         });
                     });
                 });
             });
         });
+    backdrop::request(
+        ui.ctx(),
+        BackdropRequest {
+            kind: BackdropKind::Field { quiet },
+            shown: 1.0,
+            signal: 1.0,
+        },
+    );
     action
-}
-
-/// From the form's gap to the window's own edges, past the panel's margin, so the wall bleeds off
-/// the top, right and bottom rather than floating in a box.
-fn wall_area(window: egui::Rect, column: egui::Rect) -> egui::Rect {
-    egui::Rect::from_min_max(
-        egui::pos2(column.left() + FORM_WIDTH + COLUMN_GAP, window.top()),
-        window.max,
-    )
 }
 
 fn form(
@@ -401,6 +400,7 @@ fn open_status(ui: &mut egui::Ui, state: &StartState) {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::time::Duration;
 
     use brp_proto::RoomTicket;
     use iroh::{EndpointAddr, SecretKey};
@@ -436,67 +436,19 @@ mod tests {
         (output, action)
     }
 
-    #[test]
-    fn the_wall_reaches_the_windows_edges_and_stops_short_of_the_form() {
-        // The column is the window less 24-point margins, at most 1200 wide and centred.
-        for (width, height, column_left, wall_left) in [
-            (960.0, 540.0, 24.0, 468.0),
-            (1300.0, 780.0, 50.0, 494.0),
-            (2560.0, 1440.0, 680.0, 1124.0),
-            (3840.0, 2160.0, 1320.0, 1764.0),
-        ] {
-            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
-            let column = egui::Rect::from_min_size(
-                egui::pos2(column_left, 24.0),
-                egui::vec2(1200.0, height - 48.0),
-            );
-            assert_eq!(
-                wall_area(window, column),
-                egui::Rect::from_min_max(egui::pos2(wall_left, 0.0), egui::pos2(width, height))
-            );
+    /// The window at 1440 by 900, `n` frames of a 60-a-second clock in, so springs settle.
+    fn frame(n: u32, focused: bool) -> egui::RawInput {
+        egui::RawInput {
+            time: Some(f64::from(n) / 60.0),
+            focused,
+            ..sized(1440.0, 900.0)
         }
     }
 
     #[test]
-    fn the_wall_paints_past_the_panels_margin_to_the_windows_edges() {
+    fn settings_takes_a_click_on_the_start_screen() {
         let ctx = egui::Context::default();
         theme::install(&ctx);
-        wall::install_loaded(&ctx);
-        let mut state = StartState::new("Alex".into());
-        let (output, _) = run(&ctx, &mut state, sized(1300.0, 780.0));
-        let clips: Vec<egui::Rect> = output
-            .shapes
-            .iter()
-            .filter(|clipped| matches!(clipped.shape, egui::Shape::Mesh(_)))
-            .map(|clipped| clipped.clip_rect)
-            .collect();
-        assert!(!clips.is_empty(), "no tiles were painted");
-        let expected = egui::Rect::from_min_max(egui::pos2(494.0, 0.0), egui::pos2(1300.0, 780.0));
-        assert!(clips.iter().all(|clip| *clip == expected), "{clips:?}");
-    }
-
-    #[test]
-    fn below_960_points_the_start_screen_paints_no_wall() {
-        let ctx = egui::Context::default();
-        theme::install(&ctx);
-        let mut state = StartState::new("Alex".into());
-        let (output, _) = run(&ctx, &mut state, sized(959.0, 700.0));
-        assert!(
-            !output
-                .shapes
-                .iter()
-                .any(|clipped| matches!(clipped.shape, egui::Shape::Mesh(_)))
-        );
-        assert!(!wall::has_state(&ctx));
-        run(&ctx, &mut state, sized(960.0, 700.0));
-        assert!(wall::has_state(&ctx));
-    }
-
-    #[test]
-    fn a_tile_under_settings_is_not_hovered_and_settings_takes_the_click() {
-        let ctx = egui::Context::default();
-        theme::install(&ctx);
-        wall::install_loaded(&ctx);
         let mut state = StartState::new("Alex".into());
         let with_events = |events: Vec<egui::Event>| {
             let mut raw = sized(1440.0, 900.0);
@@ -505,18 +457,6 @@ mod tests {
         };
         // The panel's margin ends at 1416, and the 32-point button sits at its top right, 12 down.
         let on_settings = egui::pos2(1400.0, 52.0);
-        let on_the_wall = egui::pos2(1000.0, 450.0);
-        for _ in 0..3 {
-            run(
-                &ctx,
-                &mut state,
-                with_events(vec![egui::Event::PointerMoved(on_the_wall)]),
-            );
-        }
-        assert!(
-            wall::hovered(&ctx).is_some(),
-            "the wall takes a free pointer"
-        );
         for _ in 0..3 {
             run(
                 &ctx,
@@ -524,7 +464,6 @@ mod tests {
                 with_events(vec![egui::Event::PointerMoved(on_settings)]),
             );
         }
-        assert_eq!(wall::hovered(&ctx), None);
         let button = |pressed| egui::Event::PointerButton {
             pos: on_settings,
             button: egui::PointerButton::Primary,
@@ -534,6 +473,31 @@ mod tests {
         run(&ctx, &mut state, with_events(vec![button(true)]));
         let (_, action) = run(&ctx, &mut state, with_events(vec![button(false)]));
         assert_eq!(action, Some(StartAction::OpenSettings));
+    }
+
+    #[test]
+    fn the_start_screen_asks_for_frames_only_while_the_field_can_move() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        crate::ui::motion::set_less_motion(&ctx, false);
+        let mut state = StartState::new("Alex".into());
+        let delay = |output: &egui::FullOutput| {
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+        };
+        let focused = (0..=120)
+            .map(|n| run(&ctx, &mut state, frame(n, true)).0)
+            .last()
+            .unwrap();
+        assert!(
+            delay(&focused) > Duration::ZERO && delay(&focused) <= backdrop::FRAME,
+            "{:?}",
+            delay(&focused)
+        );
+        let unfocused = (121..=240)
+            .map(|n| run(&ctx, &mut state, frame(n, false)).0)
+            .last()
+            .unwrap();
+        assert_eq!(delay(&unfocused), Duration::MAX);
     }
 
     fn press(key: egui::Key) -> egui::RawInput {
@@ -564,6 +528,105 @@ mod tests {
         let mut state = StartState::new("Alex".into());
         state.invite(ticket.to_string());
         state
+    }
+
+    fn text_rect(output: &egui::FullOutput, needle: &str) -> egui::Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text().contains(needle) => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no text containing {needle:?}"))
+    }
+
+    #[test]
+    fn the_field_stays_quiet_around_the_brand_the_form_and_the_window_buttons() {
+        for (width, height) in [
+            (640.0, 480.0),
+            (960.0, 540.0),
+            (1280.0, 800.0),
+            (1920.0, 1080.0),
+            (3840.0, 2160.0),
+        ] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let mut state = StartState::new("Alex".into());
+            state.error = "Couldn't reach the room".into();
+            // The form is centred from the height measured on the previous pass.
+            let output = (0..3)
+                .map(|_| run(&ctx, &mut state, sized(width, height)).0)
+                .last()
+                .unwrap();
+            let Some(BackdropRequest {
+                kind:
+                    BackdropKind::Field {
+                        quiet: [brand, form, buttons],
+                    },
+                ..
+            }) = backdrop::take_request(&ctx)
+            else {
+                panic!("the start screen asked for no field at {width}");
+            };
+            assert!(
+                brand
+                    .expand(1.0)
+                    .contains_rect(text_rect(&output, "OpenStream")),
+                "{width}"
+            );
+            for line in [
+                "Share your screen",
+                "Your name",
+                "Create room",
+                "Have an invite?",
+                "Join room",
+                "Couldn't reach the room",
+            ] {
+                assert!(
+                    form.expand(1.0).contains_rect(text_rect(&output, line)),
+                    "{line} at {width}"
+                );
+            }
+            assert!(
+                buttons.max.x >= width - 25.0 && buttons.min.y <= 37.0 && buttons.width() >= 64.0,
+                "{buttons:?}"
+            );
+            if width >= 960.0 {
+                assert!(
+                    brand.max.x <= width / 2.0 && form.max.x <= width / 2.0,
+                    "{form:?} at {width}"
+                );
+            } else {
+                assert!(
+                    (form.center().x - width / 2.0).abs() <= 1.0,
+                    "{form:?} at {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_invite_keeps_the_field_quiet_around_its_question() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut state = invited(&valid_ticket());
+        let output = (0..3)
+            .map(|_| run(&ctx, &mut state, sized(1440.0, 900.0)).0)
+            .last()
+            .unwrap();
+        let Some(BackdropRequest {
+            kind: BackdropKind::Field {
+                quiet: [_, form, _],
+            },
+            ..
+        }) = backdrop::take_request(&ctx)
+        else {
+            panic!("no field");
+        };
+        assert!(form.expand(1.0).contains_rect(text_rect(&output, "Join")));
     }
 
     #[test]

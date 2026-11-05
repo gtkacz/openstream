@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable};
-use egui::{Color32, Id, Pos2};
+use egui::{Color32, Id, Pos2, Vec2};
 
 use super::glyphs;
 use super::passes::{self, Target, rgba};
@@ -26,14 +26,33 @@ const RING_SPEED: f32 = 0.75;
 const GRAIN_PER_SECOND: f32 = 24.0;
 const MAX_STIRS: usize = 16;
 const MAX_RINGS: usize = 4;
+/// How far past a quiet region the field takes to come back to full strength, so it thins out
+/// towards text instead of stopping at a hard edge.
+const QUIET_REACH_POINTS: f32 = 80.0;
+/// Full, so text only ever sits on the ground and keeps its 4.5:1 whatever fold passes beneath.
+const QUIET_STRENGTH: f32 = 1.0;
+/// In window heights: where a region that should quiet nothing is put, too far to reach anything.
+const FAR_AWAY: f32 = 1.0e4;
+/// In window heights of pointer travel between push samples: close enough that a quick sweep
+/// leaves a continuous wake.
+const PUSH_SPACING: f32 = 0.008;
+/// Enough samples to cover about a second of sweeping at the spacing above.
+const MAX_PUSH: usize = 24;
+/// How long a sample keeps pushing, so the field settles soon after the pointer stops.
+const PUSH_SECONDS: f32 = 1.2;
+/// How much of the previous velocity survives each frame, smoothing out jittery pointer events.
+const PUSH_SMOOTHING: f32 = 0.6;
+/// Below a 240 Hz frame, a measured velocity is noise rather than motion.
+const SHORTEST_PUSH_STEP: f32 = 1.0 / 240.0;
 
 /// How often a running backdrop asks for a frame. It steps rather than glides, so this is plenty.
 pub const FRAME: Duration = Duration::from_millis(33);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BackdropKind {
-    /// A horizon along the foot of the window.
-    Horizon,
+    /// Folds of light across the whole window, going quiet around `quiet`, in points: the brand,
+    /// the form and the window's buttons. A region that is not positive quiets nothing.
+    Field { quiet: [egui::Rect; 3] },
     /// A light around a point, in points, reaching `radius` points.
     Scope { center: Pos2, radius: f32 },
 }
@@ -92,7 +111,8 @@ struct Scene {
     shown: f32,
     glyphs: f32,
     churn: f32,
-    pad: [f32; 2],
+    quiet_reach: f32,
+    quiet_strength: f32,
     ground: [f32; 4],
     dim: [f32; 4],
     phosphor: [f32; 4],
@@ -100,6 +120,98 @@ struct Scene {
     spark: [f32; 4],
     stirs: [[f32; 4]; MAX_STIRS],
     rings: [[f32; 4]; MAX_RINGS],
+    quiet: [[f32; 4]; 3],
+    push: [[f32; 4]; MAX_PUSH],
+    push_life: [[f32; 4]; MAX_PUSH / 4],
+}
+
+struct PushSample {
+    at: Pos2,
+    velocity: Vec2,
+    age: f32,
+}
+
+/// Where the pointer has been and how fast it was going, in window heights, newest first. The
+/// field is sampled behind each recent sample, so the pointer pushes it along its path.
+#[derive(Default)]
+struct Push {
+    samples: Vec<PushSample>,
+    /// The last sample's position and the seconds since, which the velocity is measured from.
+    anchor: Option<(Pos2, f32)>,
+    velocity: Vec2,
+}
+
+impl Push {
+    fn step(&mut self, dt: f32, here: Option<Pos2>) {
+        for sample in &mut self.samples {
+            sample.age += dt;
+        }
+        self.samples.retain(|sample| sample.age < PUSH_SECONDS);
+        let Some(here) = here else {
+            // Coming back in elsewhere is not a flick across the window.
+            self.anchor = None;
+            return;
+        };
+        let Some((from, since)) = self.anchor else {
+            self.anchor = Some((here, 0.0));
+            self.velocity = Vec2::ZERO;
+            return;
+        };
+        let since = since + dt;
+        let measured = (here - from) / since.max(SHORTEST_PUSH_STEP);
+        self.velocity = self.velocity * PUSH_SMOOTHING + measured * (1.0 - PUSH_SMOOTHING);
+        if from.distance(here) >= PUSH_SPACING {
+            self.samples.insert(
+                0,
+                PushSample {
+                    at: here,
+                    velocity: self.velocity,
+                    age: 0.0,
+                },
+            );
+            self.samples.truncate(MAX_PUSH);
+            self.anchor = Some((here, 0.0));
+        } else {
+            self.anchor = Some((from, since));
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Each sample's place and velocity, and their lives four to a `vec4`, because a uniform
+    /// array's elements are 16 bytes apart.
+    fn uniforms(&self) -> ([[f32; 4]; MAX_PUSH], [[f32; 4]; MAX_PUSH / 4]) {
+        let mut samples = [[0.0; 4]; MAX_PUSH];
+        let mut lives = [[0.0; 4]; MAX_PUSH / 4];
+        for (index, sample) in self.samples.iter().enumerate() {
+            samples[index] = [
+                sample.at.x,
+                sample.at.y,
+                sample.velocity.x,
+                sample.velocity.y,
+            ];
+            lives[index / 4][index % 4] = 1.0 - sample.age / PUSH_SECONDS;
+        }
+        (samples, lives)
+    }
+}
+
+/// Each region as its edges in window heights, the unit the shader measures in.
+fn quiet_in_heights(
+    quiet: [egui::Rect; 3],
+    pixels_per_point: f32,
+    window_height: f32,
+) -> [[f32; 4]; 3] {
+    quiet.map(|region| {
+        if region.is_positive() {
+            [region.min.x, region.min.y, region.max.x, region.max.y]
+                .map(|edge| edge * pixels_per_point / window_height)
+        } else {
+            [FAR_AWAY; 4]
+        }
+    })
 }
 
 /// How each kind of light is mixed. The horizon sits behind a form, so it stays low and warm; the
@@ -116,7 +228,7 @@ struct Look {
 
 fn look(kind: BackdropKind) -> Look {
     match kind {
-        BackdropKind::Horizon => Look {
+        BackdropKind::Field { .. } => Look {
             gain: 0.74,
             ink: 0.85,
             halo: 0.22,
@@ -168,6 +280,7 @@ pub struct Backdrop {
     stirs: Vec<(Pos2, f32)>,
     rings: Vec<(Pos2, f32)>,
     was_down: bool,
+    push: Push,
 }
 
 impl Backdrop {
@@ -225,6 +338,7 @@ impl Backdrop {
             stirs: Vec::new(),
             rings: Vec::new(),
             was_down: false,
+            push: Push::default(),
         }
     }
 
@@ -293,6 +407,12 @@ impl Backdrop {
             ring.1 += dt;
         }
         self.rings.retain(|ring| ring.1 < RING_SECONDS);
+        self.push.step(
+            dt,
+            pointer
+                .at
+                .map(|at| Pos2::new(at.x / window.1, at.y / window.1)),
+        );
         if let Some(at) = pointer.at {
             let here = Pos2::new(at.x / window.1, at.y / window.1);
             let moved_far_enough = self
@@ -347,6 +467,7 @@ impl Backdrop {
             self.opening = 1.0;
             self.stirs.clear();
             self.rings.clear();
+            self.push.clear();
             self.was_down = pointer.down;
         }
 
@@ -371,8 +492,14 @@ impl Backdrop {
             *slot = [at.x, at.y, age * RING_SPEED, left * left];
         }
 
-        let (centre, reach, kind_value) = match request.kind {
-            BackdropKind::Horizon => ([0.0, 0.0], 1.0, 0.0),
+        let (centre, reach, kind_value, quiet, quiet_strength) = match request.kind {
+            BackdropKind::Field { quiet } => (
+                [0.0, 0.0],
+                1.0,
+                0.0,
+                quiet_in_heights(quiet, pixels_per_point, window.1),
+                QUIET_STRENGTH,
+            ),
             BackdropKind::Scope { center, radius } => (
                 [
                     center.x * pixels_per_point / window.1,
@@ -380,6 +507,8 @@ impl Backdrop {
                 ],
                 radius * pixels_per_point / window.1,
                 1.0,
+                [[FAR_AWAY; 4]; 3],
+                0.0,
             ),
         };
         // One turn when the map opens, starting from straight up.
@@ -390,6 +519,7 @@ impl Backdrop {
             -1.0
         };
         let look = look(request.kind);
+        let (push, push_life) = self.push.uniforms();
         let scene = Scene {
             window: [window.0, window.1],
             cell: [cell_w, cell_h],
@@ -410,7 +540,8 @@ impl Backdrop {
             shown: request.shown,
             glyphs: glyphs::RAMP.chars().count() as f32,
             churn: if moving { 0.1 } else { 0.0 },
-            pad: [0.0; 2],
+            quiet_reach: QUIET_REACH_POINTS * pixels_per_point / window.1,
+            quiet_strength,
             ground: rgba(look.ground),
             dim: rgba(look.dim),
             phosphor: rgba(theme::accent()),
@@ -421,6 +552,9 @@ impl Backdrop {
             },
             stirs,
             rings,
+            quiet,
+            push,
+            push_life,
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&scene));
 
@@ -453,5 +587,94 @@ impl Backdrop {
             pass.set_bind_group(0, &sized.show_group, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Rect, Vec2, pos2};
+
+    use super::*;
+
+    fn walk(push: &mut Push, steps: usize, dt: f32, stride: f32) {
+        for n in 0..=steps {
+            push.step(dt, Some(pos2(n as f32 * stride, 0.5)));
+        }
+    }
+
+    #[test]
+    fn push_records_a_sample_every_0_008_window_heights_of_travel() {
+        let mut push = Push::default();
+        // Steps of 0.005 record on every second step, well clear of 0.008's float edge.
+        walk(&mut push, 10, 0.01, 0.005);
+        assert_eq!(push.samples.len(), 5);
+    }
+
+    #[test]
+    fn push_keeps_the_newest_24_samples_and_lets_them_age_out() {
+        let mut push = Push::default();
+        walk(&mut push, 40, 0.01, 0.01);
+        assert_eq!(push.samples.len(), 24);
+        assert!((push.samples[0].at.x - 0.40).abs() < 1e-5);
+        for _ in 0..13 {
+            push.step(0.1, None);
+        }
+        assert!(push.samples.is_empty());
+    }
+
+    #[test]
+    fn push_velocity_is_window_heights_per_second_from_the_last_sample() {
+        let mut push = Push::default();
+        walk(&mut push, 50, 0.01, 0.01);
+        assert!(
+            (push.velocity.x - 1.0).abs() < 1e-3 && push.velocity.y.abs() < 1e-6,
+            "{:?}",
+            push.velocity
+        );
+    }
+
+    #[test]
+    fn a_pointer_that_leaves_and_comes_back_far_away_does_not_throw_the_field() {
+        let mut push = Push::default();
+        push.step(0.01, Some(pos2(0.1, 0.1)));
+        push.step(0.01, None);
+        push.step(0.01, Some(pos2(0.9, 0.9)));
+        assert!(push.samples.is_empty() && push.velocity == Vec2::ZERO);
+    }
+
+    #[test]
+    fn push_lives_pack_four_to_a_vec4_in_sample_order() {
+        let mut push = Push::default();
+        walk(&mut push, 2, 0.01, 0.01);
+        push.step(0.6, None);
+        let (samples, lives) = push.uniforms();
+        assert!(
+            (lives[0][0] - 0.5).abs() < 1e-5 && (lives[0][1] - (1.0 - 0.61 / 1.2)).abs() < 1e-5,
+            "{lives:?}"
+        );
+        assert_eq!(lives[1], [0.0; 4]);
+        assert!((samples[0][0] - 0.02).abs() < 1e-6);
+    }
+
+    #[test]
+    fn quiet_regions_turn_points_into_window_heights_and_ignore_empty_ones() {
+        let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        let regions = [
+            Rect::from_min_max(pos2(24.0, 36.0), pos2(170.0, 68.0)),
+            Rect::NOTHING,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(50.0, 100.0)),
+        ];
+        let heights = quiet_in_heights(regions, 2.0, 1000.0);
+        assert!(
+            close(heights[0], [0.048, 0.072, 0.34, 0.136]),
+            "{:?}",
+            heights[0]
+        );
+        assert!(
+            heights[1].iter().all(|edge| *edge >= 1.0e3),
+            "{:?}",
+            heights[1]
+        );
+        assert!(close(heights[2], [0.0, 0.0, 0.1, 0.2]), "{:?}", heights[2]);
     }
 }

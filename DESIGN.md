@@ -34,7 +34,7 @@ a job: the signal itself for words, figures, and marks; `#27A095` for a wire car
 a person's glyph as a real heartbeat lands, the newest good event in the ledger, audio someone is
 hearing, a confirmed copy, and the caret. A zero is never mint. In the light it gathers in soft patches
 that wander, tinting the characters and the glow only where the light is strong, and the room map's
-patches strengthen while something is flowing. One still in six on the wall takes it too.
+patches strengthen while something is flowing.
 The one colour that does not change is the alarm, `#FF2D78`, because an alarm must read the same on every tube. It marks lost
 signal and failures and nothing else.
 
@@ -77,9 +77,10 @@ Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/ico
   dock each carry a button beside Settings that leaves it, and F11 does the same. Esc does not, because
   in this window it already closes dialogs and declines invites.
 - **Start.** The brand and the form share one column of at most 1200 points, so they stay on one common
-  edge on a wide window, while Settings and the fullscreen button sit at the window's top right. At 960
-  points and wider, a wall of stills runs from the form's gap to the window's top, right, and bottom
-  edges, passing under those buttons, over a horizon of light along the foot of the window.
+  edge on a wide window, while Settings and the fullscreen button sit at the window's top right. The
+  light fills the window behind them as a field of characters that thins out softly around the brand,
+  the form, and those buttons. At 960 points and wider the form keeps to the brand's edge with the
+  field beside it; narrower, it centres.
 - **Invite.** A link that names a room replaces the form with one question, in the same place: the
   name the room would see, Join as the main action with the keyboard on it, and Not now, which leads back
   to the full form. It asks rather than saying "You're invited" because a stranger's web page can
@@ -122,9 +123,10 @@ Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/ico
 - **Compact, below 800 points.** The rail folds away. The dock opens a Room or Share sheet that
   slides up over the bottom of the video, which keeps playing above it. A sheet is only as tall as
   what it holds, up to 60% of the window, past which it scrolls.
-- **Start wall.** Frames of the things people share say what the product is for, drawn as 1-bit dots
-  in the phosphor's colour. It is atmosphere rather than a control. The stills are embedded and are
-  not covered by the MIT licence: see [crates/app/assets/stills](crates/app/assets/stills/README.md).
+- **Start field.** The light gathers in slowly drifting folds across the whole start screen and goes
+  fully quiet behind the brand, the form, and the window's buttons, easing back over 80 points, so
+  text always sits on the ground and no fold leaves a hard edge. It is atmosphere rather than a
+  control.
 
 ## Alignment
 
@@ -184,37 +186,34 @@ thrown. No input is ever locked out for an animation to finish.
 - **The light.** Behind the start screen and the room map, a soft field is drawn in characters from
   the same ramp a lost picture uses (`crates/app/src/render/backdrop.rs`). It resolves out of noise
   when it opens, its characters churn while it runs, and the pointer leaves a trail of scrambled cells
-  behind it, with a ring of them running out from a click. On the room map one sweep goes round as it
-  opens. It stays low on the start screen, behind a form, and runs hotter on the map, where it is the
+  behind it, with a ring of them running out from a click. On the start screen it fills the window
+  in drifting folds, and the pointer also pushes the folds along its path. On the room map one sweep
+  goes round as it opens. It stays low on the start screen, behind a form, and runs hotter on the map, where it is the
   picture. It never sits behind video.
 - **The chrome's glow.** The interface is drawn again at a quarter of the size, blurred, and screened
   over the window, which gives text and lines a soft halo. Screened rather than added, because adding
   washes a colour out towards white.
-- **The start wall.** Columns drift at their own speeds in alternating directions. A still's dots come
-  on in steps as it loads. Hovering a tile pauses its column and burns through to the full picture
-  across most of the tile, with a bright rim at the edge of what is showing; once the pointer has gone
-  it knits back cell by cell, and a click sends heat running outward. All of it is released when a
-  room opens.
 - **At rest, nothing moves.** A settled spring asks for no frames, so an idle window sleeps. Pulses
   and spinners run only while something is in flight. The standing motion is the light at about 30
-  frames a second, the wall at about 60, and the circuit at about 12, only while the window has focus,
+  frames a second and the circuit at about 12, only while the window has focus,
   and each settles to a stop without it. A full frame with the light takes about 1.3 ms on a desktop
   GPU and under 20 ms on a software renderer at 1080p.
 
 The operating system's reduced-motion setting is read once per launch
 (`crates/app/src/reduced_motion.rs`) and honoured everywhere. Things that would travel arrive in place
 and fade instead, what is below a growing row jumps rather than slides, and the tube fades rather than
-collapses. Drift, churn, packets, the light's opening, and the caret's blink all hold still, and a
-still shows its picture whole while the pointer is on it. Standing motion waits for the answer, so
+collapses. Drift, churn, the pointer's push, packets, the light's opening, and the caret's blink all
+hold still. Standing motion waits for the answer, so
 nobody who asked for less sees a burst of it first.
 
 ## References
 
 - IBM Plex Mono and Lucide files, licences, and how to regenerate the subset:
   [crates/app/assets/fonts](crates/app/assets/fonts/README.md).
-- The light and the wall's reveal take their look from React Bits' Gradient ASCII and Dither Veil.
-  Both are written from scratch for this renderer, and need to stay that way: React Bits is MIT with a
-  Commons Clause, which forbids redistributing its components in ported form.
+- The light takes its look from React Bits' Gradient ASCII, and the start screen's field from
+  [Asciify's Field background](https://asciify.org/backgrounds?bg=field). Both are written from
+  scratch for this renderer. The light needs to stay that way: React Bits is MIT with a Commons
+  Clause, which forbids redistributing its components in ported form.
 - Apple's *Designing Fluid Interfaces* and Emil Kowalski's animation guidance: springs,
   interruptibility, symmetric paths, feedback on press. Velocity handoff and momentum projection
   are not used yet, because nothing here is thrown; the [roadmap](docs/ROADMAP.md)'s collapsible rail

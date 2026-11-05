@@ -12,4 +12,3 @@ foreach ($dll in "avcodec-62.dll", "avutil-60.dll", "swscale-9.dll", "swresample
 Copy-Item tools\windows-enable-crash-dumps.reg $Destination
 Copy-Item (Join-Path $env:FFMPEG_DIR "LICENSE.txt") (Join-Path $Destination "FFMPEG-LICENSE.txt")
 Copy-Item LICENSE (Join-Path $Destination "LICENSE")
-Copy-Item crates\app\assets\stills\README.md (Join-Path $Destination "STILLS-NOTICE.md")

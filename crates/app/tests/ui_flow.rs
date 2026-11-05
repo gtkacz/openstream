@@ -1247,7 +1247,7 @@ fn a_rail_rows_figures_end_on_the_rails_inner_edge() {
 }
 
 #[test]
-fn the_form_stays_clickable_beside_the_wall() {
+fn the_form_stays_clickable_over_the_field() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut state = start::StartState::new("Alex".into());
