@@ -58,6 +58,13 @@ pub struct MemberView {
     pub lives: Vec<LiveInfo>,
     pub seen_ago_ms: u64,
     pub path: PathKind,
+    /// Round-trip time on the media path, once one has been measured.
+    pub rtt_ms: Option<u32>,
+    /// The connection to them has gone silent or dropped. Their presence can outlast it by a while,
+    /// since that travels separately.
+    pub signal_lost: bool,
+    /// This person holds at least one subscription to something of ours.
+    pub watching_me: bool,
     pub has_audio: bool,
     /// `None` for a peer on a release that does not say.
     pub audio_mix: Option<AudioMix>,
@@ -68,6 +75,8 @@ pub struct MemberView {
 pub enum WatchState {
     Connecting,
     Live,
+    /// Connected, but the publisher has gone silent. Clears by itself if it is heard from again.
+    SignalLost,
     Reconnecting,
     Ended,
 }

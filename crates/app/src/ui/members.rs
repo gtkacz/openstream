@@ -264,6 +264,7 @@ fn live_row(
             .on_hover_text(&live.title);
             let detail = match watch.map(|w| &w.state) {
                 Some(WatchState::Connecting) => "Connecting…".to_string(),
+                Some(WatchState::SignalLost) => "No signal".to_string(),
                 Some(WatchState::Reconnecting) => "Reconnecting…".to_string(),
                 Some(WatchState::Ended) => "Ended".to_string(),
                 Some(WatchState::Live) | None => format!(

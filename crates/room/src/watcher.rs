@@ -1,9 +1,10 @@
 //! Remote lives this participant watches: one media connection per publisher, one decode pipeline
 //! per watch, reconnection with backoff while the publisher stays a member.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use brp_codec::{RawFrame, RawFramePool};
 use brp_net::{MediaClient, NetError, PathKind};
@@ -12,12 +13,13 @@ use brp_pipeline::{
     ViewerSink, ViewerStats,
 };
 use brp_proto::constants::{
-    RESUBSCRIBE_BACKOFF_INITIAL, RESUBSCRIBE_BACKOFF_MAX, SOURCE_PRESET_ID,
+    RESUBSCRIBE_BACKOFF_INITIAL, RESUBSCRIBE_BACKOFF_MAX, SIGNAL_LOST_AFTER, SOURCE_PRESET_ID,
 };
 use brp_proto::{PublisherMessage, ViewerMessage};
 use iroh::{Endpoint, EndpointAddr, PublicKey};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::codecs::DecoderFactory;
 use crate::error::RoomError;
@@ -91,6 +93,14 @@ struct WatchEntry {
 #[derive(Default)]
 struct Inner {
     clients: HashMap<PublicKey, Arc<MediaClient>>,
+    /// Held while dialling a member, so a watch and the member's link never open two connections.
+    dial_gates: HashMap<PublicKey, Arc<tokio::sync::Mutex<()>>>,
+    /// The task keeping each member's connection up, for as long as they are a member.
+    links: HashMap<PublicKey, JoinHandle<()>>,
+    /// Members whose connection has gone silent or dropped.
+    silent: HashSet<PublicKey>,
+    /// The room is closing, so no more links may start.
+    stopped: bool,
     watches: HashMap<WatchKey, WatchEntry>,
     next_generation: u64,
 }
@@ -112,6 +122,29 @@ enum Outcome {
     Cancelled,
     Ended,
     Lost,
+}
+
+/// How late lost signal may be noticed, and how late its return.
+const SIGNAL_CHECK: Duration = Duration::from_millis(250);
+
+/// Whether a connection has gone quiet, from its count of packets received.
+struct Silence {
+    heard: u64,
+    since: Instant,
+}
+
+impl Silence {
+    fn new(heard: u64, now: Instant) -> Self {
+        Self { heard, since: now }
+    }
+
+    fn is_lost(&mut self, heard: u64, now: Instant) -> bool {
+        if heard != self.heard {
+            self.heard = heard;
+            self.since = now;
+        }
+        now.duration_since(self.since) >= SIGNAL_LOST_AFTER
+    }
 }
 
 impl Watcher {
@@ -230,6 +263,11 @@ impl Watcher {
     pub fn member_left(&self, id: PublicKey) {
         let mut inner = lock(&self.inner);
         inner.watches.retain(|(publisher, _), _| *publisher != id);
+        if let Some(link) = inner.links.remove(&id) {
+            link.abort();
+        }
+        inner.dial_gates.remove(&id);
+        inner.silent.remove(&id);
         // Close explicitly so the peer sees an ended connection instead of waiting out an idle timeout.
         if let Some(client) = inner.clients.remove(&id) {
             client.close();
@@ -290,15 +328,107 @@ impl Watcher {
             .unwrap_or(PathKind::Unknown)
     }
 
+    /// The media path's round-trip time, known once connected.
+    pub fn path_rtt(&self, publisher: &PublicKey) -> Option<Duration> {
+        lock(&self.inner).clients.get(publisher)?.rtt()
+    }
+
+    pub fn signal_lost(&self, publisher: &PublicKey) -> bool {
+        lock(&self.inner).silent.contains(publisher)
+    }
+
+    /// Starts a link for every member who has none. Their tasks end with their membership.
+    pub fn link_to_members(self: &Arc<Self>) {
+        let members: Vec<PublicKey> = lock(&self.membership).members().map(|m| m.id).collect();
+        let mut inner = lock(&self.inner);
+        if inner.stopped {
+            return;
+        }
+        for id in members {
+            inner
+                .links
+                .entry(id)
+                .or_insert_with(|| self.runtime.spawn(self.clone().keep_link(id)));
+        }
+    }
+
+    /// Keeps a connection to one member, redialling with backoff whenever it ends.
+    async fn keep_link(self: Arc<Self>, publisher: PublicKey) {
+        let mut backoff = RESUBSCRIBE_BACKOFF_INITIAL;
+        while lock(&self.membership).is_member(&publisher) {
+            match self.client_for(publisher).await {
+                Ok(client) => {
+                    backoff = RESUBSCRIBE_BACKOFF_INITIAL;
+                    self.watch_link(publisher, client).await;
+                }
+                Err(error) => tracing::debug!(%error, "could not reach a member yet"),
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(RESUBSCRIBE_BACKOFF_MAX);
+        }
+        // They expired between being listed and this starting, so `member_left` has been and gone.
+        let mut inner = lock(&self.inner);
+        inner.links.remove(&publisher);
+        inner.silent.remove(&publisher);
+    }
+
+    /// Tracks whether one connection has gone silent, until it closes.
+    async fn watch_link(&self, publisher: PublicKey, client: Arc<MediaClient>) {
+        let mut silence = Silence::new(client.packets_received(), Instant::now());
+        let mut check = tokio::time::interval(SIGNAL_CHECK);
+        let closed = client.closed();
+        tokio::pin!(closed);
+        loop {
+            tokio::select! {
+                _ = &mut closed => break,
+                _ = check.tick() => {
+                    let lost = silence.is_lost(client.packets_received(), Instant::now());
+                    self.set_silent(publisher, lost);
+                }
+            }
+        }
+        // A connection we replaced or closed ourselves says nothing about the member.
+        let mut inner = lock(&self.inner);
+        let current = inner
+            .clients
+            .get(&publisher)
+            .is_some_and(|known| Arc::ptr_eq(known, &client));
+        if current {
+            inner.clients.remove(&publisher);
+        }
+        drop(inner);
+        if current {
+            self.set_silent(publisher, !client.refused());
+        }
+    }
+
+    fn set_silent(&self, publisher: PublicKey, silent: bool) {
+        let mut inner = lock(&self.inner);
+        let changed = if silent {
+            inner.silent.insert(publisher)
+        } else {
+            inner.silent.remove(&publisher)
+        };
+        drop(inner);
+        if changed {
+            (self.on_change)();
+        }
+    }
+
     pub fn views(&self) -> Vec<WatchView> {
-        lock(&self.inner)
+        let inner = lock(&self.inner);
+        inner
             .watches
             .iter()
             .map(|((publisher, live_id), entry)| WatchView {
                 publisher: *publisher,
                 live_id: *live_id,
                 preset_id: entry.preset_id,
-                state: entry.state,
+                state: if entry.state == WatchState::Live && inner.silent.contains(publisher) {
+                    WatchState::SignalLost
+                } else {
+                    entry.state
+                },
                 frames_decoded: entry.handle.stats.frames_decoded.load(Ordering::Relaxed),
                 keyframe_requests: entry.handle.stats.keyframe_requests.load(Ordering::Relaxed),
                 audio: entry.audio,
@@ -310,6 +440,10 @@ impl Watcher {
         let mut inner = lock(&self.inner);
         let publishers: Vec<PublicKey> = inner.watches.keys().map(|(p, _)| *p).collect();
         inner.watches.clear();
+        inner.stopped = true;
+        for link in inner.links.drain().map(|(_, link)| link) {
+            link.abort();
+        }
         for client in inner.clients.drain().map(|(_, client)| client) {
             client.close();
         }
@@ -348,6 +482,14 @@ impl Watcher {
     }
 
     async fn client_for(&self, publisher: PublicKey) -> Result<Arc<MediaClient>, RoomError> {
+        let gate = {
+            let mut inner = lock(&self.inner);
+            if let Some(client) = inner.clients.get(&publisher) {
+                return Ok(client.clone());
+            }
+            inner.dial_gates.entry(publisher).or_default().clone()
+        };
+        let _dialling = gate.lock().await;
         if let Some(client) = lock(&self.inner).clients.get(&publisher).cloned() {
             return Ok(client);
         }
@@ -356,6 +498,7 @@ impl Watcher {
         let client =
             Arc::new(MediaClient::connect(&self.endpoint, EndpointAddr::from(publisher)).await?);
         lock(&self.inner).clients.insert(publisher, client.clone());
+        self.set_silent(publisher, false);
         Ok(client)
     }
 
@@ -363,6 +506,20 @@ impl Watcher {
         if let Some(client) = lock(&self.inner).clients.remove(&publisher) {
             client.close();
         }
+    }
+
+    /// As `forget_client`, unless the member's link has already replaced this connection.
+    fn forget_this_client(&self, publisher: PublicKey, client: &Arc<MediaClient>) {
+        let mut inner = lock(&self.inner);
+        if inner
+            .clients
+            .get(&publisher)
+            .is_some_and(|known| Arc::ptr_eq(known, client))
+        {
+            inner.clients.remove(&publisher);
+        }
+        drop(inner);
+        client.close();
     }
 
     /// Spec 6.6: a watched preset the publisher removed falls back to Source, or to the best preset
@@ -408,17 +565,18 @@ impl Watcher {
             }
             let attempt = async {
                 let client = self.client_for(publisher).await?;
-                client
+                let subscription = client
                     .subscribe(live_id, preset_id, want_audio)
                     .await
-                    .map_err(RoomError::from)
+                    .map_err(RoomError::from)?;
+                Ok::<_, RoomError>((client, subscription))
             };
             let subscription = tokio::select! {
                 _ = &mut cancel => return,
                 result = attempt => result,
             };
-            let mut subscription = match subscription {
-                Ok(subscription) => subscription,
+            let (client, mut subscription) = match subscription {
+                Ok(attempt) => attempt,
                 Err(RoomError::Net(NetError::Rejected(reason))) => {
                     tracing::info!(%reason, live_id, preset_id, "subscription rejected");
                     if let Some(fallback) = self.fallback_preset(publisher, live_id, preset_id) {
@@ -508,6 +666,11 @@ impl Watcher {
                 tokio::select! {
                     _ = &mut cancel => break Outcome::Cancelled,
                     _ = audio_stream_end(&mut audio_ended) => {
+                        // Audio ends along with everything else when the connection dies, and may
+                        // well be noticed first. Moving it would restart the watch as Connecting.
+                        if client.is_closed() {
+                            break Outcome::Lost;
+                        }
                         // The publisher's audio stream closed while the video watch is healthy:
                         // the publisher toggled sharing off, or its capture died. Drop the carrier
                         // flag and let spec 5.8's rule find the audio again if it is still there.
@@ -541,7 +704,7 @@ impl Watcher {
                         return;
                     }
                 }
-                Outcome::Lost => self.forget_client(publisher),
+                Outcome::Lost => self.forget_this_client(publisher, &client),
             }
             if !self
                 .wait_before_retry(task, preset_id, &mut backoff, &mut cancel)
@@ -557,7 +720,7 @@ impl Watcher {
         &self,
         task: WatchTask,
         preset_id: u32,
-        backoff: &mut std::time::Duration,
+        backoff: &mut Duration,
         cancel: &mut oneshot::Receiver<()>,
     ) -> bool {
         if !self.set_state(task, preset_id, WatchState::Reconnecting) {
@@ -686,6 +849,80 @@ mod tests {
 
     fn key(seed: u8) -> PublicKey {
         SecretKey::from_bytes(&[seed; 32]).public()
+    }
+
+    async fn idle_watcher() -> Arc<Watcher> {
+        let endpoint = brp_net::bind_endpoint(
+            SecretKey::generate(),
+            brp_net::RelaySetting::Disabled,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        Watcher::new(
+            endpoint,
+            Handle::current(),
+            Arc::new(crate::codecs::fake::FakeCodecs),
+            Arc::new(Mutex::new(Membership::new(Duration::from_secs(20)))),
+            Mixer::new(),
+            false,
+            Arc::new(|| {}),
+            Arc::new(|_, _| {}),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_link_to_someone_no_longer_a_member_ends_itself_and_leaves_nothing_behind() {
+        let watcher = idle_watcher().await;
+        let gone = key(9);
+        {
+            let mut inner = lock(&watcher.inner);
+            inner.links.insert(gone, tokio::spawn(async {}));
+            inner.silent.insert(gone);
+        }
+        tokio::time::timeout(Duration::from_secs(1), watcher.clone().keep_link(gone))
+            .await
+            .expect("nobody to link to, so it returns at once");
+        let inner = lock(&watcher.inner);
+        assert!(!inner.links.contains_key(&gone));
+        assert!(!inner.silent.contains(&gone));
+    }
+
+    #[tokio::test]
+    async fn no_link_starts_once_the_room_has_stopped() {
+        let watcher = idle_watcher().await;
+        let id = SecretKey::generate();
+        let presence = brp_proto::Presence {
+            version: brp_proto::constants::PROTOCOL_VERSION,
+            ts_unix_ms: 1,
+            nickname: "alice".into(),
+            lives: Vec::new(),
+            audio_mix: None,
+            quality_presets: Vec::new(),
+        };
+        lock(&watcher.membership).apply(id.public(), presence, Instant::now());
+        watcher.stop_all();
+        watcher.link_to_members();
+        assert!(lock(&watcher.inner).links.is_empty());
+    }
+
+    #[test]
+    fn a_connection_reads_as_silent_only_after_hearing_nothing_for_the_whole_wait() {
+        let start = Instant::now();
+        let mut silence = Silence::new(10, start);
+        assert!(!silence.is_lost(10, start + SIGNAL_LOST_AFTER - SIGNAL_CHECK));
+        assert!(silence.is_lost(10, start + SIGNAL_LOST_AFTER));
+    }
+
+    #[test]
+    fn hearing_anything_at_all_clears_the_silence_and_restarts_the_wait() {
+        let start = Instant::now();
+        let mut silence = Silence::new(10, start);
+        assert!(silence.is_lost(10, start + SIGNAL_LOST_AFTER));
+        let heard = start + SIGNAL_LOST_AFTER + SIGNAL_CHECK;
+        assert!(!silence.is_lost(11, heard));
+        assert!(!silence.is_lost(11, heard + SIGNAL_LOST_AFTER - SIGNAL_CHECK));
+        assert!(silence.is_lost(11, heard + SIGNAL_LOST_AFTER));
     }
 
     #[test]

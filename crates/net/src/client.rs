@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex};
 
 use brp_proto::constants::{
     AUDIO_PRESET_ID, AUDIO_SENDER_BACKLOG_PACKETS, MAX_AUDIO_PACKET_BYTES, MAX_CONTROL_BYTES,
-    MAX_FRAME_BYTES, MEDIA_ALPN, RECEIVE_QUEUE_DURATION, RECEIVE_QUEUE_MAX_FRAMES,
-    RECEIVE_QUEUE_MIN_FRAMES,
+    MAX_FRAME_BYTES, MEDIA_ALPN, MEDIA_IDLE_TIMEOUT, MEDIA_KEEP_ALIVE, RECEIVE_QUEUE_DURATION,
+    RECEIVE_QUEUE_MAX_FRAMES, RECEIVE_QUEUE_MIN_FRAMES, REFUSED_NOT_MEMBER,
 };
 use brp_proto::{
     AudioParams, CodecParams, FrameHeader, FrameKind, PublisherMessage, ViewerMessage,
 };
-use iroh::endpoint::Connection;
+use iroh::endpoint::{ConnectOptions, Connection, ConnectionError, QuicTransportConfig, VarInt};
 use iroh::{Endpoint, EndpointAddr};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
@@ -50,8 +50,11 @@ pub struct ViewerSubscription {
 
 impl MediaClient {
     pub async fn connect(endpoint: &Endpoint, addr: EndpointAddr) -> Result<Self, NetError> {
+        let options = ConnectOptions::new().with_transport_config(media_transport());
         let conn = endpoint
-            .connect(addr, MEDIA_ALPN)
+            .connect_with_opts(addr, MEDIA_ALPN, options)
+            .await
+            .map_err(|error| NetError::Connect(error.to_string()))?
             .await
             .map_err(|error| NetError::Connect(error.to_string()))?;
         let routes: Routes = Arc::default();
@@ -71,6 +74,37 @@ impl MediaClient {
             Some(p) if p.is_relay() => PathKind::Relayed,
             _ => PathKind::Unknown,
         }
+    }
+
+    /// The round-trip time of the path media takes right now.
+    pub fn rtt(&self) -> Option<std::time::Duration> {
+        let paths = self.conn.paths();
+        paths.iter().find(|p| p.is_selected()).map(|p| p.rtt())
+    }
+
+    /// Finishes when the connection does, for whatever reason.
+    pub async fn closed(&self) {
+        self.conn.closed().await;
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.conn.close_reason().is_some()
+    }
+
+    /// The publisher closed this connection because it does not count us as a member yet, which
+    /// happens when our presence reaches it after its presence reached us.
+    pub fn refused(&self) -> bool {
+        matches!(
+            self.conn.close_reason(),
+            Some(ConnectionError::ApplicationClosed(close))
+                if close.error_code == REFUSED_NOT_MEMBER.into()
+        )
+    }
+
+    /// Everything heard from the publisher so far, in packets. With `MEDIA_KEEP_ALIVE` answered even
+    /// on a still screen, a count that stops rising means the publisher has gone silent.
+    pub fn packets_received(&self) -> u64 {
+        self.conn.stats().udp_rx.datagrams
     }
 
     pub async fn subscribe(
@@ -167,6 +201,16 @@ impl MediaClient {
     pub fn close(&self) {
         self.conn.close(0u32.into(), b"done");
     }
+}
+
+/// The caller's settings bind both ends: QUIC's idle timeout is the shorter of the two sides', so this
+/// holds against a publisher on any release, and it leaves gossip's connections on the defaults.
+fn media_transport() -> QuicTransportConfig {
+    let idle_ms = VarInt::from_u32(MEDIA_IDLE_TIMEOUT.as_millis() as u32);
+    QuicTransportConfig::builder()
+        .max_idle_timeout(Some(idle_ms.into()))
+        .keep_alive_interval(MEDIA_KEEP_ALIVE)
+        .build()
 }
 
 /// Room for `RECEIVE_QUEUE_DURATION` of video at this stream's frame rate.

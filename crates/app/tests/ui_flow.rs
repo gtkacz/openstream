@@ -306,6 +306,9 @@ fn busy_room() -> brp_room::RoomSnapshot {
         nickname: "Alex".into(),
         version: 1,
         members: vec![MemberView {
+            rtt_ms: None,
+            signal_lost: false,
+            watching_me: false,
             id: publisher,
             nickname: "Morgan".into(),
             lives: vec![info.clone()],

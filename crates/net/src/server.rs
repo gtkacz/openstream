@@ -18,15 +18,27 @@ use crate::source::{KeyframeLimit, LiveSource};
 /// a dropout.
 const AUDIO_STREAM_PRIORITY: i32 = 1;
 
+/// How many subscriptions each peer holds, so the room can say who is watching.
+pub type Viewers = Arc<std::sync::Mutex<std::collections::HashMap<iroh::EndpointId, u32>>>;
+
 #[derive(Clone)]
 pub struct MediaServer {
     source: Arc<dyn LiveSource>,
     policy: Arc<dyn ConnectionPolicy>,
+    viewers: Viewers,
 }
 
 impl MediaServer {
     pub fn new(source: Arc<dyn LiveSource>, policy: Arc<dyn ConnectionPolicy>) -> Self {
-        Self { source, policy }
+        Self {
+            source,
+            policy,
+            viewers: Viewers::default(),
+        }
+    }
+
+    pub fn viewers(&self) -> Viewers {
+        self.viewers.clone()
     }
 }
 
@@ -49,9 +61,18 @@ impl ProtocolHandler for MediaServer {
         while let Ok((send, recv)) = connection.accept_bi().await {
             let source = self.source.clone();
             let conn = connection.clone();
+            let viewers = self.viewers.clone();
+            if let Ok(mut viewers) = viewers.lock() {
+                *viewers.entry(peer).or_insert(0) += 1;
+            }
             tokio::spawn(async move {
                 if let Err(error) = serve_subscription(conn, send, recv, source).await {
                     tracing::debug!(%error, "subscription ended");
+                }
+                if let Ok(mut viewers) = viewers.lock()
+                    && let Some(count) = viewers.get_mut(&peer)
+                {
+                    *count = count.saturating_sub(1);
                 }
             });
         }

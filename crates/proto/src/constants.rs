@@ -33,6 +33,18 @@ pub const PORTAL_FORMAT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const PRESENCE_HEARTBEAT: Duration = Duration::from_secs(5);
 /// Four missed heartbeats before a peer vanishes from the room.
 pub const MEMBER_EXPIRY: Duration = Duration::from_secs(20);
+/// How often a viewer pings a publisher. Compositors send nothing while a screen is still, so this
+/// is what tells a quiet peer from a dead one.
+pub const MEDIA_KEEP_ALIVE: Duration = Duration::from_secs(1);
+/// Silence on a media connection for this long shows as lost signal, and the connection itself is
+/// left alone. QUIC's retransmit backoff stretches a blip of 2 to 3 seconds to nearly 4 of silence
+/// before anything arrives again, which is too ordinary a thing to raise an alarm over.
+pub const SIGNAL_LOST_AFTER: Duration = Duration::from_secs(4);
+/// Silence for this long ends a media connection, which takes its watches to `Reconnecting`. Long
+/// enough that a Wi-Fi reconnect or a cellular handoff, which iroh budgets at up to 10 seconds, comes
+/// back on the same connection, and short enough to fall inside the earliest a member can expire:
+/// `MEMBER_EXPIRY` less the `PRESENCE_HEARTBEAT` their last presence may be old by.
+pub const MEDIA_IDLE_TIMEOUT: Duration = Duration::from_secs(12);
 /// Keeps a presence message under gossip's 4 KB default cap.
 pub const MAX_LIVES_PER_PARTICIPANT: usize = 8;
 pub const MAX_PRESETS_PER_LIVE: usize = 6;

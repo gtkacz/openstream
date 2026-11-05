@@ -107,6 +107,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "room" | "quality" | "menu" | "watching" | "grid" | "sheet" | "sharesheet"
     ) {
         snapshot.members.push(MemberView {
+            rtt_ms: None,
+            signal_lost: false,
+            watching_me: false,
             id: SecretKey::from_bytes(&[2; 32]).public(),
             nickname: "Morgan".into(),
             lives: vec![LiveInfo {

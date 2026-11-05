@@ -510,6 +510,7 @@ fn tile_state(
     let (status, ink, in_flight) = match said {
         WatchState::Live => return,
         WatchState::Connecting => ("Connecting", theme::SECONDARY, true),
+        WatchState::SignalLost => ("No signal", theme::ERROR, true),
         WatchState::Reconnecting => ("Reconnecting", theme::WARNING, true),
         WatchState::Ended => ("Stream ended", theme::SECONDARY, false),
     };
