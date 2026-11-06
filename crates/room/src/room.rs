@@ -295,9 +295,13 @@ impl Room {
         let mut others: Vec<_> = lock(&self.membership)
             .members()
             .filter(|m| m.id != self.me)
-            .filter_map(|m| self.watcher.member_addr(&m.id).map(|addr| (m.last_seen, addr)))
+            .filter_map(|m| {
+                self.watcher
+                    .member_addr(&m.id)
+                    .map(|addr| (m.last_seen, addr))
+            })
             .collect();
-        others.sort_by(|a, b| b.0.cmp(&a.0));
+        others.sort_by_key(|(seen, _)| std::cmp::Reverse(*seen));
         bootstrap.extend(others.into_iter().map(|(_, addr)| addr));
         RoomTicket::new(self.topic, bootstrap)
     }

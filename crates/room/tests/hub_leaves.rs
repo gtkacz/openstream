@@ -137,10 +137,14 @@ async fn a_ticket_minted_after_others_join_survives_the_creator_leaving() {
     let topic = ticket.topic;
     a.leave().await;
     let c = Room::join(config("carol"), ticket).await.unwrap();
-    wait_until("carol joins through the stale ticket", Duration::from_secs(10), || {
-        b.snapshot().members.iter().any(|m| m.nickname == "carol")
-            && c.snapshot().members.iter().any(|m| m.nickname == "bob")
-    })
+    wait_until(
+        "carol joins through the stale ticket",
+        Duration::from_secs(10),
+        || {
+            b.snapshot().members.iter().any(|m| m.nickname == "carol")
+                && c.snapshot().members.iter().any(|m| m.nickname == "bob")
+        },
+    )
     .await;
     assert_eq!(c.ticket().topic, topic, "the room is the same room");
 

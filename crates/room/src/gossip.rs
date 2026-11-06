@@ -211,10 +211,9 @@ mod tests {
     /// `gossip::join` has subscribed. `known` seeds the address lookup, the same way a
     /// ticket's bootstrap list does.
     async fn peer(known: Vec<EndpointAddr>) -> (iroh::Endpoint, Gossip, Router) {
-        let endpoint =
-            brp_net::bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, known)
-                .await
-                .unwrap();
+        let endpoint = brp_net::bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, known)
+            .await
+            .unwrap();
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let router = Router::builder(endpoint.clone())
             .accept(iroh_gossip::ALPN, gossip.clone())
@@ -226,7 +225,7 @@ mod tests {
     async fn a_join_retries_until_the_bootstrap_answers() {
         let (a_endpoint, a_gossip, _a_router) = peer(Vec::new()).await;
         // b can reach a only through the address seeded at bind time.
-        let (b_endpoint, b_gossip, _b_router) = peer(vec![a_endpoint.addr()]).await;
+        let (_b_endpoint, b_gossip, _b_router) = peer(vec![a_endpoint.addr()]).await;
         let topic = TopicId::from_bytes([7u8; 32]);
         let bootstrap = vec![a_endpoint.addr().id];
 
@@ -235,15 +234,9 @@ mod tests {
         });
         // Attempts one and two fail while a has not subscribed to the topic.
         tokio::time::sleep(Duration::from_millis(700)).await;
-        let _a = join(
-            &a_gossip,
-            topic,
-            Vec::new(),
-            Duration::from_secs(5),
-            1,
-        )
-        .await
-        .unwrap();
+        let _a = join(&a_gossip, topic, Vec::new(), Duration::from_secs(5), 1)
+            .await
+            .unwrap();
 
         let (sender, _receiver) = joined.await.unwrap().unwrap();
         drop(sender);
