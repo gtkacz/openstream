@@ -284,14 +284,24 @@ impl Room {
         self.version.load(Ordering::Relaxed)
     }
 
-    /// A ticket listing this participant as bootstrap, so anyone online can invite.
+    /// A ticket naming this participant first and every member whose address we hold, most
+    /// recently seen first. It keeps working while any named member stays online — including
+    /// after this participant leaves.
     pub fn ticket(&self) -> RoomTicket {
-        RoomTicket::new(self.topic, vec![self.endpoint.addr()])
+        let mut bootstrap = vec![self.endpoint.addr()];
+        let mut others: Vec<_> = lock(&self.membership)
+            .members()
+            .filter(|m| m.id != self.me)
+            .filter_map(|m| self.watcher.member_addr(&m.id).map(|addr| (m.last_seen, addr)))
+            .collect();
+        others.sort_by(|a, b| b.0.cmp(&a.0));
+        bootstrap.extend(others.into_iter().map(|(_, addr)| addr));
+        RoomTicket::new(self.topic, bootstrap)
     }
 
     /// A ticket for this participant's own way back in, for a process that is about to restart:
-    /// the topic plus every *other* current member. `ticket()` is no use here, because it names
-    /// this node, and a node cannot bootstrap through itself.
+    /// the topic plus every *other* current member. A node cannot bootstrap through itself, so
+    /// this never names this node even though `ticket()` now leads with it.
     ///
     /// Each member is named with the addresses the endpoint currently holds for it, since with
     /// relays disabled an id on its own resolves to nothing. Alone in the room there is nobody to

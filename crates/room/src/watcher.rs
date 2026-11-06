@@ -93,6 +93,10 @@ struct WatchEntry {
 #[derive(Default)]
 struct Inner {
     clients: HashMap<PublicKey, Arc<MediaClient>>,
+    /// The last address each member was reachable at, from their most recent connection. Kept
+    /// for minting tickets; never invalidated, because `ticket()` only names current members
+    /// and a stale address only costs a joiner one failed dial.
+    addrs: HashMap<PublicKey, EndpointAddr>,
     /// Held while dialling a member, so a watch and the member's link never open two connections.
     dial_gates: HashMap<PublicKey, Arc<tokio::sync::Mutex<()>>>,
     /// The task keeping each member's connection up, for as long as they are a member.
@@ -333,6 +337,11 @@ impl Watcher {
         lock(&self.inner).clients.get(publisher)?.rtt()
     }
 
+    /// The last address a member was reachable at, from their most recent connection.
+    pub(crate) fn member_addr(&self, id: &PublicKey) -> Option<EndpointAddr> {
+        lock(&self.inner).addrs.get(id).cloned()
+    }
+
     pub fn signal_lost(&self, publisher: &PublicKey) -> bool {
         lock(&self.inner).silent.contains(publisher)
     }
@@ -497,7 +506,17 @@ impl Watcher {
         // the addresses gossip learned while joining.
         let client =
             Arc::new(MediaClient::connect(&self.endpoint, EndpointAddr::from(publisher)).await?);
-        lock(&self.inner).clients.insert(publisher, client.clone());
+        // Remember how we reached them, so a ticket minted later can name them for others.
+        // Read from the connection itself: `remote_info`'s actor round-trip can stall behind
+        // holepunching, which must never hold up a link.
+        let addr = client.remote_addr();
+        {
+            let mut inner = lock(&self.inner);
+            if let Some(addr) = addr {
+                inner.addrs.insert(publisher, addr);
+            }
+            inner.clients.insert(publisher, client.clone());
+        }
         self.set_silent(publisher, false);
         Ok(client)
     }

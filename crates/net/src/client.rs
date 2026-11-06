@@ -84,6 +84,20 @@ impl MediaClient {
         paths.iter().find(|p| p.is_selected()).map(|p| p.rtt())
     }
 
+    /// Where this publisher is reachable, from the connection's own path state: every path's
+    /// remote transport address, be it a relay URL or a direct IP. Callers mint tickets from
+    /// this, so it is best-effort and grows as paths come and go.
+    pub fn remote_addr(&self) -> Option<EndpointAddr> {
+        let id = self.conn.remote_id();
+        let addrs: Vec<_> = self
+            .conn
+            .paths()
+            .iter()
+            .map(|p| p.remote_addr().clone())
+            .collect();
+        (!addrs.is_empty()).then(|| EndpointAddr::from_parts(id, addrs))
+    }
+
     /// Finishes when the connection does, for whatever reason.
     pub async fn closed(&self) {
         self.conn.closed().await;

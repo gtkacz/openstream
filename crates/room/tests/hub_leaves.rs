@@ -112,3 +112,46 @@ async fn a_survivor_can_still_invite_after_the_creator_leaves() {
     d.leave().await;
     b.leave().await;
 }
+
+#[tokio::test]
+async fn a_ticket_minted_after_others_join_survives_the_creator_leaving() {
+    let a = Room::create(config("alice")).await.unwrap();
+    let b = Room::join(config("bob"), a.ticket()).await.unwrap();
+    wait_until("mutual presence", Duration::from_secs(10), || {
+        a.snapshot().members.len() == 1 && b.snapshot().members.len() == 1
+    })
+    .await;
+
+    let a_id = a.id();
+    let ticket = a.ticket();
+    assert_eq!(
+        ticket.bootstrap[0].id, a_id,
+        "the minting member is the first bootstrap"
+    );
+    assert!(
+        ticket.bootstrap.iter().any(|addr| addr.id == b.id()),
+        "the ticket names the other members"
+    );
+
+    let topic = ticket.topic;
+    a.leave().await;
+    let c = Room::join(config("carol"), ticket).await.unwrap();
+    wait_until("carol joins through the stale ticket", Duration::from_secs(10), || {
+        b.snapshot().members.iter().any(|m| m.nickname == "carol")
+            && c.snapshot().members.iter().any(|m| m.nickname == "bob")
+    })
+    .await;
+    assert_eq!(c.ticket().topic, topic, "the room is the same room");
+
+    wait_until("alice expires at bob", Duration::from_secs(10), || {
+        !b.snapshot().members.iter().any(|m| m.id == a_id)
+    })
+    .await;
+    assert!(
+        !b.ticket().bootstrap.iter().any(|addr| addr.id == a_id),
+        "an expired member stops being named"
+    );
+
+    c.leave().await;
+    b.leave().await;
+}
