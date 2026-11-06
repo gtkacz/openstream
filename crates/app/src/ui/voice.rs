@@ -89,6 +89,23 @@ pub fn controls(
 
 /// Returns the rect of the last toggle, where the surface ends.
 fn toggles(ui: &mut egui::Ui, voice: &OwnVoiceView, commands: &mut Vec<RoomCommand>) -> egui::Rect {
+    // A right-to-left group places the first widget rightmost, so it adds them swapped to keep the
+    // microphone left of the headphones as on the surface.
+    if ui.layout().main_dir() == egui::Direction::RightToLeft {
+        let headphones = headphones_toggle(ui, voice, commands);
+        microphone_toggle(ui, voice, commands);
+        headphones
+    } else {
+        microphone_toggle(ui, voice, commands);
+        headphones_toggle(ui, voice, commands)
+    }
+}
+
+fn microphone_toggle(
+    ui: &mut egui::Ui,
+    voice: &OwnVoiceView,
+    commands: &mut Vec<RoomCommand>,
+) -> egui::Rect {
     let usual_ink = ui.visuals().widgets.inactive.fg_stroke.color;
     let mut muted = voice.muted;
     let (glyph, name) = if muted {
@@ -104,6 +121,14 @@ fn toggles(ui: &mut egui::Ui, voice: &OwnVoiceView, commands: &mut Vec<RoomComma
     if microphone.changed() {
         commands.push(RoomCommand::SetVoiceMuted(muted));
     }
+    microphone.rect
+}
+
+fn headphones_toggle(
+    ui: &mut egui::Ui,
+    voice: &OwnVoiceView,
+    commands: &mut Vec<RoomCommand>,
+) -> egui::Rect {
     let mut deafened = voice.deafened;
     let (glyph, name) = if deafened {
         (icons::HEADPHONE_OFF, "Undeafen")
@@ -229,7 +254,7 @@ pub fn wire_rates(snapshot: &RoomSnapshot, state: &UiState, member: &MemberView)
     };
     let in_voice = member.voice.is_some();
     (
-        if in_voice && member.sending {
+        if in_voice && member.sending && !member.voice.is_some_and(|v| v.deafened) {
             rate(&snapshot.me)
         } else {
             0.0
@@ -742,6 +767,25 @@ mod tests {
                 sending: false
             }]
         );
+    }
+
+    #[test]
+    fn your_voice_is_not_drawn_towards_a_person_who_deafened_themselves() {
+        let snapshot = snapshot(joined());
+        let mut state = UiState::new();
+        state
+            .voice
+            .entry(snapshot.me)
+            .or_default()
+            .traffic
+            .bytes_per_second = 5_000.0;
+        let listening = person(Some(Default::default()));
+        let deafened = person(Some(brp_proto::VoiceState {
+            muted: false,
+            deafened: true,
+        }));
+        assert_eq!(wire_rates(&snapshot, &state, &listening).0, 5_000.0);
+        assert_eq!(wire_rates(&snapshot, &state, &deafened).0, 0.0);
     }
 
     #[test]
