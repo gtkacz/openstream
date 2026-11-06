@@ -5,7 +5,8 @@ use std::ffi::c_int;
 use std::ptr;
 
 use brp_proto::constants::{
-    AUDIO_CHANNELS, AUDIO_FRAME_SAMPLES, AUDIO_SAMPLE_RATE, OPUS_BITRATE_KBPS,
+    AUDIO_CHANNELS, AUDIO_FRAME_SAMPLES, AUDIO_SAMPLE_RATE, OPUS_BITRATE_KBPS, VOICE_BITRATE_KBPS,
+    VOICE_CHANNELS,
 };
 use brp_proto::{AudioParams, EncodedFrame};
 use ffmpeg_sys_next as ff;
@@ -22,6 +23,7 @@ pub struct OpusEncoder {
     ctx: CodecContext,
     frame: Frame,
     packet: Packet,
+    channels: u8,
     next_seq: u64,
     next_pts: i64,
     /// libopus emits exactly one packet per frame, in order, so a queue of timestamps suffices.
@@ -30,6 +32,16 @@ pub struct OpusEncoder {
 
 impl OpusEncoder {
     pub fn open() -> Result<Self, CodecError> {
+        // Game audio, not speech: keeps libopus in its full-band music mode.
+        Self::open_with(AUDIO_CHANNELS, OPUS_BITRATE_KBPS, "audio")
+    }
+
+    pub fn open_voice() -> Result<Self, CodecError> {
+        // Speech is what this carries, so libopus is told to favour intelligibility.
+        Self::open_with(VOICE_CHANNELS, VOICE_BITRATE_KBPS, "voip")
+    }
+
+    fn open_with(channels: u8, bitrate_kbps: u32, application: &str) -> Result<Self, CodecError> {
         init_logging();
         let cname = cstring(ENCODER_NAME)?;
         let codec = unsafe { ff::avcodec_find_encoder_by_name(cname.as_ptr()) };
@@ -41,15 +53,14 @@ impl OpusEncoder {
             let c = &mut *ctx.0;
             c.sample_rate = AUDIO_SAMPLE_RATE as c_int;
             c.sample_fmt = ff::AVSampleFormat::AV_SAMPLE_FMT_FLT;
-            ff::av_channel_layout_default(&mut c.ch_layout, c_int::from(AUDIO_CHANNELS));
-            c.bit_rate = i64::from(OPUS_BITRATE_KBPS) * 1000;
+            ff::av_channel_layout_default(&mut c.ch_layout, c_int::from(channels));
+            c.bit_rate = i64::from(bitrate_kbps) * 1000;
             c.time_base = ff::AVRational {
                 num: 1,
                 den: AUDIO_SAMPLE_RATE as c_int,
             };
         }
-        // Game audio, not speech: keeps libopus in its full-band music mode.
-        set_opt(&ctx, "application", "audio")?;
+        set_opt(&ctx, "application", application)?;
         ctx.open(codec)?;
         let frame_size = unsafe { (*ctx.0).frame_size } as usize;
         if frame_size != AUDIO_FRAME_SAMPLES {
@@ -63,13 +74,14 @@ impl OpusEncoder {
             f.nb_samples = AUDIO_FRAME_SAMPLES as c_int;
             f.format = ff::AVSampleFormat::AV_SAMPLE_FMT_FLT as c_int;
             f.sample_rate = AUDIO_SAMPLE_RATE as c_int;
-            ff::av_channel_layout_default(&mut f.ch_layout, c_int::from(AUDIO_CHANNELS));
+            ff::av_channel_layout_default(&mut f.ch_layout, c_int::from(channels));
             check("av_frame_get_buffer", ff::av_frame_get_buffer(frame.0, 0))?;
         }
         Ok(Self {
             ctx,
             frame,
             packet: Packet::new()?,
+            channels,
             next_seq: 0,
             next_pts: 0,
             pending_ts: VecDeque::new(),
@@ -100,7 +112,11 @@ impl AudioEncoder for OpusEncoder {
         ENCODER_NAME
     }
     fn params(&self) -> AudioParams {
-        AudioParams::STANDARD
+        if self.channels == VOICE_CHANNELS {
+            AudioParams::VOICE
+        } else {
+            AudioParams::STANDARD
+        }
     }
     fn encode(&mut self, frame: &AudioFrame) -> Result<Vec<EncodedFrame>, CodecError> {
         frame.validate()?;
@@ -109,11 +125,19 @@ impl AudioEncoder for OpusEncoder {
         })?;
         unsafe {
             let f = &mut *self.frame.0;
-            ptr::copy_nonoverlapping(
-                frame.samples.as_ptr(),
-                f.data[0] as *mut f32,
-                frame.samples.len(),
-            );
+            if self.channels == VOICE_CHANNELS {
+                let mono =
+                    std::slice::from_raw_parts_mut(f.data[0] as *mut f32, AUDIO_FRAME_SAMPLES);
+                for (out, pair) in mono.iter_mut().zip(frame.samples.chunks_exact(2)) {
+                    *out = (pair[0] + pair[1]) / 2.0;
+                }
+            } else {
+                ptr::copy_nonoverlapping(
+                    frame.samples.as_ptr(),
+                    f.data[0] as *mut f32,
+                    frame.samples.len(),
+                );
+            }
             f.pts = self.next_pts;
         }
         self.pending_ts.push_back(frame.capture_ts_us);
@@ -132,14 +156,15 @@ pub struct OpusDecoder {
     packet: Packet,
     frame: Frame,
     name: &'static str,
+    channels: u8,
 }
 
 impl OpusDecoder {
     pub fn open(params: &AudioParams) -> Result<Self, CodecError> {
         init_logging();
-        if *params != AudioParams::STANDARD {
+        if *params != AudioParams::STANDARD && *params != AudioParams::VOICE {
             return Err(CodecError::InvalidFrame(format!(
-                "audio params {params:?} are not 48 kHz stereo"
+                "audio params {params:?} are neither 48 kHz stereo nor 48 kHz mono"
             )));
         }
         let (codec, name) = find_decoder()?;
@@ -147,7 +172,7 @@ impl OpusDecoder {
         unsafe {
             let c = &mut *ctx.0;
             c.sample_rate = AUDIO_SAMPLE_RATE as c_int;
-            ff::av_channel_layout_default(&mut c.ch_layout, c_int::from(AUDIO_CHANNELS));
+            ff::av_channel_layout_default(&mut c.ch_layout, c_int::from(params.channels));
             c.request_sample_fmt = ff::AVSampleFormat::AV_SAMPLE_FMT_FLT;
         }
         ctx.open(codec)?;
@@ -156,6 +181,7 @@ impl OpusDecoder {
             packet: Packet::new()?,
             frame: Frame::new()?,
             name,
+            channels: params.channels,
         })
     }
 
@@ -201,7 +227,7 @@ impl AudioDecoder for OpusDecoder {
                 return Ok(output);
             }
             check("avcodec_receive_frame", result)?;
-            let samples = interleaved_samples(unsafe { &*self.frame.0 })?;
+            let samples = interleaved_samples(unsafe { &*self.frame.0 }, self.channels)?;
             self.frame.unref();
             output.push(AudioFrame {
                 samples,
@@ -212,10 +238,11 @@ impl AudioDecoder for OpusDecoder {
 }
 
 /// The libopus decoder honours the interleaved request; the native decoder always emits planar.
-fn interleaved_samples(frame: &ff::AVFrame) -> Result<Vec<f32>, CodecError> {
+/// Mono is written to both stereo slots so nothing above the codec needs to know about it.
+fn interleaved_samples(frame: &ff::AVFrame, expected_channels: u8) -> Result<Vec<f32>, CodecError> {
     let samples = frame.nb_samples as usize;
     let channels = frame.ch_layout.nb_channels as usize;
-    if channels != AUDIO_CHANNELS as usize {
+    if channels != expected_channels as usize {
         return Err(CodecError::InvalidFrame(format!(
             "decoder produced {channels} channels"
         )));
@@ -242,6 +269,9 @@ fn interleaved_samples(frame: &ff::AVFrame) -> Result<Vec<f32>, CodecError> {
                 frame.format
             )));
         }
+    }
+    if channels == VOICE_CHANNELS as usize {
+        return Ok(out.iter().flat_map(|&s| [s, s]).collect());
     }
     Ok(out)
 }

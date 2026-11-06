@@ -1,6 +1,6 @@
 use std::f32::consts::TAU;
 
-use brp_codec::{AudioFrame, open_audio_decoder, open_audio_encoder};
+use brp_codec::{AudioFrame, open_audio_decoder, open_audio_encoder, open_voice_encoder};
 use brp_proto::AudioParams;
 use brp_proto::constants::{AUDIO_CHANNELS, AUDIO_FRAME_SAMPLES, AUDIO_SAMPLE_RATE};
 
@@ -65,4 +65,63 @@ fn a_stereo_sine_survives_the_opus_round_trip_channel_by_channel() {
             "channel {channel} rms {got} vs {expected}"
         );
     }
+}
+
+fn voice_frame(index: u64) -> AudioFrame {
+    let mut frame = AudioFrame::silence(index * 20_000);
+    for n in 0..AUDIO_FRAME_SAMPLES {
+        let t = (index as usize * AUDIO_FRAME_SAMPLES + n) as f32 / AUDIO_SAMPLE_RATE as f32;
+        let sample = LEFT_AMPLITUDE * (TAU * LEFT_HZ * t).sin();
+        frame.samples[n * 2] = sample;
+        frame.samples[n * 2 + 1] = sample;
+    }
+    frame
+}
+
+#[test]
+fn a_voice_sine_comes_back_on_both_channels() {
+    let mut encoder = open_voice_encoder().expect("libopus is linked into FFmpeg");
+    assert_eq!(encoder.params(), AudioParams::VOICE);
+    let mut decoder = open_audio_decoder(&AudioParams::VOICE).unwrap();
+
+    let mut tail = Vec::new();
+    for index in 0..50u64 {
+        for packet in encoder.encode(&voice_frame(index)).unwrap() {
+            for (n, frame) in decoder.decode(&packet).unwrap().into_iter().enumerate() {
+                if index > 0 || n > 0 {
+                    assert_eq!(frame.samples.len(), AudioFrame::FRAME_LEN);
+                }
+                if index >= 40 {
+                    tail.extend_from_slice(&frame.samples);
+                }
+            }
+        }
+    }
+    let expected = channel_rms(&voice_frame(45).samples, 0);
+    for channel in 0..AUDIO_CHANNELS as usize {
+        let got = channel_rms(&tail, channel);
+        assert!(
+            (got - expected).abs() < expected * 0.2,
+            "channel {channel} rms {got} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn voice_packets_are_a_fraction_of_the_stereo_ones() {
+    let mut encoder = open_voice_encoder().unwrap();
+    let bytes: usize = (0..50u64)
+        .flat_map(|index| encoder.encode(&voice_frame(index)).unwrap())
+        .map(|packet| packet.data.len())
+        .sum();
+    assert!(bytes / 50 < 160, "mean packet {} bytes", bytes / 50);
+}
+
+#[test]
+fn a_decoder_refuses_params_it_cannot_produce_stereo_from() {
+    let params = AudioParams {
+        sample_rate: AUDIO_SAMPLE_RATE,
+        channels: 3,
+    };
+    assert!(open_audio_decoder(&params).is_err());
 }

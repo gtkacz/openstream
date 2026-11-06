@@ -112,6 +112,10 @@ pub fn open_audio_encoder() -> Result<Box<dyn AudioEncoder>, CodecError> {
     Ok(Box::new(OpusEncoder::open()?))
 }
 
+pub fn open_voice_encoder() -> Result<Box<dyn AudioEncoder>, CodecError> {
+    Ok(Box::new(OpusEncoder::open_voice()?))
+}
+
 pub fn open_audio_decoder(params: &AudioParams) -> Result<Box<dyn AudioDecoder>, CodecError> {
     Ok(Box::new(OpusDecoder::open(params)?))
 }
