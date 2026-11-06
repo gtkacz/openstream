@@ -40,6 +40,7 @@ fn config(nickname: &str, secret: SecretKey) -> RoomConfig {
             housekeeping: Duration::from_millis(100),
             encoder_grace: Duration::from_millis(300),
             join_timeout: JOIN_TIMEOUT,
+            join_attempts: 3,
         },
     }
 }

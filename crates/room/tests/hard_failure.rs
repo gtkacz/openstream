@@ -44,6 +44,7 @@ fn config(nickname: &str, capture: Arc<dyn CaptureBackend>) -> RoomConfig {
             housekeeping: Duration::from_millis(100),
             encoder_grace: Duration::from_millis(300),
             join_timeout: Duration::from_secs(5),
+            join_attempts: 3,
         },
     }
 }

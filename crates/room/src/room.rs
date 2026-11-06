@@ -13,8 +13,8 @@ use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::Mixer;
 use brp_proto::constants::{
-    ENCODER_IDLE_STOP_GRACE, JOIN_TIMEOUT, MAX_LIVES_PER_PARTICIPANT, MEDIA_ALPN, MEMBER_EXPIRY,
-    NICKNAME_MAX_LEN, PRESENCE_HEARTBEAT, REGISTRY_HOUSEKEEPING,
+    ENCODER_IDLE_STOP_GRACE, JOIN_ATTEMPTS, JOIN_TIMEOUT, MAX_LIVES_PER_PARTICIPANT, MEDIA_ALPN,
+    MEMBER_EXPIRY, NICKNAME_MAX_LEN, PRESENCE_HEARTBEAT, REGISTRY_HOUSEKEEPING,
 };
 use brp_proto::{Preset, RoomTicket, SourceKind, template_presets};
 use iroh::protocol::Router;
@@ -39,6 +39,7 @@ pub struct RoomTimings {
     pub housekeeping: Duration,
     pub encoder_grace: Duration,
     pub join_timeout: Duration,
+    pub join_attempts: u32,
 }
 
 impl Default for RoomTimings {
@@ -49,6 +50,7 @@ impl Default for RoomTimings {
             housekeeping: REGISTRY_HOUSEKEEPING,
             encoder_grace: ENCODER_IDLE_STOP_GRACE,
             join_timeout: JOIN_TIMEOUT,
+            join_attempts: JOIN_ATTEMPTS,
         }
     }
 }
@@ -165,6 +167,7 @@ impl Room {
             TopicId::from_bytes(topic),
             bootstrap_ids,
             config.timings.join_timeout,
+            config.timings.join_attempts,
         )
         .await?;
 
