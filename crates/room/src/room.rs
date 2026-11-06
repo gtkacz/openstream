@@ -13,12 +13,13 @@ use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
 use brp_pipeline::Mixer;
 use brp_proto::constants::{
-    ENCODER_IDLE_STOP_GRACE, JOIN_TIMEOUT, MAX_LIVES_PER_PARTICIPANT, MEDIA_ALPN, MEMBER_EXPIRY,
-    NICKNAME_MAX_LEN, PRESENCE_HEARTBEAT, REGISTRY_HOUSEKEEPING,
+    ENCODER_IDLE_STOP_GRACE, JOIN_ATTEMPTS, JOIN_TIMEOUT, MAX_LIVES_PER_PARTICIPANT, MEDIA_ALPN,
+    MEMBER_EXPIRY, NICKNAME_MAX_LEN, PRESENCE_HEARTBEAT, REGISTRY_HOUSEKEEPING,
+    TICKET_OTHER_MEMBERS,
 };
 use brp_proto::{Preset, RoomTicket, SourceKind, template_presets};
 use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, EndpointId, PublicKey, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, PublicKey, SecretKey, TransportAddr};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
 use tokio::sync::{Notify, mpsc};
@@ -41,6 +42,9 @@ pub struct RoomTimings {
     pub housekeeping: Duration,
     pub encoder_grace: Duration,
     pub join_timeout: Duration,
+    /// How many times the joiner asks the ticket's bootstrap list to take it in before giving
+    /// up. Never fewer than one attempt, whatever this is set to.
+    pub join_attempts: u32,
 }
 
 impl Default for RoomTimings {
@@ -51,6 +55,7 @@ impl Default for RoomTimings {
             housekeeping: REGISTRY_HOUSEKEEPING,
             encoder_grace: ENCODER_IDLE_STOP_GRACE,
             join_timeout: JOIN_TIMEOUT,
+            join_attempts: JOIN_ATTEMPTS,
         }
     }
 }
@@ -78,6 +83,7 @@ pub struct Room {
     nickname: String,
     topic: [u8; 32],
     endpoint: Endpoint,
+    relays: bool,
     router: Router,
     membership: Arc<Mutex<Membership>>,
     registry: Arc<LiveRegistry>,
@@ -112,6 +118,7 @@ impl Room {
     ) -> Result<Self, RoomError> {
         let nickname: String = config.nickname.chars().take(NICKNAME_MAX_LEN).collect();
         let me = config.secret.public();
+        let relays = !matches!(config.relay, RelaySetting::Disabled);
         let endpoint =
             bind_endpoint(config.secret.clone(), config.relay, bootstrap.clone()).await?;
 
@@ -202,6 +209,7 @@ impl Room {
             TopicId::from_bytes(topic),
             bootstrap_ids,
             config.timings.join_timeout,
+            config.timings.join_attempts,
         )
         .await?;
 
@@ -278,6 +286,7 @@ impl Room {
             nickname,
             topic,
             endpoint,
+            relays,
             router,
             membership,
             registry,
@@ -308,14 +317,30 @@ impl Room {
         self.version.load(Ordering::Relaxed)
     }
 
-    /// A ticket listing this participant as bootstrap, so anyone online can invite.
+    /// A ticket naming this participant first, then up to `TICKET_OTHER_MEMBERS` members whose
+    /// address we hold, most recently seen first. It keeps working while any named member stays
+    /// online — including after this participant leaves. A member whose link is still dialling
+    /// is not named yet, so a ticket minted the instant they joined can be thinner than the room:
+    /// mint again after a moment if the newest member must be named.
     pub fn ticket(&self) -> RoomTicket {
-        RoomTicket::new(self.topic, vec![self.endpoint.addr()])
+        let mut others: Vec<(Instant, PublicKey)> = lock(&self.membership)
+            .members()
+            .filter(|m| m.id != self.me)
+            .map(|m| (m.last_seen, m.id))
+            .collect();
+        others.sort_by_key(|(seen, _)| std::cmp::Reverse(*seen));
+        let named = others
+            .into_iter()
+            .filter_map(|(_, id)| self.watcher.member_addr(&id))
+            .map(|addr| shareable(addr, self.relays))
+            .take(TICKET_OTHER_MEMBERS);
+        let bootstrap = std::iter::once(self.endpoint.addr()).chain(named).collect();
+        RoomTicket::new(self.topic, bootstrap)
     }
 
     /// A ticket for this participant's own way back in, for a process that is about to restart:
-    /// the topic plus every *other* current member. `ticket()` is no use here, because it names
-    /// this node, and a node cannot bootstrap through itself.
+    /// the topic plus every *other* current member. A node cannot bootstrap through itself, so
+    /// this never names this node even though `ticket()` now leads with it.
     ///
     /// Each member is named with the addresses the endpoint currently holds for it, since with
     /// relays disabled an id on its own resolves to nothing. Alone in the room there is nobody to
@@ -532,5 +557,44 @@ impl Room {
             tracing::warn!(%error, "router shutdown");
         }
         self.endpoint.close().await;
+    }
+}
+
+/// What a ticket may say about another member. Tickets get pasted where anyone can read them, so
+/// with relays on a member is named by relay URL only: whoever dials them still learns their IP,
+/// a bystander reading the ticket does not. Without relays an IP is the only way in. A member
+/// left with no relay URL stays named by id, which relay-mode address lookup resolves.
+fn shareable(addr: EndpointAddr, relays: bool) -> EndpointAddr {
+    if !relays {
+        return addr;
+    }
+    EndpointAddr::from_parts(
+        addr.id,
+        addr.addrs.into_iter().filter(TransportAddr::is_relay),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use super::*;
+
+    #[test]
+    fn with_relays_on_a_ticket_names_other_members_by_relay_only() {
+        let relay: iroh::RelayUrl = "https://relay.example.".parse().unwrap();
+        let ip: SocketAddr = "203.0.113.7:4433".parse().unwrap();
+        let addr = EndpointAddr::new(SecretKey::generate().public())
+            .with_relay_url(relay.clone())
+            .with_ip_addr(ip);
+
+        let relayed = shareable(addr.clone(), true);
+        assert_eq!(relayed.relay_urls().collect::<Vec<_>>(), vec![&relay]);
+        assert_eq!(relayed.ip_addrs().count(), 0, "no IP leaves with relays on");
+        assert_eq!(
+            shareable(addr.clone(), false),
+            addr,
+            "without relays the IP is the way in"
+        );
     }
 }

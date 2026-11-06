@@ -23,19 +23,33 @@ pub(crate) async fn join(
     topic: TopicId,
     bootstrap: Vec<EndpointId>,
     timeout: Duration,
+    attempts: u32,
 ) -> Result<(GossipSender, GossipReceiver), RoomError> {
-    let mut topic = gossip
-        .subscribe(topic, bootstrap.clone())
-        .await
-        .map_err(|e| RoomError::Gossip(e.to_string()))?;
     // A creator has nobody to join; everyone else must reach a neighbour or the ticket is dead.
-    if !bootstrap.is_empty() {
-        tokio::time::timeout(timeout, topic.joined())
+    if bootstrap.is_empty() {
+        let topic = gossip
+            .subscribe(topic, Vec::new())
             .await
-            .map_err(|_| RoomError::JoinTimeout)?
             .map_err(|e| RoomError::Gossip(e.to_string()))?;
+        return Ok(topic.split());
     }
-    Ok(topic.split())
+    // At least one attempt always runs: a zero- or underflow-configured attempt count must not
+    // reject a live ticket without a single dial.
+    for _ in 0..attempts.max(1) {
+        let mut topic = gossip
+            .subscribe(topic, bootstrap.clone())
+            .await
+            .map_err(|e| RoomError::Gossip(e.to_string()))?;
+        match tokio::time::timeout(timeout, topic.joined()).await {
+            Ok(Ok(())) => return Ok(topic.split()),
+            Ok(Err(error)) => tracing::debug!(%error, "gossip join attempt failed"),
+            Err(_) => tracing::debug!("gossip join attempt timed out"),
+        }
+        // Dropping the topic handle leaves the topic; the next attempt sends a fresh Join to the
+        // bootstrap list. Gossip dials per peer, not per topic, and never abandons a dial, so a
+        // slow connection begun by an earlier attempt carries on and delivers the new Join.
+    }
+    Err(RoomError::JoinTimeout)
 }
 
 pub(crate) struct PresenceLoop {
@@ -185,4 +199,75 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use brp_net::RelaySetting;
+    use iroh::protocol::Router;
+    use iroh::{EndpointAddr, SecretKey};
+    use iroh_gossip::net::Gossip;
+    use iroh_gossip::proto::TopicId;
+
+    use super::*;
+
+    /// A bound endpoint whose router answers gossip, like a room's endpoint before its
+    /// `gossip::join` has subscribed. `known` seeds the address lookup, the same way a
+    /// ticket's bootstrap list does.
+    async fn peer(known: Vec<EndpointAddr>) -> (iroh::Endpoint, Gossip, Router) {
+        let endpoint = brp_net::bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, known)
+            .await
+            .unwrap();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_gossip::ALPN, gossip.clone())
+            .spawn();
+        (endpoint, gossip, router)
+    }
+
+    #[tokio::test]
+    async fn a_join_retries_until_the_bootstrap_answers() {
+        let (a_endpoint, a_gossip, _a_router) = peer(Vec::new()).await;
+        // b can reach a only through the address seeded at bind time.
+        let (_b_endpoint, b_gossip, _b_router) = peer(vec![a_endpoint.addr()]).await;
+        let topic = TopicId::from_bytes([7u8; 32]);
+        let bootstrap = vec![a_endpoint.addr().id];
+
+        let joined = tokio::spawn(async move {
+            join(&b_gossip, topic, bootstrap, Duration::from_secs(1), 5).await
+        });
+        // a subscribes only after the first attempt has given up; three spare attempts keep a
+        // slow runner from failing the later one that should succeed.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let _a = join(&a_gossip, topic, Vec::new(), Duration::from_secs(5), 1)
+            .await
+            .unwrap();
+
+        let (sender, _receiver) = joined.await.unwrap().unwrap();
+        drop(sender);
+    }
+
+    #[tokio::test]
+    async fn even_zero_configured_attempts_makes_one() {
+        let (a_endpoint, a_gossip, _a_router) = peer(Vec::new()).await;
+        let (_b_endpoint, b_gossip, _b_router) = peer(vec![a_endpoint.addr()]).await;
+        let topic = TopicId::from_bytes([7u8; 32]);
+        let _a = join(&a_gossip, topic, Vec::new(), Duration::from_secs(5), 1)
+            .await
+            .unwrap();
+        // Zero configured attempts still dials once, instead of rejecting a reachable
+        // bootstrap sight unseen.
+        let (sender, _receiver) = join(
+            &b_gossip,
+            topic,
+            vec![a_endpoint.addr().id],
+            Duration::from_secs(5),
+            0,
+        )
+        .await
+        .unwrap();
+        drop(sender);
+    }
 }
