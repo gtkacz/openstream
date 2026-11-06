@@ -23,6 +23,8 @@ pub struct SettingsDialog {
     pub nickname_text: String,
     pub devices: Vec<AudioDevice>,
     pub devices_error: Option<String>,
+    pub inputs: Vec<AudioDevice>,
+    pub inputs_error: Option<String>,
     pub error: String,
     /// The frame rate is being typed rather than picked. Held apart from the value because 60 can be
     /// a typed number too, and choosing Custom must not change it.
@@ -30,8 +32,13 @@ pub struct SettingsDialog {
 }
 
 impl SettingsDialog {
-    /// Opens with a fresh draft of `settings` and the device list as enumerated now.
-    pub fn open_with(&mut self, settings: &Settings, devices: Result<Vec<AudioDevice>, String>) {
+    /// Opens with a fresh draft of `settings` and the device lists as enumerated now.
+    pub fn open_with(
+        &mut self,
+        settings: &Settings,
+        devices: Result<Vec<AudioDevice>, String>,
+        inputs: Result<Vec<AudioDevice>, String>,
+    ) {
         self.draft = settings.clone();
         self.nickname_text = settings.nickname.clone().unwrap_or_default();
         match devices {
@@ -42,6 +49,16 @@ impl SettingsDialog {
             Err(error) => {
                 self.devices = Vec::new();
                 self.devices_error = Some(error);
+            }
+        }
+        match inputs {
+            Ok(inputs) => {
+                self.inputs = inputs;
+                self.inputs_error = None;
+            }
+            Err(error) => {
+                self.inputs = Vec::new();
+                self.inputs_error = Some(error);
             }
         }
         self.error.clear();
@@ -94,6 +111,27 @@ pub fn device_label(selected: Option<&str>, devices: &[AudioDevice]) -> String {
     }
 }
 
+/// A dropdown of `System default` and `devices` bound to `selected`, with `error` under it.
+fn device_picker(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    selected: &mut Option<String>,
+    devices: &[AudioDevice],
+    error: Option<String>,
+) {
+    let label = device_label(selected.as_deref(), devices);
+    let width = ui.available_width();
+    theme::dropdown(ui, id_salt, label, Some(width), |ui| {
+        ui.selectable_value(selected, None, "System default");
+        for device in devices {
+            ui.selectable_value(selected, Some(device.id.clone()), &device.name);
+        }
+    });
+    if let Some(error) = error {
+        ui.colored_label(theme::error(), error);
+    }
+}
+
 /// Draws the dialog when open. Returns the settings to persist when Save was clicked and the
 /// draft validates; the caller saves and reopens the dialog with the error if that fails.
 pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -> Option<Settings> {
@@ -141,6 +179,15 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     );
                 });
                 ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Voice", |ui| {
+                    theme::switch(ui, &mut dialog.draft.auto_join_voice, "Join voice automatically");
+                    ui.label(
+                        egui::RichText::new("Your microphone goes live in every room you enter")
+                            .small()
+                            .color(theme::secondary()),
+                    );
+                });
+                ui.add_space(ROW_GAP);
                 theme::form_row(ui, "Frame rate ceiling", |ui| {
                     let selected = (!dialog.custom_fps).then_some(dialog.draft.fps);
                     let choice = theme::segmented(
@@ -167,6 +214,22 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                                 .suffix(" fps"),
                         );
                     });
+                });
+                ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Microphone", |ui| {
+                    let error = dialog.inputs_error.as_ref().map(|error| {
+                        format!(
+                            "Could not list microphones. Check your audio system, then reopen \
+                 Settings. ({error})"
+                        )
+                    });
+                    device_picker(
+                        ui,
+                        "settings-input-device",
+                        &mut dialog.draft.audio.input_device,
+                        &dialog.inputs,
+                        error,
+                    );
                 });
                 ui.add_space(ROW_GAP);
                 theme::form_row(ui, "Audio output", |ui| {
@@ -196,6 +259,27 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     }
                 });
                 ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Voice output", |ui| {
+                    let mut same = !dialog.draft.audio.separate_voice_output;
+                    theme::switch(ui, &mut same, "Same as audio output");
+                    dialog.draft.audio.separate_voice_output = !same;
+                    motion::unfold(
+                        ui,
+                        "settings-voice-output",
+                        dialog.draft.audio.separate_voice_output,
+                        |ui| {
+                            ui.add_space(4.0);
+                            device_picker(
+                                ui,
+                                "settings-voice-output-device",
+                                &mut dialog.draft.audio.voice_output_device,
+                                &dialog.devices,
+                                None,
+                            );
+                        },
+                    );
+                });
+                ui.add_space(ROW_GAP);
                 theme::form_row(ui, "Updates", |ui| {
                     theme::switch(
                         ui,
@@ -210,7 +294,10 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                 });
                 if room_open {
                     ui.add_space(ROW_GAP);
-                    ui.weak("Changes apply to the next room you open");
+                    ui.weak(
+                        "Changes apply to the next room you open. Voice devices apply the next time \
+                         you join voice.",
+                    );
                 }
             });
         // Outside the scroll area, because the row Save rejects can be scrolled out of view.
@@ -283,10 +370,10 @@ mod tests {
             fps: 144,
             ..Settings::default()
         };
-        dialog.open_with(&settings, Ok(Vec::new()));
+        dialog.open_with(&settings, Ok(Vec::new()), Ok(Vec::new()));
         assert!(dialog.custom_fps);
         settings.fps = 30;
-        dialog.open_with(&settings, Ok(Vec::new()));
+        dialog.open_with(&settings, Ok(Vec::new()), Ok(Vec::new()));
         assert!(!dialog.custom_fps);
     }
 
@@ -300,11 +387,121 @@ mod tests {
             fps: 24,
             ..Settings::default()
         };
-        dialog.open_with(&settings, Err("no host".into()));
+        dialog.open_with(&settings, Err("no host".into()), Ok(Vec::new()));
         assert!(dialog.open);
         assert_eq!(dialog.draft, settings);
         assert!(dialog.error.is_empty());
         assert_eq!(dialog.devices_error.as_deref(), Some("no host"));
         assert!(dialog.devices.is_empty());
+    }
+
+    /// The text drawn while the dialog is scrolled from the top to the bottom: every string in the
+    /// order first seen, and the strings of the last frame (the bottom of the dialog).
+    fn shown_text(dialog: &mut SettingsDialog, room_open: bool) -> (Vec<String>, Vec<String>) {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut seen: Vec<String> = Vec::new();
+        let mut last = Vec::new();
+        for frame in 0..120 {
+            let scroll = frame >= 60;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 1400.0),
+                    )),
+                    time: Some(f64::from(frame) / 60.0),
+                    events: if scroll {
+                        vec![
+                            egui::Event::PointerMoved(egui::pos2(450.0, 700.0)),
+                            egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                delta: egui::vec2(0.0, -400.0),
+                                phase: egui::TouchPhase::Move,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ]
+                    } else {
+                        Vec::new()
+                    },
+                    ..Default::default()
+                },
+                |ui| {
+                    draw(ui.ctx(), dialog, room_open);
+                },
+            );
+            output.textures_delta.clear();
+            last = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+            for text in &last {
+                if !seen.contains(text) {
+                    seen.push(text.clone());
+                }
+            }
+        }
+        (seen, last)
+    }
+
+    fn opened() -> SettingsDialog {
+        let mut dialog = SettingsDialog::default();
+        dialog.open_with(&Settings::default(), Ok(Vec::new()), Ok(Vec::new()));
+        dialog
+    }
+
+    #[test]
+    fn the_rows_come_in_the_specs_order() {
+        let (seen, _) = shown_text(&mut opened(), false);
+        let labels = [
+            "Your name",
+            "Connection",
+            "Invite links",
+            "Voice",
+            "Frame rate ceiling",
+            "Microphone",
+            "Audio output",
+            "Voice output",
+            "Updates",
+        ];
+        let positions: Vec<Option<usize>> = labels
+            .iter()
+            .map(|label| seen.iter().position(|t| t == label))
+            .collect();
+        assert!(positions.iter().all(Option::is_some), "{positions:?}");
+        assert!(positions.is_sorted(), "{positions:?}");
+    }
+
+    #[test]
+    fn the_second_output_picker_appears_only_when_voice_is_separated() {
+        let pickers = |dialog: &mut SettingsDialog| {
+            let (_, last) = shown_text(dialog, false);
+            let from = last.iter().position(|t| t == "Voice output").unwrap();
+            let to = last.iter().position(|t| t == "Updates").unwrap();
+            last[from..to]
+                .iter()
+                .filter(|t| *t == "System default")
+                .count()
+        };
+        let mut dialog = opened();
+        assert_eq!(pickers(&mut dialog), 0);
+        dialog.draft.audio.separate_voice_output = true;
+        assert_eq!(pickers(&mut dialog), 1);
+    }
+
+    #[test]
+    fn the_footnote_says_voice_devices_apply_on_the_next_join() {
+        let has_note = |room_open| {
+            shown_text(&mut opened(), room_open)
+                .1
+                .iter()
+                .any(|t| t.contains("Voice devices apply the next time you join voice."))
+        };
+        assert!(has_note(true));
+        assert!(!has_note(false));
     }
 }

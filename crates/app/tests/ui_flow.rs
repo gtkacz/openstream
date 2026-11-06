@@ -63,7 +63,11 @@ fn settings_save_is_visible_and_applies_the_draft_in_a_narrow_window() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut dialog = brp_app::ui::settings::SettingsDialog::default();
-    dialog.open_with(&brp_app::settings::Settings::default(), Ok(Vec::new()));
+    dialog.open_with(
+        &brp_app::settings::Settings::default(),
+        Ok(Vec::new()),
+        Ok(Vec::new()),
+    );
     dialog.nickname_text = "  Morgan  ".into();
     let input = || egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
@@ -631,7 +635,7 @@ fn settings_offers_no_colour_while_choosing_one_is_disabled() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut dialog = settings::SettingsDialog::default();
-    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    dialog.open_with(&Settings::default(), Ok(Vec::new()), Ok(Vec::new()));
     let mut shapes = Vec::new();
     for _ in 0..3 {
         let mut output = ctx.run_ui(window(1280.0, 800.0), |ui| {
@@ -659,7 +663,7 @@ fn a_rejected_save_says_why_where_it_can_be_seen_rather_than_below_the_fold() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut dialog = settings::SettingsDialog::default();
-    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    dialog.open_with(&Settings::default(), Ok(Vec::new()), Ok(Vec::new()));
     dialog.error = "Enter a relay URL".to_string();
     let mut shapes = Vec::new();
     for _ in 0..3 {
@@ -680,7 +684,7 @@ fn escape_cancels_settings_but_a_stray_click_on_the_backdrop_keeps_the_draft() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut dialog = settings::SettingsDialog::default();
-    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    dialog.open_with(&Settings::default(), Ok(Vec::new()), Ok(Vec::new()));
     let run = |raw: egui::RawInput, dialog: &mut settings::SettingsDialog| {
         let mut output = ctx.run_ui(raw, |ui| {
             settings::draw(ui.ctx(), dialog, false);
@@ -1018,7 +1022,7 @@ fn a_closing_dialog_leaves_gradually_without_blocking_the_room_behind_it() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut dialog = settings::SettingsDialog::default();
-    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    dialog.open_with(&Settings::default(), Ok(Vec::new()), Ok(Vec::new()));
     let mut frame = 0;
     let mut clicked_behind = false;
     let mut pass = |raw: egui::RawInput,
@@ -1358,7 +1362,7 @@ fn a_custom_frame_rate_keeps_its_value_until_one_is_typed() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
     let mut dialog = settings::SettingsDialog::default();
-    dialog.open_with(&Settings::default(), Ok(Vec::new()));
+    dialog.open_with(&Settings::default(), Ok(Vec::new()), Ok(Vec::new()));
     let saved_fps = dialog.draft.fps;
     let mut frame = 0;
     let mut pass = |raw: egui::RawInput, dialog: &mut settings::SettingsDialog| {

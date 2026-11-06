@@ -706,8 +706,9 @@ impl App {
 
         if output.open_settings || start_action == Some(StartAction::OpenSettings) {
             let devices = brp_audio::output_devices().map_err(|e| e.to_string());
+            let inputs = brp_audio::input_devices().map_err(|e| e.to_string());
             self.settings_dialog
-                .open_with(&self.store.settings, devices);
+                .open_with(&self.store.settings, devices, inputs);
         }
         // `saved` is moved into the dialog-save branch below; keep this before that.
         let saved_any = saved.is_some();

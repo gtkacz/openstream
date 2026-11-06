@@ -57,7 +57,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
     let mut settings = ui::settings::SettingsDialog::default();
-    settings.open_with(&brp_app::settings::Settings::default(), Ok(Vec::new()));
+    settings.open_with(
+        &brp_app::settings::Settings::default(),
+        Ok(Vec::new()),
+        Ok(Vec::new()),
+    );
     if screen == "custom" {
         settings.draft.relay =
             brp_app::settings::RelayChoice::Custom("https://relay.example.com/".into());
