@@ -30,7 +30,7 @@ const PING_TICK: f64 = 1.0 / 12.0;
 /// Below this the labels would run into each other and off the canvas, and a list serves better.
 const SMALLEST_CANVAS: egui::Vec2 = vec2(640.0, 440.0);
 const MOST_PEOPLE: usize = 8;
-/// Wide enough for the 50-tick history at the strip's pitch to read as a shape, small enough for a label.
+/// Wide enough for 18 bars at the strip's 4 pt pitch to read as a shape, small enough for a label.
 const STRIP: egui::Vec2 = vec2(72.0, 12.0);
 
 /// Whether this many people can be drawn on this canvas and still be read.
@@ -412,22 +412,26 @@ fn centre(painter: &egui::Painter, snapshot: &RoomSnapshot, center: Pos2) {
         None => ("You".to_string(), theme::accent()),
     };
     let font = theme::medium(13.0);
-    let mut job = egui::text::LayoutJob::default();
-    job.append(&text, 0.0, egui::TextFormat::simple(font.clone(), ink));
-    if let Some((word, word_ink)) = voice::own_state(snapshot) {
-        job.append(
-            &format!(" · {word}"),
-            0.0,
-            egui::TextFormat::simple(font, word_ink),
-        );
-    }
-    let label = painter.layout_job(job);
+    let label = painter.layout_no_wrap(text, font.clone(), ink);
     let at = center + vec2(-label.size().x / 2.0, 16.0);
+    // Its own line: appended to the label it widens the plate over a near peer's offer.
+    let word = voice::own_state(snapshot)
+        .map(|(word, word_ink)| painter.layout_no_wrap(word.to_string(), font, word_ink));
+    let word_at = word
+        .as_ref()
+        .map(|word| pos2(center.x - word.size().x / 2.0, at.y + label.size().y + 1.0));
     plate(
         painter,
         Rect::from_min_size(at, label.size()).expand2(vec2(4.0, 1.0)),
     );
     painter.galley(at, label, ink);
+    if let (Some(word), Some(word_at)) = (word, word_at) {
+        plate(
+            painter,
+            Rect::from_min_size(word_at, word.size()).expand2(vec2(4.0, 1.0)),
+        );
+        painter.galley(word_at, word, ink);
+    }
 }
 
 fn hero(
