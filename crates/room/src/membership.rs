@@ -122,6 +122,7 @@ mod tests {
             lives: vec![],
             audio_mix: None,
             quality_presets: Vec::new(),
+            voice: None,
         }
     }
 

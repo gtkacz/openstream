@@ -225,7 +225,7 @@ pub fn receive_queue_frames(fps: u32) -> usize {
 /// Audio frames have their own, much smaller, ceiling than video ones.
 pub(crate) fn check_payload_len(kind: FrameKind, len: usize) -> bool {
     match kind {
-        FrameKind::Audio => len <= MAX_AUDIO_PACKET_BYTES,
+        FrameKind::Audio | FrameKind::Voice => len <= MAX_AUDIO_PACKET_BYTES,
         FrameKind::Video => len <= MAX_FRAME_BYTES,
     }
 }

@@ -899,6 +899,7 @@ mod tests {
             lives: Vec::new(),
             audio_mix: None,
             quality_presets: Vec::new(),
+            voice: None,
         };
         lock(&watcher.membership).apply(id.public(), presence, Instant::now());
         watcher.stop_all();

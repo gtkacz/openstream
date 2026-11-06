@@ -87,6 +87,7 @@ impl PresenceLoop {
             lives: self.registry.live_infos(),
             audio_mix: Some(self.registry.audio_mix()),
             quality_presets: Vec::new(),
+            voice: None,
         };
         presence.hide_quality_presets();
         let bytes = match Signed::sign(&self.secret, &presence).and_then(|signed| encode(&signed)) {

@@ -130,6 +130,11 @@ impl AudioParams {
         sample_rate: crate::constants::AUDIO_SAMPLE_RATE,
         channels: crate::constants::AUDIO_CHANNELS,
     };
+    /// What a voice stream is on the wire: mono, since speech needs no more.
+    pub const VOICE: Self = Self {
+        sample_rate: crate::constants::AUDIO_SAMPLE_RATE,
+        channels: crate::constants::VOICE_CHANNELS,
+    };
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViewerMessage {
@@ -149,6 +154,7 @@ pub enum ViewerMessage {
         decode_fps: u16,
         rtt_ms: u16,
     },
+    SubscribeVoice,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublisherMessage {
@@ -164,6 +170,9 @@ pub enum PublisherMessage {
         video: CodecParams,
     },
     LiveEnded,
+    VoiceAck {
+        audio: AudioParams,
+    },
 }
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
     postcard::to_allocvec(msg).map_err(ProtoError::Encode)
@@ -175,6 +184,20 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ProtoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_variants_come_after_every_existing_one() {
+        assert_eq!(encode(&ViewerMessage::Unsubscribe).unwrap()[0], 3);
+        assert_eq!(encode(&ViewerMessage::SubscribeVoice).unwrap()[0], 5);
+        assert_eq!(encode(&PublisherMessage::LiveEnded).unwrap()[0], 3);
+        assert_eq!(
+            encode(&PublisherMessage::VoiceAck {
+                audio: AudioParams::VOICE
+            })
+            .unwrap()[0],
+            4
+        );
+    }
 
     #[test]
     fn viewer_message_round_trips_through_postcard() {

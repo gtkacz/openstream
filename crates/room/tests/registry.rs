@@ -749,6 +749,7 @@ fn an_overlong_application_name_is_cut_to_what_presence_accepts() {
         lives: vec![],
         audio_mix: Some(registry.audio_mix()),
         quality_presets: Vec::new(),
+        voice: None,
     };
     assert!(presence.validate().is_ok());
 }

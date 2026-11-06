@@ -80,6 +80,10 @@ pub const AUDIO_CHANNELS: u8 = 2;
 pub const AUDIO_FRAME_SAMPLES: usize = 960;
 pub const AUDIO_PACKET_DURATION: Duration = Duration::from_millis(20);
 pub const OPUS_BITRATE_KBPS: u32 = 128;
+/// Speech needs one channel; the mixer and everything above the codec stay stereo.
+pub const VOICE_CHANNELS: u8 = 1;
+/// Intelligible wideband speech in VoIP mode; music-grade bitrates would only spend bandwidth.
+pub const VOICE_BITRATE_KBPS: u32 = 32;
 /// Audio frames have no preset; the master spec reserves zero for them.
 pub const AUDIO_PRESET_ID: u32 = 0;
 /// 200 ms of slack before a stalled viewer loses audio. Video's backlog of two frames is tuned

@@ -45,6 +45,15 @@ pub struct Presence {
     /// them would otherwise offer them and fail on every frame, and this way it never sees them.
     #[serde(deserialize_with = "absent_when_truncated")]
     pub quality_presets: Vec<(u32, Preset)>,
+    /// `None` is out of voice, or a peer too old to say.
+    #[serde(deserialize_with = "absent_when_truncated")]
+    pub voice: Option<VoiceState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct VoiceState {
+    pub muted: bool,
+    pub deafened: bool,
 }
 
 fn absent_when_truncated<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(
@@ -161,6 +170,7 @@ mod tests {
                 .collect(),
             audio_mix: Some(AudioMix::All),
             quality_presets: Vec::new(),
+            voice: None,
         }
     }
 
@@ -242,6 +252,34 @@ mod tests {
         assert_eq!(read.audio_mix, None);
         assert!(read.quality_presets.is_empty());
         assert_eq!(read.lives, older.lives);
+    }
+
+    #[test]
+    fn voice_state_round_trips_in_presence() {
+        let ours = Presence {
+            voice: Some(VoiceState {
+                muted: true,
+                deafened: false,
+            }),
+            ..presence("talker", 0)
+        };
+        let read: Presence =
+            crate::messages::decode(&crate::messages::encode(&ours).unwrap()).unwrap();
+        assert_eq!(read, ours);
+    }
+
+    #[test]
+    fn an_older_peers_presence_reads_as_not_in_voice() {
+        let older = presence("old", 1);
+        let bytes = crate::messages::encode(&OlderPresence {
+            version: older.version,
+            ts_unix_ms: older.ts_unix_ms,
+            nickname: older.nickname.clone(),
+            lives: older.lives.clone(),
+        })
+        .unwrap();
+        let read: Presence = crate::messages::decode(&bytes).unwrap();
+        assert_eq!(read.voice, None);
     }
 
     #[test]
@@ -327,6 +365,7 @@ mod tests {
                 others: u32::MAX,
             }),
             quality_presets: Vec::new(),
+            voice: None,
         };
         let signed = Signed::sign(&SecretKey::from_bytes(&[3u8; 32]), &full).unwrap();
         let bytes = crate::messages::encode(&signed).unwrap();

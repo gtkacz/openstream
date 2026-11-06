@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub enum FrameKind {
     Video,
     Audio,
+    Voice,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameHeader {
@@ -55,6 +56,21 @@ mod tests {
             keyframe: true,
             len: 3,
         }
+    }
+
+    #[test]
+    fn a_voice_header_round_trips_and_keeps_audio_and_video_indices() {
+        assert_eq!(postcard::to_allocvec(&FrameKind::Video).unwrap(), [0]);
+        assert_eq!(postcard::to_allocvec(&FrameKind::Audio).unwrap(), [1]);
+        assert_eq!(postcard::to_allocvec(&FrameKind::Voice).unwrap(), [2]);
+        let voice = FrameHeader {
+            kind: FrameKind::Voice,
+            ..header()
+        };
+        let mut bytes = voice.encode_prefix().unwrap();
+        bytes.extend_from_slice(&[9, 8, 7]);
+        let (h, _) = FrameHeader::decode_prefixed(&bytes).unwrap();
+        assert_eq!(h, voice);
     }
 
     #[test]
