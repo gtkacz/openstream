@@ -150,10 +150,16 @@ pub struct VoiceMeter {
 }
 
 impl VoiceMeter {
-    const LEVELS: usize = 50;
+    /// Matches the traffic strip, so both meters span the same stretch of time.
+    const LEVELS: usize = StreamTraffic::BARS;
 
     pub fn sample(&mut self, sample: VoiceSample, now: Instant) {
+        let before = self.traffic.last_at;
         self.traffic.sample(sample.bytes, 0, now);
+        // Redraws arrive at an irregular rate; only a tick of the traffic sampler adds a level.
+        if self.traffic.last_at == before {
+            return;
+        }
         self.levels.push_back(sample.level);
         if self.levels.len() > Self::LEVELS {
             self.levels.pop_front();
@@ -512,6 +518,13 @@ mod tests {
         assert_eq!(meter.levels.len(), 50);
         assert_eq!(meter.levels.front(), Some(&10.0));
         assert_eq!(meter.levels.back(), Some(&59.0));
+        let last = start + Duration::from_millis(100) * 59;
+        let sample = VoiceSample {
+            level: 99.0,
+            bytes: 0,
+        };
+        meter.sample(sample, last + Duration::from_millis(10));
+        assert_eq!(meter.levels.back(), Some(&59.0), "too soon for a new tick");
     }
 
     #[test]
