@@ -86,7 +86,7 @@ impl RoomView {
     /// Housekeeping run once per relevant state change (a room-version bump, or the statistics
     /// timer), never per redraw: re-snapshots when the version moved, drops handles and tiles of
     /// ended watches, refreshes the rate meters and age labels, and re-serializes the ticket if the
-    /// endpoint address moved. Called from the event handlers in `window.rs`, not from the render
+    /// addresses it names moved. Called from the event handlers in `window.rs`, not from the render
     /// path, so drawing a second window never repeats this work and every window in the same batch
     /// draws the same snapshot.
     pub fn refresh(&mut self, state: &mut UiState, tiles: Option<&mut TileRenderer>) {
@@ -99,8 +99,8 @@ impl RoomView {
             tiles.retain(|key| live.contains(key) || state.keeps_picture(key));
         }
         state.refresh_rates(&self.snapshot, Instant::now());
-        // Unlike the snapshot, the ticket has no version to gate on: the relay address can change
-        // without bumping the room version, so this compares the cheap `RoomTicket` on every
+        // Unlike the snapshot, the ticket has no version to gate on: the addresses it names, and
+        // the order heartbeats put members in, change without bumping the room version, so this compares the cheap `RoomTicket` on every
         // refresh rather than only on a version change.
         refresh_ticket_cache(&mut self.last_ticket, &mut self.ticket, self.room.ticket());
     }

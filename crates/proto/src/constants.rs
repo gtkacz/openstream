@@ -63,6 +63,9 @@ pub const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// answers a later attempt without the joiner ever seeing an error. A connection still being set
 /// up carries over between attempts, so a slow link has the attempts' combined time to come up.
 pub const JOIN_ATTEMPTS: u32 = 3;
+/// Members a ticket names besides its minter. A few live bootstraps already carry a ticket through
+/// departures, while naming everyone grows a big room's ticket past what chat apps let you paste.
+pub const TICKET_OTHER_MEMBERS: usize = 4;
 /// Derived preset heights offered when smaller than the source.
 pub const TEMPLATE_HEIGHTS: [u32; 3] = [1080, 720, 480];
 pub const NICKNAME_MAX_LEN: usize = 32;
