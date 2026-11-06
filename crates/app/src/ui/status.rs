@@ -9,6 +9,7 @@ use super::own_lives;
 use super::state::{CompactSheet, UiState};
 use super::theme::{self, icons};
 use super::update::{self, UpdateState};
+use super::voice::{self, VoiceLayout};
 use crate::commands::RoomCommand;
 
 const GROUP_GAP: f32 = 8.0;
@@ -82,6 +83,7 @@ fn compact_row(
             settings_button(ui, open_settings);
             theme::fullscreen_button(ui);
             master_mute(ui, snapshot, commands, false);
+            voice::controls(ui, snapshot, commands, VoiceLayout::IconsOnly);
         },
     );
 }
@@ -89,6 +91,10 @@ fn compact_row(
 /// What the dock can afford to say at this width. It sheds words rather than taking a second row,
 /// because that height would come out of the video. The least useful go first, and the main action's
 /// label last. The widths are the controls measured in IBM Plex Mono, with Stop sharing showing.
+///
+/// Each sits 194 above what the share, audio and upload controls need: the joined Voice surface
+/// measures 162 wide in a scratch run of `voice::controls`, plus the group gap and the item spacing
+/// around it. 192 still overlaps the upload rate in the one-row test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DockFit {
     audio_status: bool,
@@ -101,11 +107,11 @@ struct DockFit {
 impl DockFit {
     fn for_width(width: f32) -> Self {
         Self {
-            audio_status: width >= 1280.0,
-            tools_labelled: width >= 940.0,
-            audio_labelled: width >= 760.0,
-            upload: width >= 640.0,
-            share_labelled: width >= 520.0,
+            audio_status: width >= 1476.0,
+            tools_labelled: width >= 1136.0,
+            audio_labelled: width >= 956.0,
+            upload: width >= 836.0,
+            share_labelled: width >= 716.0,
         }
     }
 }
@@ -135,6 +141,8 @@ fn wide_row(
             );
             ui.add_space(GROUP_GAP);
             own_lives::audio_controls(ui, snapshot, commands, fit.audio_status, fit.audio_labelled);
+            ui.add_space(GROUP_GAP);
+            voice::controls(ui, snapshot, commands, VoiceLayout::Surface);
         },
         |ui| {
             settings_button(ui, open_settings);
@@ -177,7 +185,8 @@ fn notices(
         || update_state.available.is_some()
         || snapshot.audio_output_error.is_some()
         || audio_error.is_some()
-        || audio_limit.is_some();
+        || audio_limit.is_some()
+        || snapshot.voice.error.is_some();
     motion::unfold(ui, "dock-notices", has_notice, |ui| {
         ui.horizontal_wrapped(|ui| {
             if state.share_pending {
@@ -208,6 +217,9 @@ fn notices(
                     ),
                 );
             }
+            if let Some(error) = &snapshot.voice.error {
+                ui.colored_label(theme::error(), voice::microphone_notice(error));
+            }
             if let Some(notice) = audio_limit {
                 ui.colored_label(theme::warning(), notice);
             }
@@ -225,9 +237,9 @@ fn master_mute(
     let mut muted = snapshot.master_mute;
     let glyph = if muted { icons::MUTED } else { icons::VOLUME };
     let response = if labelled {
-        theme::toggle(ui, &mut muted, glyph, "Mute all")
+        theme::toggle(ui, &mut muted, glyph, "Mute streams")
     } else {
-        theme::icon_toggle(ui, &mut muted, glyph, "Mute all")
+        theme::icon_toggle(ui, &mut muted, glyph, "Mute streams")
     };
     if response.changed() {
         commands.push(RoomCommand::SetMasterMute(muted));
@@ -261,13 +273,13 @@ fn sheet_button(
 #[cfg(test)]
 mod tests {
     use brp_audio::AudioSelection;
-    use brp_room::OwnAudioView;
+    use brp_room::{OwnAudioView, OwnVoiceView};
 
     use super::*;
 
-    fn room() -> RoomSnapshot {
+    fn room(voice: OwnVoiceView) -> RoomSnapshot {
         RoomSnapshot {
-            voice: Default::default(),
+            voice,
             me: iroh::SecretKey::from_bytes(&[1; 32]).public(),
             nickname: "Alex".into(),
             version: 1,
@@ -288,10 +300,10 @@ mod tests {
     }
 
     /// Run at the width the dock itself gets, which also covers a rail dragged to its widest.
-    fn dock_text(width: f32) -> Vec<(String, egui::Rect)> {
+    fn dock_text(width: f32, voice: OwnVoiceView) -> Vec<(String, egui::Rect)> {
         let ctx = egui::Context::default();
         theme::install(&ctx);
-        let snapshot = room();
+        let snapshot = room(voice);
         let mut state = UiState::new();
         state.upload_kbps = 123_456;
         let mut output = ctx.run_ui(
@@ -306,7 +318,13 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        wide_row(ui, &snapshot, &state, &mut Vec::new(), &mut false);
+                        // The window folds into the compact row below this width, so the wide
+                        // row is never drawn there.
+                        if width < theme::COMPACT_WIDTH {
+                            compact_row(ui, &snapshot, &mut state, &mut Vec::new(), &mut false);
+                        } else {
+                            wide_row(ui, &snapshot, &state, &mut Vec::new(), &mut false);
+                        }
                     });
             },
         );
@@ -328,7 +346,7 @@ mod tests {
     fn the_dock_stays_on_one_row_with_nothing_touching_at_every_width() {
         for width in (396..=1800).step_by(4) {
             let width = width as f32;
-            let text = dock_text(width);
+            let text = dock_text(width, Default::default());
             let tops: Vec<f32> = text.iter().map(|(_, rect)| rect.center().y).collect();
             let (lowest, highest) = tops.iter().fold((f32::MAX, f32::MIN), |(low, high), y| {
                 (low.min(*y), high.max(*y))
@@ -355,6 +373,58 @@ mod tests {
     }
 
     #[test]
+    fn the_dock_stays_on_one_row_in_every_voice_state() {
+        let joined = OwnVoiceView {
+            joined: true,
+            ..Default::default()
+        };
+        let states = [
+            OwnVoiceView::default(),
+            OwnVoiceView {
+                transmitting: true,
+                ..joined.clone()
+            },
+            OwnVoiceView {
+                muted: true,
+                ..joined.clone()
+            },
+            OwnVoiceView {
+                muted: true,
+                deafened: true,
+                ..joined.clone()
+            },
+        ];
+        for voice in states {
+            for width in (396..=1800).step_by(4) {
+                let width = width as f32;
+                let text = dock_text(width, voice.clone());
+                let tops: Vec<f32> = text.iter().map(|(_, rect)| rect.center().y).collect();
+                let (lowest, highest) = tops.iter().fold((f32::MAX, f32::MIN), |(low, high), y| {
+                    (low.min(*y), high.max(*y))
+                });
+                assert!(
+                    highest - lowest < 4.0,
+                    "at {width} it took a second row: {text:?}"
+                );
+                for (name, rect) in &text {
+                    assert!(
+                        rect.left() >= 0.0 && rect.right() <= width,
+                        "at {width} {name:?} leaves the dock: {rect:?}"
+                    );
+                }
+                for (index, (name, rect)) in text.iter().enumerate() {
+                    for (other, other_rect) in &text[index + 1..] {
+                        assert!(
+                            !rect.intersects(*other_rect),
+                            "at {width} {name:?} overlaps {other:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn full_dock_keeps_controls_inside_its_clip() {
         for width in [640.0, 800.0, 960.0, 1160.0, 1600.0] {
             let ctx = egui::Context::default();
@@ -370,7 +440,7 @@ mod tests {
                 |ui| {
                     draw(
                         ui,
-                        &room(),
+                        &room(Default::default()),
                         &mut state,
                         &mut Vec::new(),
                         &mut false,
@@ -406,5 +476,56 @@ mod tests {
             assert!(fit.tools_labelled || !fit.audio_status);
             assert!(fit.audio_labelled || !fit.tools_labelled);
         }
+    }
+
+    #[test]
+    fn the_master_mute_is_called_mute_streams() {
+        let text = dock_text(1600.0, Default::default());
+        assert!(text.iter().any(|(shown, _)| shown == "[ Mute streams ]"));
+    }
+
+    #[test]
+    fn a_broken_microphone_says_what_to_do_next() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let snapshot = room(OwnVoiceView {
+            error: Some("x".into()),
+            ..Default::default()
+        });
+        let mut state = UiState::new();
+        let mut shown = Vec::new();
+        for frame in 0..30 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600.0, 720.0),
+                    )),
+                    time: Some(f64::from(frame) / 60.0),
+                    ..Default::default()
+                },
+                |ui| {
+                    draw(
+                        ui,
+                        &snapshot,
+                        &mut state,
+                        &mut Vec::new(),
+                        &mut false,
+                        &UpdateState::new(false),
+                        &mut false,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            shown = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        assert!(shown.contains(&voice::microphone_notice("x")), "{shown:?}");
     }
 }

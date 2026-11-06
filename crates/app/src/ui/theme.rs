@@ -268,6 +268,10 @@ pub mod icons {
     pub const JOIN: &str = "\u{e10d}";
     pub const REFRESH: &str = "\u{e145}";
     pub const APPLICATIONS: &str = "\u{e55a}";
+    pub const MIC: &str = "\u{e118}";
+    pub const MIC_OFF: &str = "\u{e119}";
+    pub const HEADPHONES: &str = "\u{e0f1}";
+    pub const HEADPHONE_OFF: &str = "\u{e629}";
 }
 
 pub fn install(ctx: &egui::Context) {
@@ -1014,6 +1018,20 @@ pub fn toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, text: &str) -> Resp
 pub fn icon_toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, name: &str) -> Response {
     let selected = *on;
     let mut response = tactile(ui, Tone::Neutral, selected, true, |ui| {
+        square_padding(ui);
+        labelled_button(ui, glyph, "", Vec2::splat(CONTROL_HEIGHT), Tone::Neutral)
+    });
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, *on, name));
+    response.on_hover_text(name)
+}
+
+/// An icon toggle with no surface of its own, for sitting on a backing that the caller paints.
+pub fn quiet_icon_toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, name: &str) -> Response {
+    let mut response = tactile(ui, Tone::Quiet, *on, true, |ui| {
         square_padding(ui);
         labelled_button(ui, glyph, "", Vec2::splat(CONTROL_HEIGHT), Tone::Neutral)
     });

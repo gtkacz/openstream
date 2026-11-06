@@ -131,7 +131,7 @@ applications on Windows, and not on macOS, where ScreenCaptureKit hands over one
 finished mix. The room rail tells viewers what you share: "all applications", or
 the names of the ones you ticked. The tile
 carrying a publisher's audio shows a volume slider and mute, mirrored next to
-that member in the room rail, and the dock has a "Mute all" for
+that member in the room rail, and the dock has a "Mute streams" for
 every publisher at once. On Linux, capture links to the selected applications'
 PipeWire output, always excluding OpenStream's own. On Windows, the default remains
 one WASAPI process-loopback client in exclude mode, which pauses while another
