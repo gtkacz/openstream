@@ -115,7 +115,9 @@ impl EchoReference {
     }
 
     pub(crate) fn deactivate(&self) {
-        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+        let before = self.0.active.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(before > 0, "deactivated more often than activated");
+        if before == 1 {
             *self.0.buffers.lock().unwrap() = Buffers::default();
         }
     }

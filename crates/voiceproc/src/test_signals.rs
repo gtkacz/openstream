@@ -107,7 +107,7 @@ pub fn stretched(x: &[f32], rate: f32) -> Vec<f32> {
         .map(|i| {
             let at = i as f32 * rate;
             let (whole, frac) = (at as usize, at.fract());
-            x[whole] * (1.0 - frac) + x[whole + 1] * frac
+            x[whole] * (1.0 - frac) + x[(whole + 1).min(x.len() - 1)] * frac
         })
         .collect()
 }

@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use brp_proto::constants::ECHO_REFERENCE_PENDING_MAX;
 use nnnoiseless::DenoiseState;
 use sonora::config::{
     AdaptiveDigital, EchoCanceller, FixedDigital, GainController2, HighPassFilter,
@@ -45,15 +46,21 @@ fn pipeline() -> Pipeline {
     }
 }
 
-/// Feeds the oldest pending hop of what brp played, so the canceller sees it just before the
-/// microphone hop it belongs to. Rendering a whole frame ahead of its capture hops
-/// (render, render, capture, capture) leaves AEC3 unable to converge on two channels.
+/// Feeds the oldest pending hop, one per capture hop. Rendering a whole frame ahead of its
+/// capture hops (render, render, capture, capture) leaves AEC3 unable to converge on two
+/// channels. Pairing is by count, so a backlog would become a standing lag: it is trimmed.
+fn pending_cap() -> usize {
+    ECHO_REFERENCE_PENDING_MAX.as_millis() as usize * SAMPLE_RATE as usize / 1000 / HOP
+}
+
 fn render_reference(
     apm: &mut AudioProcessing,
     reference: &EchoReference,
     pending: &mut VecDeque<[Hop; REFERENCE_CHANNELS as usize]>,
 ) -> Result<(), String> {
     pending.extend(reference.drain_hops());
+    let excess = pending.len().saturating_sub(pending_cap());
+    pending.drain(..excess);
     let Some([voice, streams]) = pending.pop_front() else {
         return Ok(());
     };
@@ -309,7 +316,7 @@ mod tests {
     }
 
     /// Plays `voice` and `streams` while the microphone hears `mic`, a frame at a time, and
-    /// returns the echo removed, in dB, over the frames after 5 s where `heard` is not silent.
+    /// returns the echo removed, in dB, over the last 5 s where `heard` is not silent.
     fn echo_removed(voice: &[f32], streams: Option<&[f32]>, mic: &[f32], heard: &[f32]) -> f32 {
         let reference = EchoReference::new();
         let mut p = echo_processor(&reference);
@@ -357,6 +364,25 @@ mod tests {
                 "voice at {voice_starts_s} s: {removed:.1} dB"
             );
         }
+    }
+
+    #[test]
+    fn a_stale_reference_backlog_is_trimmed_to_the_pending_cap() {
+        let reference = EchoReference::new();
+        let mut p = echo_processor(&reference);
+        reference.push(ReferenceChannel::Voice, &vec![0.1; 20 * HOP * 2]);
+        reference.push(ReferenceChannel::Streams, &vec![0.1; 20 * HOP * 2]);
+        p.process(&mut vec![0.0; HOP * 2]);
+        assert!(p.pending_reference.len() <= pending_cap());
+    }
+
+    #[test]
+    fn capture_runs_with_no_reference_pending() {
+        let reference = EchoReference::new();
+        let mut p = echo_processor(&reference);
+        let out = run(&mut p, &looped(&speech(), 1.0));
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert!(out.iter().any(|s| *s != 0.0));
     }
 
     #[test]

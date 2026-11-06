@@ -141,3 +141,8 @@ pub const EXECUTABLE_NAME: &str = "brp";
 /// Ten times the 20 ms the encode thread takes between drains. Older reference audio is stale,
 /// and only confuses the canceller's delay estimate.
 pub const ECHO_REFERENCE_MAX: Duration = Duration::from_millis(200);
+
+/// Deep enough for render callbacks of up to 2048 samples to wait for their microphone hops;
+/// beyond it the reference lags its echo, which the canceller cannot undo, so the oldest is
+/// dropped.
+pub const ECHO_REFERENCE_PENDING_MAX: Duration = Duration::from_millis(80);
