@@ -15,11 +15,14 @@ use crate::commands::RoomCommand;
 const SWITCH_INSET: f32 = 10.0;
 /// A peak of about -26 dBFS: above an open microphone's noise floor, below quiet speech.
 pub const SPEAKING_LEVEL: f32 = 0.05;
+/// The same bar width and pitch as `traffic_strip`, so the two meters read as one family.
 const BAR: f32 = 3.0;
-const PITCH: f32 = 4.0;
-/// Bars on a tile's name chip.
+pub const PITCH: f32 = 4.0;
+/// Enough bars to show a trend on a chip without crowding the name.
 pub const CHIP_BARS: usize = 3;
+/// Someone you cannot hear is shown, but quieter than someone you can.
 const DIMMED: f32 = 0.45;
+/// A silent moment still leaves a visible tick, so the strip never looks absent.
 const SHORTEST_BAR: f32 = 0.1;
 
 /// How much of the voice controls the dock has room for.
@@ -111,6 +114,25 @@ fn toggles(ui: &mut egui::Ui, voice: &OwnVoiceView, commands: &mut Vec<RoomComma
     headphones.rect
 }
 
+/// The word for your own voice state and the colour it is drawn in, shared by every place that
+/// shows it so the words always match.
+pub fn own_state(snapshot: &RoomSnapshot) -> Option<(&'static str, Color32)> {
+    let own = &snapshot.voice;
+    if !own.joined {
+        None
+    } else if own.error.is_some() {
+        Some(("no microphone", theme::error()))
+    } else if own.deafened {
+        Some(("deafened", theme::secondary()))
+    } else if own.muted {
+        Some(("muted", theme::secondary()))
+    } else if own.transmitting {
+        Some(("on air", theme::signal()))
+    } else {
+        None
+    }
+}
+
 /// The dock's notice for a microphone that is not working.
 pub fn microphone_notice(error: &str) -> String {
     format!(
@@ -135,27 +157,36 @@ pub fn is_speaking(levels: Option<&VecDeque<f32>>) -> bool {
 
 /// The same bars as `traffic_strip`, newest on the right. With reduced motion the strip would
 /// flicker without moving anywhere, so it holds still and says the word instead.
-pub fn level_strip(ui: &egui::Ui, rect: Rect, levels: Option<&VecDeque<f32>>, dimmed: bool) {
-    if motion::ambient_allowed(ui.ctx()) {
-        bars(ui.painter(), rect, levels, dimmed);
+pub fn level_strip(
+    painter: &egui::Painter,
+    rect: Rect,
+    levels: Option<&VecDeque<f32>>,
+    dimmed: bool,
+) {
+    if motion::ambient_allowed(painter.ctx()) {
+        bars(painter, rect, levels, dimmed);
     } else if is_speaking(levels) {
-        let galley = ui.painter().layout_no_wrap(
-            "speaking".to_string(),
-            theme::medium(13.0),
-            theme::signal(),
-        );
+        let galley =
+            painter.layout_no_wrap("speaking".to_string(), theme::medium(13.0), theme::signal());
         let at = pos2(
             rect.right() - galley.size().x,
             rect.center().y - galley.size().y / 2.0,
         );
-        ui.painter().galley(at, galley, theme::signal());
+        painter.galley(at, galley, theme::signal());
     }
 }
 
-/// The tile chip's three bars, which keep drawing under reduced motion because the chip has no
-/// room for a word.
+/// The tile chip's bars. Under reduced motion they hold one height and only their colour says
+/// whether the person is speaking, because the chip has no room for a word.
 pub fn chip_mark(painter: &egui::Painter, rect: Rect, levels: &VecDeque<f32>) {
-    bars(painter, rect, Some(levels), false);
+    if motion::ambient_allowed(painter.ctx()) {
+        bars(painter, rect, Some(levels), false);
+        return;
+    }
+    let still: VecDeque<f32> = levels
+        .back()
+        .map_or_else(VecDeque::new, |newest| [*newest; CHIP_BARS].into());
+    bars(painter, rect, Some(&still), false);
 }
 
 fn bars(painter: &egui::Painter, rect: Rect, levels: Option<&VecDeque<f32>>, dimmed: bool) {
@@ -396,7 +427,7 @@ mod tests {
         let history = levels(&[0.01, 0.5]);
         let shapes = painted(false, |ui| {
             level_strip(
-                ui,
+                ui.painter(),
                 Rect::from_min_size(pos2(10.0, 10.0), egui::vec2(72.0, 12.0)),
                 Some(&history),
                 false,
@@ -414,7 +445,9 @@ mod tests {
     fn with_reduced_motion_a_speaker_reads_speaking() {
         let rect = Rect::from_min_size(pos2(10.0, 10.0), egui::vec2(72.0, 12.0));
         let words = |history: VecDeque<f32>| {
-            let shapes = painted(true, |ui| level_strip(ui, rect, Some(&history), false));
+            let shapes = painted(true, |ui| {
+                level_strip(ui.painter(), rect, Some(&history), false)
+            });
             assert!(fills(&shapes).is_empty(), "the bars hold still");
             shapes
                 .iter()
@@ -428,24 +461,36 @@ mod tests {
         assert!(words(levels(&[0.5, 0.0])).is_empty());
     }
 
-    #[test]
-    fn a_chip_mark_shows_the_last_three_levels() {
-        let history = levels(&[1.0, 1.0, 0.2, 0.4, 0.6]);
-        let shapes = painted(true, |ui| {
+    fn chip_heights(reduced_motion: bool, history: &VecDeque<f32>) -> Vec<(f32, Color32)> {
+        let shapes = painted(reduced_motion, |ui| {
             chip_mark(
                 ui.painter(),
                 Rect::from_min_size(pos2(10.0, 10.0), egui::vec2(PITCH * CHIP_BARS as f32, 12.0)),
-                &history,
+                history,
             );
         });
-        let heights: Vec<f32> = fills(&shapes)
+        fills(&shapes)
             .iter()
-            .map(|(rect, _)| rect.height())
-            .collect();
-        assert_eq!(heights.len(), CHIP_BARS);
+            .map(|(rect, ink)| (rect.height(), *ink))
+            .collect()
+    }
+
+    #[test]
+    fn a_chip_mark_shows_the_last_three_levels() {
+        let bars = chip_heights(false, &levels(&[1.0, 1.0, 0.2, 0.4, 0.6]));
+        assert_eq!(bars.len(), CHIP_BARS);
+        assert!(bars[0].0 < bars[1].0 && bars[1].0 < bars[2].0, "{bars:?}");
+    }
+
+    #[test]
+    fn with_reduced_motion_a_chip_mark_holds_still_and_keeps_its_colour() {
+        let loud = chip_heights(true, &levels(&[0.2, 0.4, 0.6]));
+        assert_eq!(loud.len(), CHIP_BARS);
         assert!(
-            heights[0] < heights[1] && heights[1] < heights[2],
-            "{heights:?}"
+            loud.iter()
+                .all(|bar| bar.0 == loud[0].0 && bar.1 == theme::signal())
         );
+        let quiet = chip_heights(true, &levels(&[0.6, 0.0]));
+        assert!(quiet.iter().all(|bar| bar.1 == theme::muted()));
     }
 }

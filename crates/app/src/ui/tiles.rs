@@ -441,7 +441,7 @@ fn name_chip(
 ) {
     const PADDING: egui::Vec2 = egui::vec2(8.0, 4.0);
     const GLYPH: egui::Vec2 = egui::vec2(24.0, 12.0);
-    const MARK: egui::Vec2 = egui::vec2(voice::CHIP_BARS as f32 * 4.0, 12.0);
+    const MARK: egui::Vec2 = egui::vec2(voice::CHIP_BARS as f32 * voice::PITCH, 12.0);
     let glyph_space = if path.is_some() { GLYPH.x + 8.0 } else { 0.0 };
     let mark_space = if levels.is_some() { MARK.x + 6.0 } else { 0.0 };
     let figure = rtt_ms

@@ -30,6 +30,7 @@ const PING_TICK: f64 = 1.0 / 12.0;
 /// Below this the labels would run into each other and off the canvas, and a list serves better.
 const SMALLEST_CANVAS: egui::Vec2 = vec2(640.0, 440.0);
 const MOST_PEOPLE: usize = 8;
+/// Wide enough for the 50-tick history at the strip's pitch to read as a shape, small enough for a label.
 const STRIP: egui::Vec2 = vec2(72.0, 12.0);
 
 /// Whether this many people can be drawn on this canvas and still be read.
@@ -261,7 +262,21 @@ fn node(
         })
         .collect();
     let widest_offer = offers.iter().map(|offer| offer.3).fold(0.0, f32::max);
-    let width = name.size().x.max(meta_galley.size().x).max(widest_offer) + 12.0;
+    let voice_word_galley = member.voice.and_then(voice_word).map(|word| {
+        painter.layout_no_wrap(word.to_string(), theme::medium(13.0), theme::secondary())
+    });
+    let voice_width = match (member.voice, &voice_word_galley) {
+        (None, _) => 0.0,
+        (Some(_), Some(word)) => word.size().x,
+        (Some(_), None) => STRIP.x,
+    };
+    let width = name
+        .size()
+        .x
+        .max(meta_galley.size().x)
+        .max(voice_width)
+        .max(widest_offer)
+        + 12.0;
     let lines = label_lines(member) as f32;
     let height = lines * LINE + offers.len() as f32 * (BUTTON + 2.0) + 8.0;
     let left = if on_left {
@@ -293,15 +308,10 @@ fn node(
         meta_galley,
         meta_ink,
     );
-    if let Some(voice_state) = member.voice {
+    if member.voice.is_some() {
         let top = area.top() + 2.0 + 2.0 * LINE;
-        match voice_word(voice_state) {
-            Some(word) => {
-                let galley = painter.layout_no_wrap(
-                    word.to_string(),
-                    theme::medium(13.0),
-                    theme::secondary(),
-                );
+        match voice_word_galley {
+            Some(galley) => {
                 painter.galley(
                     pos2(text_x(galley.size().x), top),
                     galley,
@@ -311,7 +321,7 @@ fn node(
             None => {
                 let strip = Rect::from_min_size(pos2(text_x(STRIP.x), top + 2.0), STRIP);
                 let levels = state.voice.get(&member.id).map(|meter| &meter.levels);
-                voice::level_strip(ui, strip, levels, !member.hearing);
+                voice::level_strip(painter, strip, levels, !member.hearing);
             }
         }
     }
@@ -401,17 +411,17 @@ fn centre(painter: &egui::Painter, snapshot: &RoomSnapshot, center: Pos2) {
         Some(live) => (format!("You · {} ready", live.info.title), theme::accent()),
         None => ("You".to_string(), theme::accent()),
     };
-    let own = &snapshot.voice;
-    let word = match () {
-        _ if !own.joined => None,
-        _ if own.error.is_some() => Some("no microphone"),
-        _ if own.deafened => Some("deafened"),
-        _ if own.muted => Some("muted"),
-        _ if own.transmitting => Some("on air"),
-        _ => None,
-    };
-    let text = word.map_or(text.clone(), |word| format!("{text} · {word}"));
-    let label = painter.layout_no_wrap(text, theme::medium(13.0), ink);
+    let font = theme::medium(13.0);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&text, 0.0, egui::TextFormat::simple(font.clone(), ink));
+    if let Some((word, word_ink)) = voice::own_state(snapshot) {
+        job.append(
+            &format!(" · {word}"),
+            0.0,
+            egui::TextFormat::simple(font, word_ink),
+        );
+    }
+    let label = painter.layout_job(job);
     let at = center + vec2(-label.size().x / 2.0, 16.0);
     plate(
         painter,
