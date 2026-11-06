@@ -92,10 +92,11 @@ Files and how to regenerate them: [crates/app/assets/icon](crates/app/assets/ico
   together the more there is, so a quiet link stays lit and still. A person's row gives their delay;
   a stream's row gives its rate, its quality, and a `[ ]` to watch it, and once watched a traffic
   strip of what really arrived, where a tall bright bar is a keyframe and a gap is a moment with no
-  frames at all. Your own stream unfolds its controls from its row, and a failure opens it by itself.
+  frames at all. Someone in voice branches a voice row first, with a level strip and a `[x]` to hear them.
+  Your own stream unfolds its controls from its row, and a failure opens it by itself.
   Below all this a ledger keeps the room's last few events on a mission clock counted from when the
   room opened.
-- **Dock.** It holds what you do to the room: share, audio, upload, mute, Settings, fullscreen. Always one row,
+- **Dock.** It holds what you do to the room: share, audio, voice, upload, mute, Settings, fullscreen. Always one row,
   because a second would come out of the video. As the width falls it sheds words instead: the audio
   status first, then the tools' labels, the audio labels, the upload figure, and the main action's
   label last. The main action says what to do next: Share monitor carries it only while you are not sharing
@@ -196,7 +197,7 @@ thrown. No input is ever locked out for an animation to finish.
 - **At rest, nothing moves.** A settled spring asks for no frames, so an idle window sleeps. Pulses
   and spinners run only while something is in flight. The standing motion is the light at about 30
   frames a second and the circuit at about 12, only while the window has focus,
-  and each settles to a stop without it. A full frame with the light takes about 1.3 ms on a desktop
+  and each settles to a stop without it. Level strips tick with the circuit. A full frame with the light takes about 1.3 ms on a desktop
   GPU and under 20 ms on a software renderer at 1080p.
 
 The operating system's reduced-motion setting is read once per launch

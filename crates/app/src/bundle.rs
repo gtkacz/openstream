@@ -134,6 +134,11 @@ mod tests {
     }
 
     #[test]
+    fn the_bundle_asks_for_the_microphone() {
+        assert!(!value("NSMicrophoneUsageDescription").is_empty());
+    }
+
+    #[test]
     fn the_bundle_declares_what_the_app_relies_on() {
         assert_eq!(value("CFBundleIdentifier"), BUNDLE_ID);
         assert_eq!(value("CFBundleExecutable"), EXECUTABLE);

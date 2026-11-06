@@ -43,6 +43,8 @@
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>OpenStream uses your microphone while you are in voice.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>OpenStream shares the screen, window and audio you choose with the people in your room.</string>
 </dict>

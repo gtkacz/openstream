@@ -11,10 +11,10 @@ use std::{collections::HashSet, error::Error, io::Write};
 use brp_app::ui::{self, start::StartState, state::UiState, update::UpdateState};
 use brp_audio::AudioSelection;
 use brp_net::PathKind;
-use brp_proto::{Codec, LiveInfo, SourceKind, template_presets};
+use brp_proto::{Codec, LiveInfo, SourceKind, VoiceState, template_presets};
 use brp_room::{
-    AudioCaptureState, EncoderView, MemberView, OwnAudioView, OwnLiveView, PresetView,
-    RoomSnapshot, WatchState, WatchView,
+    AudioCaptureState, EncoderView, MemberView, OwnAudioView, OwnLiveView, OwnVoiceView,
+    PresetView, RoomSnapshot, WatchState, WatchView,
 };
 use iroh::SecretKey;
 
@@ -246,6 +246,30 @@ fn main() -> Result<(), Box<dyn Error>> {
             keyframe_requests: 0,
             audio: false,
         });
+    }
+    if !snapshot.members.is_empty() {
+        snapshot.voice = OwnVoiceView {
+            joined: true,
+            transmitting: true,
+            ..Default::default()
+        };
+        let speaking: [f32; 12] = [
+            0.0, 0.1, 0.35, 0.6, 0.25, 0.8, 0.5, 0.15, 0.7, 0.4, 0.2, 0.55,
+        ];
+        let silent = [0.0; 12];
+        let mut meter_levels = vec![(snapshot.me, speaking)];
+        snapshot.members[0].voice = Some(VoiceState::default());
+        meter_levels.push((snapshot.members[0].id, speaking));
+        if let Some(muted) = snapshot.members.get_mut(1) {
+            muted.voice = Some(VoiceState {
+                muted: true,
+                deafened: false,
+            });
+            meter_levels.push((muted.id, silent));
+        }
+        for (id, levels) in meter_levels {
+            state.voice.entry(id).or_default().levels.extend(levels);
+        }
     }
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
