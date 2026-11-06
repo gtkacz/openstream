@@ -80,7 +80,7 @@ fn toggles(ui: &mut egui::Ui, voice: &OwnVoiceView, commands: &mut Vec<RoomComma
     if voice.transmitting {
         ui.visuals_mut().widgets.inactive.fg_stroke.color = theme::signal();
     }
-    let microphone = theme::quiet_icon_toggle(ui, &mut muted, glyph, name);
+    let microphone = theme::toned_icon_toggle(ui, theme::Tone::Quiet, &mut muted, glyph, name);
     ui.visuals_mut().widgets.inactive.fg_stroke.color = usual_ink;
     if microphone.changed() {
         commands.push(RoomCommand::SetVoiceMuted(muted));
@@ -91,7 +91,7 @@ fn toggles(ui: &mut egui::Ui, voice: &OwnVoiceView, commands: &mut Vec<RoomComma
     } else {
         (icons::HEADPHONES, "Deafen")
     };
-    let headphones = theme::quiet_icon_toggle(ui, &mut deafened, glyph, name);
+    let headphones = theme::toned_icon_toggle(ui, theme::Tone::Quiet, &mut deafened, glyph, name);
     if headphones.changed() {
         commands.push(RoomCommand::SetVoiceDeafened(deafened));
     }
@@ -117,9 +117,8 @@ mod tests {
         snapshot: &RoomSnapshot,
         events: Vec<egui::Event>,
         frame: u32,
-    ) -> (Vec<RoomCommand>, Vec<(String, egui::Rect)>, f32) {
+    ) -> (Vec<RoomCommand>, Vec<(String, egui::Rect)>) {
         let mut commands = Vec::new();
-        let mut width = 0.0;
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -134,11 +133,10 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        let row = ui.horizontal(|ui| {
+                        ui.horizontal(|ui| {
                             theme::uniform_controls(ui);
                             controls(ui, snapshot, &mut commands, VoiceLayout::Surface);
                         });
-                        width = row.response.rect.width();
                     });
             },
         );
@@ -154,14 +152,14 @@ mod tests {
                 _ => None,
             })
             .collect();
-        (commands, text, width)
+        (commands, text)
     }
 
     fn click(snapshot: &RoomSnapshot, target: &str) -> Vec<RoomCommand> {
         let ctx = egui::Context::default();
         theme::install(&ctx);
         pass(&ctx, snapshot, Vec::new(), 0);
-        let (_, text, _) = pass(&ctx, snapshot, Vec::new(), 1);
+        let (_, text) = pass(&ctx, snapshot, Vec::new(), 1);
         let at = text
             .iter()
             .find(|(shown, _)| shown.contains(target))

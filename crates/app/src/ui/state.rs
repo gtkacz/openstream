@@ -54,6 +54,8 @@ pub struct UiState {
     /// Kept while the sheet slides shut, so its content does not change on the way out.
     pub sheet: CompactSheet,
     pub sheet_open: bool,
+    /// Whether the dock drew the Voice switch on its last pass. When it did not, the rail holds it.
+    pub voice_switch_in_dock: bool,
     /// Last error or notice, shown in the dock.
     pub status: String,
     /// True from the share click until the live started or failed: the portal dialog on Linux,
@@ -296,7 +298,10 @@ impl Ledger {
 impl UiState {
     /// Creates an empty state for a freshly opened window.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            voice_switch_in_dock: true,
+            ..Self::default()
+        }
     }
 
     /// New lives are titled by kind and ordinal; the ordinal never repeats within a session.
