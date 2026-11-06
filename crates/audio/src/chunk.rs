@@ -39,6 +39,11 @@ pub trait AudioCapture: Send + Sync {
     fn set_send_volumes(&self, _volumes: BTreeMap<AppKey, u8>) {}
 }
 
+/// The microphone: 48 kHz interleaved stereo chunks, stamped with `monotonic_us()` on arrival.
+pub trait VoiceCapture: Send + Sync {
+    fn start(&self, sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError>;
+}
+
 pub trait AudioCaptureSession: Send {
     /// Set once the backend's thread has died; the registry polls it and treats it as a failure.
     fn error(&self) -> Option<String>;

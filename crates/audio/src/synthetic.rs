@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use brp_proto::constants::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use brp_proto::monotonic_us;
 
-use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink};
+use crate::chunk::{AudioCapture, AudioCaptureSession, AudioChunk, AudioSink, VoiceCapture};
 use crate::error::AudioError;
 use crate::selection::{AppKey, AudioSelection, AudioSource};
 
@@ -96,6 +96,12 @@ impl AudioCapture for SyntheticTone {
     }
 }
 
+impl VoiceCapture for SyntheticTone {
+    fn start(&self, sink: AudioSink) -> Result<Box<dyn AudioCaptureSession>, AudioError> {
+        AudioCapture::start(self, AudioSelection::All, sink)
+    }
+}
+
 impl AudioCaptureSession for Session {
     fn error(&self) -> Option<String> {
         None
@@ -124,11 +130,12 @@ mod tests {
     fn the_tone_arrives_in_ten_millisecond_stereo_chunks_and_stops_on_stop() {
         let chunks = Arc::new(Mutex::new(Vec::new()));
         let sink_chunks = chunks.clone();
-        let session = SyntheticTone {
+        let tone = SyntheticTone {
             frequency_hz: 440.0,
             amplitude: 0.5,
-        }
-        .start(
+        };
+        let session = AudioCapture::start(
+            &tone,
             AudioSelection::All,
             Box::new(move |c| sink_chunks.lock().unwrap().push(c)),
         )
@@ -177,11 +184,12 @@ mod tests {
     fn a_selection_without_the_tone_delivers_no_chunks() {
         let chunks = Arc::new(Mutex::new(Vec::new()));
         let sink_chunks = chunks.clone();
-        let session = SyntheticTone {
+        let tone = SyntheticTone {
             frequency_hz: 440.0,
             amplitude: 0.5,
-        }
-        .start(
+        };
+        let session = AudioCapture::start(
+            &tone,
             AudioSelection::Only(std::collections::BTreeSet::from([
                 SyntheticTone::silent_key(),
             ])),
@@ -201,11 +209,12 @@ mod tests {
     fn a_selection_naming_the_tone_delivers_chunks() {
         let chunks = Arc::new(Mutex::new(Vec::new()));
         let sink_chunks = chunks.clone();
-        let session = SyntheticTone {
+        let tone = SyntheticTone {
             frequency_hz: 440.0,
             amplitude: 0.5,
-        }
-        .start(
+        };
+        let session = AudioCapture::start(
+            &tone,
             AudioSelection::Only(std::collections::BTreeSet::from(
                 [SyntheticTone::tone_key()],
             )),

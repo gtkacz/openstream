@@ -26,16 +26,16 @@ impl CpalOutput {
     }
 }
 
-/// An output device as the settings dialog lists it: the stable id to save and the name to show.
+/// An audio device as the settings dialog lists it: the stable id to save and the name to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputDevice {
+pub struct AudioDevice {
     pub id: String,
     pub name: String,
 }
 
 /// Every output device of the default host. Devices whose id or description cannot be read are
 /// skipped rather than failing the list.
-pub fn output_devices() -> Result<Vec<OutputDevice>, AudioError> {
+pub fn output_devices() -> Result<Vec<AudioDevice>, AudioError> {
     let host = cpal::default_host();
     let devices = host
         .output_devices()
@@ -44,7 +44,7 @@ pub fn output_devices() -> Result<Vec<OutputDevice>, AudioError> {
         .filter_map(|device| {
             let id = device.id().ok()?.to_string();
             let name = device.description().ok()?.name().to_string();
-            Some(OutputDevice { id, name })
+            Some(AudioDevice { id, name })
         })
         .collect())
 }

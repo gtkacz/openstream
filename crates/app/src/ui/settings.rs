@@ -1,7 +1,7 @@
 //! The Settings dialog: edits a draft copy of the saved settings and hands it back on Save.
 //! Changes apply when the next room opens; the dialog says so while a room is open.
 
-use brp_audio::OutputDevice;
+use brp_audio::AudioDevice;
 
 use super::{motion, theme};
 use crate::settings::{RelayChoice, Settings, normalised_nickname};
@@ -21,7 +21,7 @@ pub struct SettingsDialog {
     /// whatever the user is typing, spaces included, instead of a normalised value rebuilt from
     /// it every frame.
     pub nickname_text: String,
-    pub devices: Vec<OutputDevice>,
+    pub devices: Vec<AudioDevice>,
     pub devices_error: Option<String>,
     pub error: String,
     /// The frame rate is being typed rather than picked. Held apart from the value because 60 can be
@@ -31,7 +31,7 @@ pub struct SettingsDialog {
 
 impl SettingsDialog {
     /// Opens with a fresh draft of `settings` and the device list as enumerated now.
-    pub fn open_with(&mut self, settings: &Settings, devices: Result<Vec<OutputDevice>, String>) {
+    pub fn open_with(&mut self, settings: &Settings, devices: Result<Vec<AudioDevice>, String>) {
         self.draft = settings.clone();
         self.nickname_text = settings.nickname.clone().unwrap_or_default();
         match devices {
@@ -83,7 +83,7 @@ pub fn switch_relay(current: &RelayChoice, kind: RelayKind) -> RelayChoice {
 
 /// What the combo box shows for the draft's device: its name when listed, the id with a note when
 /// it is saved but absent, or the default.
-pub fn device_label(selected: Option<&str>, devices: &[OutputDevice]) -> String {
+pub fn device_label(selected: Option<&str>, devices: &[AudioDevice]) -> String {
     match selected {
         None => "System default".to_string(),
         Some(id) => devices
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn the_device_label_names_listed_devices_and_flags_absent_ones() {
-        let devices = vec![OutputDevice {
+        let devices = vec![AudioDevice {
             id: "host:abc".into(),
             name: "Speakers".into(),
         }];
