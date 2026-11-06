@@ -255,7 +255,7 @@ impl RoomView {
                     self.join_voice(
                         Arc::new(CpalInput::new(audio.input_device.clone())),
                         Arc::new(CpalOutput::new(audio.voice_output())),
-                        ProcessingConfig::OFF,
+                        audio.voice_processing(),
                         state,
                     );
                     Ok(())

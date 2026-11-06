@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use brp_audio::{AppKey, AudioSelection};
 use brp_net::RelaySetting;
+use brp_voiceproc::{ProcessingConfig, Suppression};
 use directories::ProjectDirs;
 use iroh::RelayUrl;
 use serde::{Deserialize, Serialize};
@@ -88,7 +89,7 @@ impl RelayChoice {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioSettings {
     /// A cpal device id in its `Display` form; `None` is the system default.
@@ -99,9 +100,48 @@ pub struct AudioSettings {
     pub voice_output_device: Option<String>,
     pub separate_voice_output: bool,
     pub applications: AudioApplications,
+    pub echo_cancellation: bool,
+    pub noise_suppression: NoiseSuppression,
+    pub automatic_gain: bool,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            output_device: None,
+            input_device: None,
+            voice_output_device: None,
+            separate_voice_output: false,
+            applications: AudioApplications::default(),
+            echo_cancellation: true,
+            noise_suppression: NoiseSuppression::default(),
+            automatic_gain: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoiseSuppression {
+    Off,
+    #[default]
+    Light,
 }
 
 impl AudioSettings {
+    /// What the microphone goes through before voice is encoded; mirrors
+    /// [`AudioApplications::to_selection`].
+    pub fn voice_processing(&self) -> ProcessingConfig {
+        ProcessingConfig {
+            echo_cancellation: self.echo_cancellation,
+            noise_suppression: match self.noise_suppression {
+                NoiseSuppression::Off => Suppression::Off,
+                NoiseSuppression::Light => Suppression::Light,
+            },
+            automatic_gain: self.automatic_gain,
+        }
+    }
+
     /// The device voice plays through: the audio output unless voice was given its own.
     pub fn voice_output(&self) -> Option<String> {
         if self.separate_voice_output {
@@ -325,6 +365,9 @@ mod tests {
             relay: RelayChoice::Custom("https://relay.example.com/".into()),
             audio: AudioSettings {
                 output_device: Some("PipeWire:alsa_output.usb".into()),
+                echo_cancellation: false,
+                noise_suppression: NoiseSuppression::Off,
+                automatic_gain: false,
                 applications: AudioApplications {
                     mode: AudioMode::Only,
                     names: vec!["firefox".into(), "game.exe".into()],
@@ -415,6 +458,38 @@ mod tests {
         assert_eq!(settings.audio.input_device, None);
         assert_eq!(settings.audio.voice_output_device, None);
         assert!(!settings.audio.separate_voice_output);
+    }
+
+    #[test]
+    fn an_older_settings_file_turns_voice_processing_on() {
+        let settings: Settings = toml::from_str("[audio]\noutput_device = \"x\"\n").unwrap();
+        assert!(settings.audio.echo_cancellation);
+        assert_eq!(settings.audio.noise_suppression, NoiseSuppression::Light);
+        assert!(settings.audio.automatic_gain);
+    }
+
+    #[test]
+    fn voice_processing_follows_the_three_settings() {
+        let audio = AudioSettings {
+            echo_cancellation: false,
+            noise_suppression: NoiseSuppression::Off,
+            automatic_gain: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            audio.voice_processing(),
+            ProcessingConfig {
+                echo_cancellation: false,
+                noise_suppression: Suppression::Off,
+                automatic_gain: true,
+            }
+        );
+        assert_eq!(
+            AudioSettings::default()
+                .voice_processing()
+                .noise_suppression,
+            Suppression::Light
+        );
     }
 
     #[test]

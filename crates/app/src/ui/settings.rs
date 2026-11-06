@@ -4,12 +4,17 @@
 use brp_audio::AudioDevice;
 
 use super::{motion, theme};
-use crate::settings::{RelayChoice, Settings, normalised_nickname};
+use crate::settings::{NoiseSuppression, RelayChoice, Settings, normalised_nickname};
 
 const ROW_GAP: f32 = 12.0;
 /// The frame rates offered as one click each, and the choice to type any other.
 const FPS_CHOICES: [(Option<u32>, &str); 3] =
     [(Some(30), "30 fps"), (Some(60), "60 fps"), (None, "Custom")];
+
+const SUPPRESSION_CHOICES: [(NoiseSuppression, &str); 2] = [
+    (NoiseSuppression::Off, "Off"),
+    (NoiseSuppression::Light, "Light"),
+];
 
 /// Dialog state: whether it is open, the draft being edited, the devices listed when it opened,
 /// and the last validation or save error.
@@ -232,6 +237,49 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                     );
                 });
                 ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Echo cancellation", |ui| {
+                    theme::switch(
+                        ui,
+                        &mut dialog.draft.audio.echo_cancellation,
+                        "Cancel what your speakers play",
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Not needed with headphones, or when your system already cancels echo",
+                        )
+                        .small()
+                        .color(theme::secondary()),
+                    );
+                });
+                ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Noise suppression", |ui| {
+                    let selected = dialog.draft.audio.noise_suppression;
+                    if let Some(choice) = theme::segmented(
+                        ui,
+                        "settings-noise-suppression",
+                        &SUPPRESSION_CHOICES,
+                        selected,
+                        ui.available_width() / 3.0,
+                    ) {
+                        dialog.draft.audio.noise_suppression = choice;
+                    }
+                    let hint = match dialog.draft.audio.noise_suppression {
+                        NoiseSuppression::Off => "Your microphone as it is",
+                        NoiseSuppression::Light => {
+                            "Removes steady noise such as fans and hum, at almost no CPU cost"
+                        }
+                    };
+                    ui.label(egui::RichText::new(hint).small().color(theme::secondary()));
+                });
+                ui.add_space(ROW_GAP);
+                theme::form_row(ui, "Automatic gain", |ui| {
+                    theme::switch(
+                        ui,
+                        &mut dialog.draft.audio.automatic_gain,
+                        "Even out your volume",
+                    );
+                });
+                ui.add_space(ROW_GAP);
                 theme::form_row(ui, "Audio output", |ui| {
                     let label =
                         device_label(dialog.draft.audio.output_device.as_deref(), &dialog.devices);
@@ -295,8 +343,8 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                 if room_open {
                     ui.add_space(ROW_GAP);
                     ui.weak(
-                        "Changes apply to the next room you open. Voice devices apply the next time \
-                         you join voice.",
+                        "Changes apply to the next room you open. Voice devices and processing \
+                         apply the next time you join voice.",
                     );
                 }
             });
@@ -464,6 +512,9 @@ mod tests {
             "Voice",
             "Frame rate ceiling",
             "Microphone",
+            "Echo cancellation",
+            "Noise suppression",
+            "Automatic gain",
             "Audio output",
             "Voice output",
             "Updates",
@@ -496,12 +547,30 @@ mod tests {
     #[test]
     fn the_footnote_says_voice_devices_apply_on_the_next_join() {
         let has_note = |room_open| {
-            shown_text(&mut opened(), room_open)
-                .1
-                .iter()
-                .any(|t| t.contains("Voice devices apply the next time you join voice."))
+            shown_text(&mut opened(), room_open).1.iter().any(|t| {
+                t.contains("Voice devices and processing apply the next time you join voice.")
+            })
         };
         assert!(has_note(true));
         assert!(!has_note(false));
+    }
+
+    #[test]
+    fn the_suppression_hint_follows_the_choice() {
+        let hints = |choice| {
+            let mut dialog = opened();
+            dialog.draft.audio.noise_suppression = choice;
+            shown_text(&mut dialog, false).0
+        };
+        let off = hints(NoiseSuppression::Off);
+        assert!(off.iter().any(|t| t == "Your microphone as it is"));
+        assert!(!off.iter().any(|t| t.starts_with("Removes steady noise")));
+        let light = hints(NoiseSuppression::Light);
+        assert!(
+            light
+                .iter()
+                .any(|t| t == "Removes steady noise such as fans and hum, at almost no CPU cost")
+        );
+        assert!(!light.iter().any(|t| t == "Your microphone as it is"));
     }
 }
