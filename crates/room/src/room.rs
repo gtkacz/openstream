@@ -39,6 +39,8 @@ pub struct RoomTimings {
     pub housekeeping: Duration,
     pub encoder_grace: Duration,
     pub join_timeout: Duration,
+    /// How many times the joiner re-dials the ticket's bootstrap list before giving up. Never
+    /// fewer than one attempt, whatever this is set to.
     pub join_attempts: u32,
 }
 
@@ -289,7 +291,9 @@ impl Room {
 
     /// A ticket naming this participant first and every member whose address we hold, most
     /// recently seen first. It keeps working while any named member stays online — including
-    /// after this participant leaves.
+    /// after this participant leaves. A member whose link is still dialling is not named yet,
+    /// so a ticket minted the instant they joined can be thinner than the room: mint again
+    /// after a moment if the newest member must be named.
     pub fn ticket(&self) -> RoomTicket {
         let mut bootstrap = vec![self.endpoint.addr()];
         let mut others: Vec<_> = lock(&self.membership)

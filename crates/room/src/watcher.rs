@@ -93,9 +93,10 @@ struct WatchEntry {
 #[derive(Default)]
 struct Inner {
     clients: HashMap<PublicKey, Arc<MediaClient>>,
-    /// The last address each member was reachable at, from their most recent connection. Kept
-    /// for minting tickets; never invalidated, because `ticket()` only names current members
-    /// and a stale address only costs a joiner one failed dial.
+    /// The last address each member was reachable at. Written when a connection starts and when
+    /// it ends, so it holds the newest address any connection to them showed. Read only while no
+    /// live connection exists — `member_addr` prefers the live connection's own path state — and
+    /// cleared when the member leaves, so departed members cost nothing.
     addrs: HashMap<PublicKey, EndpointAddr>,
     /// Held while dialling a member, so a watch and the member's link never open two connections.
     dial_gates: HashMap<PublicKey, Arc<tokio::sync::Mutex<()>>>,
@@ -272,6 +273,7 @@ impl Watcher {
         }
         inner.dial_gates.remove(&id);
         inner.silent.remove(&id);
+        inner.addrs.remove(&id);
         // Close explicitly so the peer sees an ended connection instead of waiting out an idle timeout.
         if let Some(client) = inner.clients.remove(&id) {
             client.close();
@@ -337,9 +339,16 @@ impl Watcher {
         lock(&self.inner).clients.get(publisher)?.rtt()
     }
 
-    /// The last address a member was reachable at, from their most recent connection.
+    /// Where a member is reachable: the live connection's current path state when there is one,
+    /// so a path change shows up at the next mint, else the last address any connection to them
+    /// showed.
     pub(crate) fn member_addr(&self, id: &PublicKey) -> Option<EndpointAddr> {
-        lock(&self.inner).addrs.get(id).cloned()
+        let inner = lock(&self.inner);
+        inner
+            .clients
+            .get(id)
+            .and_then(|client| client.remote_addr())
+            .or_else(|| inner.addrs.get(id).cloned())
     }
 
     pub fn signal_lost(&self, publisher: &PublicKey) -> bool {
@@ -404,6 +413,11 @@ impl Watcher {
             .is_some_and(|known| Arc::ptr_eq(known, &client));
         if current {
             inner.clients.remove(&publisher);
+            // Keep the newest address the connection showed, so tickets keep naming this
+            // member while they redial.
+            if let Some(addr) = client.remote_addr() {
+                inner.addrs.insert(publisher, addr);
+            }
         }
         drop(inner);
         if current {

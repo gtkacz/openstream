@@ -32,7 +32,9 @@ pub(crate) async fn join(
             .map_err(|e| RoomError::Gossip(e.to_string()))?;
         return Ok(topic.split());
     }
-    for _ in 0..attempts {
+    // At least one attempt always runs: a zero- or underflow-configured attempt count must not
+    // reject a live ticket without a single dial.
+    for _ in 0..attempts.max(1) {
         let mut topic = gossip
             .subscribe(topic, bootstrap.clone())
             .await
@@ -239,6 +241,28 @@ mod tests {
             .unwrap();
 
         let (sender, _receiver) = joined.await.unwrap().unwrap();
+        drop(sender);
+    }
+
+    #[tokio::test]
+    async fn even_zero_configured_attempts_makes_one() {
+        let (a_endpoint, a_gossip, _a_router) = peer(Vec::new()).await;
+        let (_b_endpoint, b_gossip, _b_router) = peer(vec![a_endpoint.addr()]).await;
+        let topic = TopicId::from_bytes([7u8; 32]);
+        let _a = join(&a_gossip, topic, Vec::new(), Duration::from_secs(5), 1)
+            .await
+            .unwrap();
+        // Zero configured attempts still dials once, instead of rejecting a reachable
+        // bootstrap sight unseen.
+        let (sender, _receiver) = join(
+            &b_gossip,
+            topic,
+            vec![a_endpoint.addr().id],
+            Duration::from_secs(5),
+            0,
+        )
+        .await
+        .unwrap();
         drop(sender);
     }
 }
