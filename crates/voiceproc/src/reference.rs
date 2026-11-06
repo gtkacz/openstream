@@ -47,13 +47,19 @@ impl EchoReference {
         (ECHO_REFERENCE_MAX.as_millis() as usize) * AUDIO_SAMPLE_RATE as usize / 1000
     }
 
-    /// Never waits: a device callback that cannot take the lock loses its audio instead.
+    /// Never waits: a device callback that cannot take the lock loses its audio. `tap` keeps
+    /// such audio and retries instead, so a playing channel is never shifted in time.
     pub fn push(&self, channel: ReferenceChannel, stereo: &[f32]) {
+        self.try_push(channel, stereo);
+    }
+
+    /// Returns false only when the lock was contended; inactive counts as handled.
+    fn try_push(&self, channel: ReferenceChannel, stereo: &[f32]) -> bool {
         if !self.0.active.load(Ordering::Acquire) {
-            return;
+            return true;
         }
         let Ok(mut buffers) = self.0.buffers.try_lock() else {
-            return;
+            return false;
         };
         let this = channel.index();
         let other = 1 - this;
@@ -74,6 +80,7 @@ impl EchoReference {
                 buffers.playing[other] = false;
             }
         }
+        true
     }
 
     pub fn tap(
@@ -82,9 +89,23 @@ impl EchoReference {
         mut render: impl FnMut(&mut [f32]) + Send + 'static,
     ) -> impl FnMut(&mut [f32]) + Send + 'static {
         let reference = self.clone();
+        // Stereo samples; reserved up front so the device thread never allocates.
+        let backlog_cap = Self::cap() * 2;
+        let mut backlog: Vec<f32> = Vec::with_capacity(backlog_cap);
         move |out| {
             render(out);
-            reference.push(channel, out);
+            if backlog.is_empty() {
+                if !reference.try_push(channel, out) {
+                    backlog.extend_from_slice(out);
+                }
+                return;
+            }
+            backlog.extend_from_slice(out);
+            let excess = backlog.len().saturating_sub(backlog_cap);
+            backlog.drain(..excess);
+            if reference.try_push(channel, &backlog) {
+                backlog.clear();
+            }
         }
     }
 
@@ -227,6 +248,30 @@ mod tests {
         reference.set_active(false);
         reference.set_active(true);
         assert!(reference.drain_hops().is_empty());
+    }
+
+    #[test]
+    fn contention_delays_audio_instead_of_losing_it() {
+        let reference = active();
+        let mut next = 0;
+        let mut tapped = reference.tap(VOICE, move |out| {
+            for frame in out.as_chunks_mut::<2>().0 {
+                frame.fill(next as f32);
+                next += 1;
+            }
+        });
+        let mut buffer = vec![0.0; 960];
+
+        let held = reference.0.buffers.lock().unwrap();
+        tapped(&mut buffer);
+        drop(held);
+        assert!(reference.drain_hops().is_empty());
+
+        tapped(&mut buffer);
+        let hops = reference.drain_hops();
+        assert_eq!(hops.len(), 2);
+        let voice: Vec<f32> = hops.iter().flat_map(|h| h[0]).collect();
+        assert_eq!(voice, (0..960).map(|i| i as f32).collect::<Vec<_>>());
     }
 
     #[test]
