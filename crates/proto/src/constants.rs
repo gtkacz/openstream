@@ -137,3 +137,7 @@ pub const MIXER_TRACK_CUSHION: Duration = Duration::from_millis(80);
 pub const MACOS_BUNDLE_ID: &str = "io.github.gtkacz.openstream";
 /// The executable's name on every platform; an unbundled macOS build is known only by it.
 pub const EXECUTABLE_NAME: &str = "brp";
+
+/// Ten times the 20 ms the encode thread takes between drains. Older reference audio is stale,
+/// and only confuses the canceller's delay estimate.
+pub const ECHO_REFERENCE_MAX: Duration = Duration::from_millis(200);
