@@ -183,12 +183,9 @@ impl Voice {
         self.dispose(listener.into_iter().collect(), None);
     }
 
-    pub fn prefs_of(&self, peer: &PublicKey) -> PeerPrefs {
-        lock(&self.state)
-            .prefs
-            .get(peer)
-            .copied()
-            .unwrap_or_default()
+    /// Taken before the membership lock: reconciling holds the state lock and then takes membership.
+    pub fn prefs(&self) -> HashMap<PublicKey, PeerPrefs> {
+        lock(&self.state).prefs.clone()
     }
 
     pub fn set_hearing(&self, peer: PublicKey, hearing: bool) {

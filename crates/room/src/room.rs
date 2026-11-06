@@ -353,9 +353,10 @@ impl Room {
         let version = self.version();
         let now = Instant::now();
         let viewers = lock(&self.viewers).clone();
+        let prefs = self.voice.prefs();
         let members = lock(&self.membership)
             .members()
-            .map(|m| (m, self.voice.prefs_of(&m.id)))
+            .map(|m| (m, prefs.get(&m.id).copied().unwrap_or_default()))
             .map(|(m, prefs)| MemberView {
                 rtt_ms: self
                     .watcher
