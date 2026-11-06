@@ -226,7 +226,7 @@ fn circuit(
     );
     let trunk = pos2(me_glyph.center().x, me_glyph.bottom());
     if snapshot.voice.joined {
-        let at = voice::own_row(ui, snapshot, state);
+        let at = motion::reveal(ui, "own-voice", |ui| voice::own_row(ui, snapshot, state));
         wires.push(Wire {
             points: vec![
                 trunk,
@@ -509,10 +509,10 @@ fn member_block(
                 pos2(ui.max_rect().left() + STREAM_INDENT - 6.0, at),
             ],
             shape: PathShape::of(PathKind::Direct),
-            lost: false,
+            lost: lost && member.hearing,
             relay_at: None,
             dim: !member.hearing,
-            forward: 0.0,
+            forward: if lost { 0.0 } else { voice_back },
             back: 0.0,
         });
     }
@@ -588,6 +588,48 @@ fn mix_summary(mix: &AudioMix) -> String {
     }
 }
 
+/// The `[x]` / `[ ]` tick at a row's right edge. Its name is what a screen reader announces.
+pub(super) fn tick(
+    ui: &mut egui::Ui,
+    row: Rect,
+    id: egui::Id,
+    checked: bool,
+    name: &str,
+    ink: Color32,
+) -> egui::Response {
+    let tick = Rect::from_center_size(row.right_center() - vec2(12.0, 0.0), vec2(24.0, 16.0));
+    let toggle = ui.interact(tick.expand(2.0), id, Sense::click());
+    toggle.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, checked, name)
+    });
+    let hover = motion::follow(
+        ui.ctx(),
+        toggle.id.with("hover"),
+        toggle.hovered(),
+        motion::HOVER,
+    );
+    if hover > 0.0 {
+        ui.painter()
+            .rect_filled(tick, 0, theme::accent().gamma_multiply(hover));
+    }
+    ui.painter().text(
+        tick.center(),
+        egui::Align2::CENTER_CENTER,
+        if checked { "[x]" } else { "[ ]" },
+        theme::medium(14.0),
+        ink.lerp_to_gamma(theme::on_accent(), hover),
+    );
+    if toggle.has_focus() {
+        ui.painter().rect_stroke(
+            tick.expand(2.0),
+            0,
+            Stroke::new(1.0, theme::accent()),
+            egui::StrokeKind::Inside,
+        );
+    }
+    toggle
+}
+
 /// One stream on offer: its name, what it is carrying, and whether you are watching it. Returns the
 /// height of the row's middle, for its wire.
 fn stream_row(
@@ -608,40 +650,15 @@ fn stream_row(
         .map(|w| w.preset_id)
         .or_else(|| state.preset_choice.get(&key).copied());
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
-    let tick = Rect::from_center_size(rect.right_center() - vec2(12.0, 0.0), vec2(24.0, 16.0));
-    let toggle = ui.interact(
-        tick.expand(2.0),
+    let toggle = tick(
+        ui,
+        rect,
         ui.id().with(("watch", key)),
-        Sense::click(),
+        watched,
+        &live.title,
+        theme::text(),
     );
-    toggle.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, watched, &live.title)
-    });
-    let hover = motion::follow(
-        ui.ctx(),
-        toggle.id.with("hover"),
-        toggle.hovered(),
-        motion::HOVER,
-    );
-    if hover > 0.0 {
-        ui.painter()
-            .rect_filled(tick, 0, theme::accent().gamma_multiply(hover));
-    }
-    ui.painter().text(
-        tick.center(),
-        egui::Align2::CENTER_CENTER,
-        if watched { "[x]" } else { "[ ]" },
-        theme::medium(14.0),
-        theme::text().lerp_to_gamma(theme::on_accent(), hover),
-    );
-    if toggle.has_focus() {
-        ui.painter().rect_stroke(
-            tick.expand(2.0),
-            0,
-            Stroke::new(1.0, theme::accent()),
-            egui::StrokeKind::Inside,
-        );
-    }
+    let tick = Rect::from_center_size(rect.right_center() - vec2(12.0, 0.0), vec2(24.0, 16.0));
     if toggle.clicked() {
         if watched {
             commands.push(RoomCommand::Unwatch(key));

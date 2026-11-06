@@ -1282,6 +1282,13 @@ fn voice_rows_end_on_the_rails_inner_edge() {
         "the watch tick and the hear tick: {ticks:?}"
     );
     assert!((ticks[0] - ticks[1]).abs() <= 1.0, "{ticks:?}");
+    let deafen = text_rect(&shapes, "Deafen").right();
+    // The toggle's text sits inside its padding, so it ends a little short of the edge.
+    let padding = 8.0;
+    assert!(
+        (deafen + padding - 304.0).abs() <= 2.0,
+        "Deafen ends at {deafen}"
+    );
 }
 
 #[test]

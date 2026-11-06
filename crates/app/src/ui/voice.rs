@@ -7,7 +7,7 @@ use brp_room::{MemberView, OwnVoiceView, RoomSnapshot};
 use egui::emath::GuiRounding;
 use egui::{Color32, Rect, pos2};
 
-use super::members::{PEER_INDENT, ROW_HEIGHT, STREAM_INDENT, STRIP_HEIGHT, right_text};
+use super::members::{self, PEER_INDENT, ROW_HEIGHT, STREAM_INDENT, STRIP_HEIGHT, right_text};
 use super::motion;
 use super::state::UiState;
 use super::theme::{self, icons};
@@ -285,44 +285,16 @@ pub fn member_rows(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
         egui::Sense::hover(),
     );
-    let tick = Rect::from_center_size(
-        rect.right_center() - egui::vec2(12.0, 0.0),
-        egui::vec2(24.0, 16.0),
-    );
-    let hear = ui.interact(
-        tick.expand(2.0),
+    let hear = members::tick(
+        ui,
+        rect,
         ui.id().with(("hear", member.id)),
-        egui::Sense::click(),
-    );
-    let name = format!("Hear {}", member.nickname);
-    hear.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, member.hearing, &name)
-    });
-    let hover = motion::follow(
-        ui.ctx(),
-        hear.id.with("hover"),
-        hear.hovered(),
-        motion::HOVER,
-    );
+        member.hearing,
+        &format!("Hear {}", member.nickname),
+        fade(theme::text()),
+    )
+    .on_hover_text(format!("Hear {}", member.nickname));
     let painter = ui.painter();
-    if hover > 0.0 {
-        painter.rect_filled(tick, 0, theme::accent().gamma_multiply(hover));
-    }
-    painter.text(
-        tick.center(),
-        egui::Align2::CENTER_CENTER,
-        if member.hearing { "[x]" } else { "[ ]" },
-        theme::medium(14.0),
-        fade(theme::text()).lerp_to_gamma(theme::on_accent(), hover),
-    );
-    if hear.has_focus() {
-        painter.rect_stroke(
-            tick.expand(2.0),
-            0,
-            egui::Stroke::new(1.0, theme::accent()),
-            egui::StrokeKind::Inside,
-        );
-    }
     if hear.clicked() {
         commands.push(RoomCommand::SetHearing {
             peer: member.id,
@@ -338,7 +310,8 @@ pub fn member_rows(
             None
         }
     });
-    let right = tick.left() - LABEL_GAP;
+    // The tick's own rect, inside the wider area it listens on.
+    let right = hear.rect.left() + 2.0 - LABEL_GAP;
     let label_end = voice_label(
         painter,
         rect,
@@ -367,15 +340,16 @@ pub fn member_rows(
         let deafen = ui
             .painter()
             .layout_no_wrap("Deafen".into(), theme::medium(14.0), Color32::PLACEHOLDER)
-            .size()
-            .x
+            .mesh_bounds
+            .width()
             + 2.0 * ui.spacing().button_padding.x
             + ui.spacing().item_spacing.x;
-        ui.spacing_mut().slider_width =
-            (ui.available_width() - theme::CONTROL_HEIGHT - 8.0 - deafen).max(0.0);
-        if let Some(gain) =
-            super::volume_control(ui, ("voice-volume", member.id), member.voice_gain)
-        {
+        ui.spacing_mut().slider_width = (ui.available_width() - deafen).max(0.0);
+        let mut gain = member.voice_gain;
+        ui.push_id(("voice-volume", member.id), |ui| {
+            super::volume_slider(ui, &mut gain);
+        });
+        if gain != member.voice_gain {
             commands.push(RoomCommand::SetVoiceVolume {
                 peer: member.id,
                 gain,

@@ -186,14 +186,19 @@ pub fn volume_control(
         if theme::icon_toggle(ui, &mut muted, glyph, "Mute").changed() {
             value = toggled_gain(muted);
         }
-        ui.scope(|ui| {
-            // The thumb is sized from the row's height, which is a control's and far too tall for it.
-            ui.spacing_mut().interact_size.y = 18.0;
-            ui.visuals_mut().selection.bg_fill = theme::accent();
-            ui.add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(false));
-        });
+        volume_slider(ui, &mut value);
     });
     (value != gain).then_some(value)
+}
+
+/// The slider half of `volume_control`, for rows whose own tick already does the muting.
+pub fn volume_slider(ui: &mut egui::Ui, value: &mut f32) {
+    ui.scope(|ui| {
+        // The thumb is sized from the row's height, which is a control's and far too tall for it.
+        ui.spacing_mut().interact_size.y = 18.0;
+        ui.visuals_mut().selection.bg_fill = theme::accent();
+        ui.add(egui::Slider::new(value, 0.0..=1.0).show_value(false));
+    });
 }
 
 /// Mute is gain zero; unmute is full volume.
