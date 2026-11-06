@@ -267,6 +267,7 @@ mod tests {
 
     fn room() -> RoomSnapshot {
         RoomSnapshot {
+            voice: Default::default(),
             me: iroh::SecretKey::from_bytes(&[1; 32]).public(),
             nickname: "Alex".into(),
             version: 1,

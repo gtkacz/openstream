@@ -2,7 +2,7 @@
 
 use brp_audio::AudioSelection;
 use brp_net::PathKind;
-use brp_proto::{AudioMix, LiveInfo, Preset};
+use brp_proto::{AudioMix, LiveInfo, Preset, VoiceState};
 use iroh::PublicKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +51,16 @@ pub struct OwnAudioView {
     pub packets_encoded: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnVoiceView {
+    pub joined: bool,
+    pub muted: bool,
+    pub deafened: bool,
+    pub transmitting: bool,
+    /// Why the microphone is not working, when it is not.
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberView {
     pub id: PublicKey,
@@ -69,6 +79,8 @@ pub struct MemberView {
     /// `None` for a peer on a release that does not say.
     pub audio_mix: Option<AudioMix>,
     pub gain: f32,
+    /// `None` when out of voice, or on a release that does not say.
+    pub voice: Option<VoiceState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,4 +115,5 @@ pub struct RoomSnapshot {
     pub own_audio: OwnAudioView,
     pub audio_output_error: Option<String>,
     pub master_mute: bool,
+    pub voice: OwnVoiceView,
 }

@@ -19,6 +19,10 @@ pub enum RoomError {
         "No one in the room answered. Check your connection or ask for a new invite link, then try again."
     )]
     JoinTimeout,
+    #[error(
+        "Could not join voice: no voice output. Check your audio device or choose another in Settings. ({0})"
+    )]
+    VoiceOutput(brp_audio::AudioError),
     #[error("That person is no longer in the room")]
     UnknownMember(EndpointId),
     #[error("That stream is no longer available")]

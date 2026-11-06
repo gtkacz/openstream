@@ -117,6 +117,7 @@ fn tab_reveals_stream_controls_without_a_pointer_and_keeps_them_available() {
     brp_app::ui::theme::install(&ctx);
     let publisher = iroh::SecretKey::from_bytes(&[2; 32]).public();
     let snapshot = RoomSnapshot {
+        voice: Default::default(),
         me: iroh::SecretKey::from_bytes(&[1; 32]).public(),
         nickname: "Alex".into(),
         version: 1,
@@ -198,6 +199,7 @@ fn an_encoder_failure_stays_visible_with_quality_details_collapsed() {
         codec: brp_proto::Codec::Hevc,
     };
     let snapshot = RoomSnapshot {
+        voice: Default::default(),
         me: iroh::SecretKey::from_bytes(&[1; 32]).public(),
         nickname: "Alex".into(),
         version: 1,
@@ -304,10 +306,12 @@ fn busy_room() -> brp_room::RoomSnapshot {
     };
     let publisher = iroh::SecretKey::from_bytes(&[2; 32]).public();
     RoomSnapshot {
+        voice: Default::default(),
         me: iroh::SecretKey::from_bytes(&[1; 32]).public(),
         nickname: "Alex".into(),
         version: 1,
         members: vec![MemberView {
+            voice: None,
             rtt_ms: None,
             signal_lost: false,
             watching_me: false,

@@ -63,6 +63,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             brp_app::settings::RelayChoice::Custom("https://relay.example.com/".into());
     }
     let mut snapshot = RoomSnapshot {
+        voice: Default::default(),
         me: SecretKey::from_bytes(&[1; 32]).public(),
         nickname: "Alex".into(),
         version: 1,
@@ -110,6 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "map" | "room" | "quality" | "menu" | "watching" | "grid" | "sheet" | "sharesheet"
     ) {
         snapshot.members.push(MemberView {
+            voice: None,
             signal_lost: false,
             id: SecretKey::from_bytes(&[2; 32]).public(),
             nickname: "Morgan".into(),

@@ -106,10 +106,14 @@ impl VoiceSend {
             .or_else(|| lock(&self.session).as_ref().and_then(|s| s.error()))
     }
 
+    // Read by the per-person controls, which are not wired yet.
+    #[allow(dead_code)]
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
+    // Read by the per-person controls, which are not wired yet.
+    #[allow(dead_code)]
     pub fn bytes_encoded(&self) -> u64 {
         self.publisher.stats().bytes_encoded.load(Ordering::Relaxed)
     }
@@ -124,7 +128,15 @@ impl VoiceSend {
         let not_sending = self.not_sending.clone();
         let silence = self.silence.clone();
         self.runtime.spawn(async move {
-            while let Some(packet) = source.recv().await {
+            loop {
+                // Without this a forwarder outlives its subscriber until the next packet arrives.
+                let packet = tokio::select! {
+                    packet = source.recv() => match packet {
+                        Some(packet) => packet,
+                        None => break,
+                    },
+                    () = tx.closed() => break,
+                };
                 if !listens(&membership, peer) {
                     break;
                 }

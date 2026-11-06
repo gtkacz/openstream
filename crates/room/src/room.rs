@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use brp_audio::{
     AppKey, AudioCapture, AudioOutput, AudioOutputSession, AudioSelection, AudioSource,
-    SendVolumeSupport,
+    SendVolumeSupport, VoiceCapture,
 };
 use brp_capture::{CaptureBackend, SourceId, SourceListing, SourceRequest};
 use brp_net::{MediaServer, RelaySetting, bind_endpoint};
@@ -30,6 +30,8 @@ use crate::gossip::{self, PresenceLoop, lock};
 use crate::membership::Membership;
 use crate::registry::{CaptureFan, ChangeNotify, LiveRegistry};
 use crate::snapshot::{MemberView, RoomSnapshot};
+use crate::source::MediaSource;
+use crate::voice::Voice;
 use crate::watcher::{FrameNotify, WatchHandle, Watcher};
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +89,7 @@ pub struct Room {
     version: Arc<AtomicU64>,
     notify: ChangeNotify,
     mixer: Mixer,
+    voice: Arc<Voice>,
     /// Kept alive for the room's lifetime; dropping it stops playback.
     _audio_output: Option<Box<dyn AudioOutputSession>>,
     audio_output_error: Option<String>,
@@ -137,15 +140,49 @@ impl Room {
             config.audio_capture.clone(),
             config.audio_applications,
             config.timings.encoder_grace,
-            registry_notify,
+            registry_notify.clone(),
         );
         let policy = {
             let membership = membership.clone();
             Arc::new(move |peer: EndpointId| lock(&membership).is_member(&peer))
         };
 
+        let mixer = Mixer::new();
+        let (audio_output, audio_output_error) = match config.audio_output.start(mixer.render_fn())
+        {
+            Ok(session) => (Some(session), None),
+            Err(error) => {
+                tracing::warn!(%error, "audio output unavailable; watches will not ask for audio");
+                (None, Some(error.to_string()))
+            }
+        };
+        let watcher = Watcher::new(
+            endpoint.clone(),
+            tokio::runtime::Handle::current(),
+            config.decoders.clone(),
+            membership.clone(),
+            mixer.clone(),
+            audio_output_error.is_none(),
+            notify.clone(),
+            config.on_frame.clone(),
+        );
+        let voice = Voice::new(
+            membership.clone(),
+            watcher.clone(),
+            config.encoders.clone(),
+            config.decoders.clone(),
+            tokio::runtime::Handle::current(),
+            registry_notify.clone(),
+        );
+
         let gossip = Gossip::builder().spawn(endpoint.clone());
-        let media = MediaServer::new(registry.clone(), policy);
+        let media = MediaServer::new(
+            Arc::new(MediaSource {
+                lives: registry.clone(),
+                voice: voice.clone(),
+            }),
+            policy,
+        );
         let viewers = media.viewers();
         let router = Router::builder(endpoint.clone())
             .accept(MEDIA_ALPN, media)
@@ -177,6 +214,7 @@ impl Room {
             receiver,
             membership: membership.clone(),
             registry: registry.clone(),
+            voice: voice.clone(),
             dirty,
             heartbeat: config.timings.heartbeat,
             on_change: notify.clone(),
@@ -185,39 +223,24 @@ impl Room {
         };
         let housekeeping = {
             let registry = registry.clone();
+            let voice = voice.clone();
             let every = config.timings.housekeeping;
             async move {
                 let mut tick = tokio::time::interval(every);
                 loop {
                     tick.tick().await;
                     registry.housekeeping(Instant::now());
+                    voice.reconcile();
                 }
             }
         };
-        let mixer = Mixer::new();
-        let (audio_output, audio_output_error) = match config.audio_output.start(mixer.render_fn())
-        {
-            Ok(session) => (Some(session), None),
-            Err(error) => {
-                tracing::warn!(%error, "audio output unavailable; watches will not ask for audio");
-                (None, Some(error.to_string()))
-            }
-        };
-        let watcher = Watcher::new(
-            endpoint.clone(),
-            tokio::runtime::Handle::current(),
-            config.decoders.clone(),
-            membership.clone(),
-            mixer.clone(),
-            audio_output_error.is_none(),
-            notify.clone(),
-            config.on_frame.clone(),
-        );
         let expiry_consumer = {
             let watcher = watcher.clone();
+            let voice = voice.clone();
             async move {
                 while let Some(id) = expired_rx.recv().await {
                     watcher.member_left(id);
+                    voice.member_left(id);
                 }
             }
         };
@@ -266,6 +289,7 @@ impl Room {
             version,
             notify,
             mixer,
+            voice,
             _audio_output: audio_output,
             audio_output_error,
             tasks,
@@ -346,6 +370,7 @@ impl Room {
                 seen_ago_ms: now.duration_since(m.last_seen).as_millis() as u64,
                 path: self.watcher.path_kind(&m.id),
                 gain: self.mixer.gain(m.id.as_bytes()),
+                voice: m.presence.voice,
             })
             .collect();
         RoomSnapshot {
@@ -358,6 +383,7 @@ impl Room {
             own_audio: self.registry.audio_view(),
             audio_output_error: self.audio_output_error.clone(),
             master_mute: self.mixer.muted(),
+            voice: self.voice.view(),
         }
     }
 
@@ -454,7 +480,28 @@ impl Room {
         (self.notify)();
     }
 
+    pub fn join_voice(
+        &self,
+        capture: Arc<dyn VoiceCapture>,
+        output: Arc<dyn AudioOutput>,
+    ) -> Result<(), RoomError> {
+        self.voice.join(capture, output)
+    }
+
+    pub fn leave_voice(&self) {
+        self.voice.leave();
+    }
+
+    pub fn set_voice_muted(&self, muted: bool) {
+        self.voice.set_muted(muted);
+    }
+
+    pub fn set_voice_deafened(&self, deafened: bool) {
+        self.voice.set_deafened(deafened);
+    }
+
     pub async fn leave(mut self) {
+        self.voice.leave();
         for task in self.tasks.drain(..) {
             task.abort();
         }

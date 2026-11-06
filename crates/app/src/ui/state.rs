@@ -560,6 +560,7 @@ mod tests {
 
     fn snapshot_with(own_lives: Vec<OwnLiveView>) -> RoomSnapshot {
         RoomSnapshot {
+            voice: Default::default(),
             me: SecretKey::generate().public(),
             nickname: "me".into(),
             version: 1,
@@ -600,6 +601,7 @@ mod tests {
 
     fn member(nickname: &str) -> MemberView {
         MemberView {
+            voice: None,
             id: SecretKey::generate().public(),
             nickname: nickname.into(),
             lives: Vec::new(),
@@ -618,6 +620,7 @@ mod tests {
     fn members_sort_by_nickname() {
         let me = SecretKey::generate().public();
         let snapshot = RoomSnapshot {
+            voice: Default::default(),
             me,
             nickname: "me".into(),
             version: 1,

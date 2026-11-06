@@ -16,6 +16,7 @@ use tokio::sync::{Notify, mpsc};
 use crate::error::RoomError;
 use crate::membership::{Applied, Member, Membership};
 use crate::registry::{ChangeNotify, LiveRegistry};
+use crate::voice::Voice;
 
 pub(crate) async fn join(
     gossip: &Gossip,
@@ -44,6 +45,7 @@ pub(crate) struct PresenceLoop {
     pub receiver: GossipReceiver,
     pub membership: Arc<Mutex<Membership>>,
     pub registry: Arc<LiveRegistry>,
+    pub voice: Arc<Voice>,
     pub dirty: Arc<Notify>,
     pub heartbeat: Duration,
     pub on_change: ChangeNotify,
@@ -87,7 +89,7 @@ impl PresenceLoop {
             lives: self.registry.live_infos(),
             audio_mix: Some(self.registry.audio_mix()),
             quality_presets: Vec::new(),
-            voice: None,
+            voice: self.voice.presence(),
         };
         presence.hide_quality_presets();
         let bytes = match Signed::sign(&self.secret, &presence).and_then(|signed| encode(&signed)) {
