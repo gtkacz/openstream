@@ -99,6 +99,15 @@ fn to_stereo(samples: &[f32], channels: usize) -> Vec<f32> {
     }
 }
 
+/// cpal keeps the stream running after a glitch, a reroute to the new default device, or a refused
+/// real-time priority. WASAPI reports a glitch for any dropped capture packet.
+fn ends_the_stream(error: &cpal::Error) -> bool {
+    !matches!(
+        error.kind(),
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied
+    )
+}
+
 struct Session {
     error: Arc<Mutex<Option<String>>>,
     stop: Option<mpsc::Sender<()>>,
@@ -171,7 +180,9 @@ fn open_stream(
     let channels = usize::from(offer.channels);
     let on_error = move |error: cpal::Error| {
         tracing::warn!(%error, "audio input stream error");
-        *stored_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+        if ends_the_stream(&error) {
+            *stored_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+        }
     };
     let mut sink = sink;
     let stream = match offer.format {
@@ -266,6 +277,15 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(picked, offer(1, 48_000, cpal::SampleFormat::F32));
+    }
+
+    #[test]
+    fn a_glitch_keeps_the_microphone_but_a_lost_device_ends_it() {
+        assert!(!ends_the_stream(&cpal::ErrorKind::Xrun.into()));
+        assert!(!ends_the_stream(&cpal::ErrorKind::DeviceChanged.into()));
+        assert!(!ends_the_stream(&cpal::ErrorKind::RealtimeDenied.into()));
+        assert!(ends_the_stream(&cpal::ErrorKind::DeviceNotAvailable.into()));
+        assert!(ends_the_stream(&cpal::ErrorKind::StreamInvalidated.into()));
     }
 
     #[test]
