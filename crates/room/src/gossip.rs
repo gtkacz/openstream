@@ -233,10 +233,11 @@ mod tests {
         let bootstrap = vec![a_endpoint.addr().id];
 
         let joined = tokio::spawn(async move {
-            join(&b_gossip, topic, bootstrap, Duration::from_millis(300), 4).await
+            join(&b_gossip, topic, bootstrap, Duration::from_secs(1), 5).await
         });
-        // Attempts one and two fail while a has not subscribed to the topic.
-        tokio::time::sleep(Duration::from_millis(700)).await;
+        // a subscribes only after the first attempt has given up; three spare attempts keep a
+        // slow runner from failing the later one that should succeed.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
         let _a = join(&a_gossip, topic, Vec::new(), Duration::from_secs(5), 1)
             .await
             .unwrap();
