@@ -13,6 +13,7 @@ struct TrackInner {
     buffer: Mutex<VecDeque<f32>>,
     gain_bits: AtomicU32,
     underruns: AtomicU64,
+    level_bits: AtomicU32,
 }
 
 /// The decode thread's handle to one publisher's ring buffer.
@@ -34,6 +35,7 @@ impl Track {
                 buffer: Mutex::new(VecDeque::with_capacity(Self::capacity())),
                 gain_bits: AtomicU32::new(gain.to_bits()),
                 underruns: AtomicU64::new(0),
+                level_bits: AtomicU32::new(0.0f32.to_bits()),
             }),
         }
     }
@@ -41,12 +43,21 @@ impl Track {
     /// Appends samples, dropping the oldest beyond the capacity so a drifting clock costs a
     /// glitch rather than unbounded latency.
     pub fn push(&self, samples: &[f32]) {
+        let peak = samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+        self.inner
+            .level_bits
+            .store(peak.to_bits(), Ordering::Relaxed);
         let mut buffer = lock(&self.inner.buffer);
         buffer.extend(samples.iter().copied());
         let excess = buffer.len().saturating_sub(Self::capacity());
         if excess > 0 {
             buffer.drain(..excess);
         }
+    }
+
+    /// The peak absolute sample of the most recent push, for a speech indicator.
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.inner.level_bits.load(Ordering::Relaxed))
     }
 
     pub fn queued(&self) -> usize {
@@ -131,6 +142,15 @@ impl Mixer {
 
     pub fn muted(&self) -> bool {
         self.inner.muted.load(Ordering::Relaxed)
+    }
+
+    /// 0 when the track is absent.
+    pub fn level(&self, key: &TrackKey) -> f32 {
+        lock(&self.inner.state)
+            .tracks
+            .get(key)
+            .map(Track::level)
+            .unwrap_or(0.0)
     }
 
     pub fn underruns(&self, key: &TrackKey) -> u64 {
@@ -227,6 +247,21 @@ mod tests {
             out.iter().all(|s| (*s - 1.0).abs() < 1e-6),
             "0.8 + 0.4 clamps to 1.0"
         );
+    }
+
+    #[test]
+    fn a_tracks_level_is_the_peak_of_its_last_push() {
+        let mixer = Mixer::new();
+        let a = mixer.add_track(A);
+        a.push(&[0.1, -0.6, 0.3]);
+        assert!((mixer.level(&A) - 0.6).abs() < 1e-6);
+        a.push(&[0.0; 4]);
+        assert_eq!(mixer.level(&A), 0.0);
+    }
+
+    #[test]
+    fn an_absent_track_has_no_level() {
+        assert_eq!(Mixer::new().level(&[9; 32]), 0.0);
     }
 
     #[test]

@@ -481,7 +481,10 @@ impl Watcher {
         }
     }
 
-    async fn client_for(&self, publisher: PublicKey) -> Result<Arc<MediaClient>, RoomError> {
+    pub(crate) async fn client_for(
+        &self,
+        publisher: PublicKey,
+    ) -> Result<Arc<MediaClient>, RoomError> {
         let gate = {
             let mut inner = lock(&self.inner);
             if let Some(client) = inner.clients.get(&publisher) {
