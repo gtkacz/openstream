@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use brp_proto::constants::ECHO_REFERENCE_PENDING_MAX;
+use df::tract::{DfParams, DfTract, RuntimeParams};
+use ndarray::{ArrayView2, ArrayViewMut2};
 use nnnoiseless::DenoiseState;
 use sonora::config::{
     AdaptiveDigital, EchoCanceller, FixedDigital, GainController2, HighPassFilter,
@@ -27,6 +29,7 @@ pub struct VoiceProcessor {
     pending_reference: VecDeque<[Hop; REFERENCE_CHANNELS as usize]>,
     capture: Option<AudioProcessing>,
     denoise: Option<Box<DenoiseState<'static>>>,
+    deep_filter: Option<Box<DfTract>>,
     gain: Option<AudioProcessing>,
 }
 
@@ -44,6 +47,25 @@ fn pipeline() -> Pipeline {
         maximum_internal_processing_rate: MaxProcessingRate::Rate48kHz,
         ..Default::default()
     }
+}
+
+// Loading takes ~175 ms, which is why the processor is built on the encode thread.
+fn load_deep_filter() -> Option<Box<DfTract>> {
+    match DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(1)) {
+        Ok(model) => Some(Box::new(model)),
+        Err(e) => {
+            warn!(stage = "strong noise suppression", reason = %e, "voice processing stage disabled for this session");
+            None
+        }
+    }
+}
+
+fn run_deep_filter(model: &mut DfTract, hop: &mut Hop) -> Result<(), String> {
+    let input = *hop;
+    let input = ArrayView2::from_shape((1, HOP), &input).map_err(|e| e.to_string())?;
+    let output = ArrayViewMut2::from_shape((1, HOP), &mut hop[..]).map_err(|e| e.to_string())?;
+    model.process(input, output).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Feeds the oldest pending hop, one per capture hop. Rendering a whole frame ahead of its
@@ -111,6 +133,7 @@ impl VoiceProcessor {
                 pending_reference: VecDeque::new(),
                 capture: None,
                 denoise: None,
+                deep_filter: None,
                 gain: None,
             };
         }
@@ -150,6 +173,9 @@ impl VoiceProcessor {
             pending_reference: VecDeque::new(),
             capture: Some(capture),
             denoise: (config.noise_suppression == Suppression::Light).then(DenoiseState::new),
+            deep_filter: (config.noise_suppression == Suppression::Strong)
+                .then(load_deep_filter)
+                .flatten(),
             gain,
         }
     }
@@ -157,7 +183,11 @@ impl VoiceProcessor {
     /// Takes one interleaved stereo frame and leaves the same mono result on both channels,
     /// or leaves the frame untouched when no stage is active.
     pub fn process(&mut self, stereo: &mut [f32]) {
-        if self.capture.is_none() && self.denoise.is_none() && self.gain.is_none() {
+        if self.capture.is_none()
+            && self.denoise.is_none()
+            && self.deep_filter.is_none()
+            && self.gain.is_none()
+        {
             return;
         }
         for frames in stereo.as_chunks_mut::<{ HOP * CHANNELS }>().0 {
@@ -183,6 +213,12 @@ impl VoiceProcessor {
                 *h = out.map(|s| s / I16_SCALE);
                 Ok(())
             });
+            run_stage(
+                &mut self.deep_filter,
+                "strong noise suppression",
+                &mut hop,
+                |m, h| run_deep_filter(m, h),
+            );
             run_stage(&mut self.gain, "automatic gain", &mut hop, |a, h| {
                 run_apm(a, h)
             });
@@ -209,7 +245,7 @@ mod tests {
     use super::*;
     use crate::reference::ReferenceChannel;
     use crate::test_signals::{
-        at_peak, at_rms, looped, noise, rms_db, run, sparse_echo, speech, stretched,
+        at_peak, at_rms, clicks, looped, noise, rms_db, run, sparse_echo, speech, stretched,
     };
 
     const SECOND: usize = 48_000;
@@ -248,6 +284,31 @@ mod tests {
         let input = at_rms(&noise(3 * SECOND, 7), -40.0);
         let out = run(&mut processor(Suppression::Light, false), &input);
         assert!(rms_db(tail(&out, 1)) <= rms_db(tail(&input, 1)) - 10.0);
+    }
+
+    #[test]
+    fn strong_removes_keyboard_clicks() {
+        let input = at_peak(&clicks(7, 3 * SECOND), -14.0);
+        let out = run(&mut processor(Suppression::Strong, false), &input);
+        assert!(rms_db(tail(&out, 2)) <= rms_db(tail(&input, 2)) - 10.0);
+    }
+
+    // Impulses are removed as noise, so the delay is read off the correlation with speech.
+    #[test]
+    fn strong_delays_by_its_lookahead_only() {
+        let input = looped(&speech(), 3.0);
+        let out = run(&mut processor(Suppression::Strong, false), &input);
+        let correlation = |lag: usize| -> f32 {
+            input[..input.len() - lag]
+                .iter()
+                .zip(&out[lag..])
+                .map(|(a, b)| a * b)
+                .sum()
+        };
+        let best = (0..4800)
+            .max_by(|a, b| correlation(*a).total_cmp(&correlation(*b)))
+            .unwrap();
+        assert!(best.abs_diff(1440) <= 480, "best lag {best}");
     }
 
     fn gain_change(peak_dbfs: f32) -> f32 {

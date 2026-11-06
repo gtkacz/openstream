@@ -126,6 +126,7 @@ pub enum NoiseSuppression {
     Off,
     #[default]
     Light,
+    Strong,
 }
 
 impl AudioSettings {
@@ -137,6 +138,7 @@ impl AudioSettings {
             noise_suppression: match self.noise_suppression {
                 NoiseSuppression::Off => Suppression::Off,
                 NoiseSuppression::Light => Suppression::Light,
+                NoiseSuppression::Strong => Suppression::Strong,
             },
             automatic_gain: self.automatic_gain,
         }
@@ -466,6 +468,21 @@ mod tests {
         assert!(settings.audio.echo_cancellation);
         assert_eq!(settings.audio.noise_suppression, NoiseSuppression::Light);
         assert!(settings.audio.automatic_gain);
+    }
+
+    #[test]
+    fn strong_noise_suppression_round_trips_as_strong() {
+        let audio = AudioSettings {
+            noise_suppression: NoiseSuppression::Strong,
+            ..Default::default()
+        };
+        let text = toml::to_string_pretty(&audio).unwrap();
+        assert!(text.contains("noise_suppression = \"strong\""));
+        let back: AudioSettings = toml::from_str(&text).unwrap();
+        assert_eq!(
+            back.voice_processing().noise_suppression,
+            Suppression::Strong
+        );
     }
 
     #[test]

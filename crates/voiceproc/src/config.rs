@@ -2,6 +2,7 @@
 pub enum Suppression {
     Off,
     Light,
+    Strong,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

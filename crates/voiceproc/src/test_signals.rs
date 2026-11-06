@@ -77,6 +77,35 @@ fn lcg(state: &mut u64) -> f32 {
     ((*state >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
 }
 
+/// Keystrokes: a sharp press click and a softer release click, about seven keys a second.
+pub fn clicks(seed: u64, len: usize) -> Vec<f32> {
+    let ms = SAMPLE_RATE / 1000;
+    let mut state = seed;
+    let mut out = vec![0.0f32; len];
+    let mut click = |at: usize, amp: f32| {
+        let mut prev = 0.0f32;
+        for i in 0..8 * ms {
+            let w = lcg(&mut state);
+            if let Some(s) = out.get_mut(at + i) {
+                *s += amp * (-(i as f32) / (ms as f32 * 1.2)).exp() * (w - prev);
+            }
+            prev = w;
+        }
+    };
+    let mut t = 2_000;
+    let mut jitter = seed.wrapping_add(1000);
+    while t < len {
+        let amp = 0.7 + 0.3 * lcg(&mut jitter).abs();
+        click(t, amp);
+        click(
+            t + (70 + (lcg(&mut jitter).abs() * 40.0) as usize) * ms,
+            0.5 * amp,
+        );
+        t += (60 + (lcg(&mut jitter).abs() * 200.0) as usize) * ms;
+    }
+    out
+}
+
 /// A speaker-to-microphone path of one direct arrival and 20 sparse reflections, plus a noise floor.
 pub fn sparse_echo(far: &[f32], delay_ms: usize, seed: u64) -> Vec<f32> {
     let ms = SAMPLE_RATE / 1000;

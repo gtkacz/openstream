@@ -11,9 +11,10 @@ const ROW_GAP: f32 = 12.0;
 const FPS_CHOICES: [(Option<u32>, &str); 3] =
     [(Some(30), "30 fps"), (Some(60), "60 fps"), (None, "Custom")];
 
-const SUPPRESSION_CHOICES: [(NoiseSuppression, &str); 2] = [
+const SUPPRESSION_CHOICES: [(NoiseSuppression, &str); 3] = [
     (NoiseSuppression::Off, "Off"),
     (NoiseSuppression::Light, "Light"),
+    (NoiseSuppression::Strong, "Strong"),
 ];
 
 /// Dialog state: whether it is open, the draft being edited, the devices listed when it opened,
@@ -267,6 +268,9 @@ pub fn draw(ctx: &egui::Context, dialog: &mut SettingsDialog, room_open: bool) -
                         NoiseSuppression::Off => "Your microphone as it is",
                         NoiseSuppression::Light => {
                             "Removes steady noise such as fans and hum, at almost no CPU cost"
+                        }
+                        NoiseSuppression::Strong => {
+                            "Also removes keyboards and sudden noise. Uses more CPU and delays your voice by 30 ms"
                         }
                     };
                     ui.label(egui::RichText::new(hint).small().color(theme::secondary()));
@@ -572,5 +576,8 @@ mod tests {
                 .any(|t| t == "Removes steady noise such as fans and hum, at almost no CPU cost")
         );
         assert!(!light.iter().any(|t| t == "Your microphone as it is"));
+        let strong = hints(NoiseSuppression::Strong);
+        assert!(strong.iter().any(|t| t
+            == "Also removes keyboards and sudden noise. Uses more CPU and delays your voice by 30 ms"));
     }
 }
