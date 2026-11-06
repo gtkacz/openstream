@@ -3,7 +3,7 @@
 //! network itself is the picture. No geography: that would need locating people by IP address.
 
 use brp_net::PathKind;
-use brp_proto::{LiveInfo, SourceKind};
+use brp_proto::{LiveInfo, SourceKind, VoiceState};
 use brp_room::{MemberView, RoomSnapshot};
 use egui::{Color32, Id, Pos2, Rect, Shape, Stroke, UiBuilder, pos2, vec2};
 
@@ -12,6 +12,7 @@ use super::motion;
 use super::own_lives;
 use super::state::{UiState, delay_text, nobody_is_sharing, ordered_members};
 use super::theme::{self, icons};
+use super::voice;
 use crate::commands::RoomCommand;
 use crate::render::backdrop::{self, BackdropKind, BackdropRequest};
 
@@ -29,6 +30,7 @@ const PING_TICK: f64 = 1.0 / 12.0;
 /// Below this the labels would run into each other and off the canvas, and a list serves better.
 const SMALLEST_CANVAS: egui::Vec2 = vec2(640.0, 440.0);
 const MOST_PEOPLE: usize = 8;
+const STRIP: egui::Vec2 = vec2(72.0, 12.0);
 
 /// Whether this many people can be drawn on this canvas and still be read.
 pub fn fits(canvas: Rect, people: usize) -> bool {
@@ -136,6 +138,11 @@ pub fn draw(
         }
         if moving && member.watching_me && !lost {
             packets(&mut lines, &[center, at], upload / watchers, false, now);
+        }
+        if moving && !lost {
+            let (forward, back) = voice::wire_rates(snapshot, state, member);
+            packets(&mut lines, &[center, at], forward, false, now);
+            packets(&mut lines, &[center, at], back, true, now);
         }
     }
     painter.extend(lines);
@@ -255,7 +262,8 @@ fn node(
         .collect();
     let widest_offer = offers.iter().map(|offer| offer.3).fold(0.0, f32::max);
     let width = name.size().x.max(meta_galley.size().x).max(widest_offer) + 12.0;
-    let height = 2.0 * LINE + offers.len() as f32 * (BUTTON + 2.0) + 8.0;
+    let lines = label_lines(member) as f32;
+    let height = lines * LINE + offers.len() as f32 * (BUTTON + 2.0) + 8.0;
     let left = if on_left {
         at.x - GAP - width
     } else {
@@ -285,7 +293,29 @@ fn node(
         meta_galley,
         meta_ink,
     );
-    let mut y = area.top() + 2.0 * LINE + 6.0;
+    if let Some(voice_state) = member.voice {
+        let top = area.top() + 2.0 + 2.0 * LINE;
+        match voice_word(voice_state) {
+            Some(word) => {
+                let galley = painter.layout_no_wrap(
+                    word.to_string(),
+                    theme::medium(13.0),
+                    theme::secondary(),
+                );
+                painter.galley(
+                    pos2(text_x(galley.size().x), top),
+                    galley,
+                    theme::secondary(),
+                );
+            }
+            None => {
+                let strip = Rect::from_min_size(pos2(text_x(STRIP.x), top + 2.0), STRIP);
+                let levels = state.voice.get(&member.id).map(|meter| &meter.levels);
+                voice::level_strip(ui, strip, levels, !member.hearing);
+            }
+        }
+    }
+    let mut y = area.top() + lines * LINE + 6.0;
     for (live, key, preset_id, wide) in offers {
         let size = vec2(wide, BUTTON);
         let rect = Rect::from_min_size(pos2(text_x(wide), y), size);
@@ -329,6 +359,21 @@ fn node(
     }
 }
 
+/// Name and path, plus a line for voice when the person is in it.
+fn label_lines(member: &MemberView) -> usize {
+    2 + usize::from(member.voice.is_some())
+}
+
+fn voice_word(state: VoiceState) -> Option<&'static str> {
+    if state.deafened {
+        Some("deafened")
+    } else if state.muted {
+        Some("muted")
+    } else {
+        None
+    }
+}
+
 fn centre(painter: &egui::Painter, snapshot: &RoomSnapshot, center: Pos2) {
     plate(
         painter,
@@ -356,6 +401,16 @@ fn centre(painter: &egui::Painter, snapshot: &RoomSnapshot, center: Pos2) {
         Some(live) => (format!("You · {} ready", live.info.title), theme::accent()),
         None => ("You".to_string(), theme::accent()),
     };
+    let own = &snapshot.voice;
+    let word = match () {
+        _ if !own.joined => None,
+        _ if own.error.is_some() => Some("no microphone"),
+        _ if own.deafened => Some("deafened"),
+        _ if own.muted => Some("muted"),
+        _ if own.transmitting => Some("on air"),
+        _ => None,
+    };
+    let text = word.map_or(text.clone(), |word| format!("{text} · {word}"));
     let label = painter.layout_no_wrap(text, theme::medium(13.0), ink);
     let at = center + vec2(-label.size().x / 2.0, 16.0);
     plate(
@@ -459,5 +514,35 @@ mod tests {
             Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 300.0)),
             1
         ));
+    }
+
+    fn in_voice(voice: Option<VoiceState>) -> MemberView {
+        MemberView {
+            voice,
+            hearing: true,
+            sending: true,
+            voice_gain: 1.0,
+            id: iroh::SecretKey::from_bytes(&[2; 32]).public(),
+            nickname: "Rae".into(),
+            lives: Vec::new(),
+            seen_ago_ms: 0,
+            path: PathKind::Unknown,
+            rtt_ms: None,
+            signal_lost: false,
+            watching_me: false,
+            has_audio: false,
+            audio_mix: None,
+            gain: 1.0,
+        }
+    }
+
+    #[test]
+    fn a_person_in_voice_gets_a_third_label_line() {
+        assert_eq!(label_lines(&in_voice(Some(VoiceState::default()))), 3);
+    }
+
+    #[test]
+    fn someone_out_of_voice_keeps_two() {
+        assert_eq!(label_lines(&in_voice(None)), 2);
     }
 }

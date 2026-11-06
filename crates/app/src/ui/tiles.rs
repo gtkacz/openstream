@@ -2,7 +2,7 @@
 //! overlay and status text on top. The panel frame is transparent so the tiles show through. The
 //! overlay is shared with pop-out windows, which place one live over their whole panel.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use brp_net::PathKind;
 use brp_proto::constants::SIGNAL_LOST_AFTER;
@@ -17,6 +17,7 @@ use super::state::{
     visible_watches,
 };
 use super::theme::{self, icons};
+use super::voice;
 use crate::commands::{RoomCommand, WindowCommand};
 use crate::link;
 use crate::render::grid;
@@ -122,7 +123,7 @@ fn draw_leaving(ui: &mut egui::Ui, state: &mut UiState, grid: &mut Grid) {
         }
         let chrome = (shown * 3.0 - 2.0).max(0.0);
         if chrome > 0.0 {
-            name_chip(ui, rect, &tile.chip, None, None, chrome);
+            name_chip(ui, rect, &tile.chip, None, None, None, chrome);
             tile_edge(ui, rect, chrome);
         }
     }
@@ -435,20 +436,27 @@ fn name_chip(
     title: &str,
     path: Option<(PathShape, egui::Color32)>,
     rtt_ms: Option<u32>,
+    levels: Option<&VecDeque<f32>>,
     opacity: f32,
 ) {
     const PADDING: egui::Vec2 = egui::vec2(8.0, 4.0);
     const GLYPH: egui::Vec2 = egui::vec2(24.0, 12.0);
+    const MARK: egui::Vec2 = egui::vec2(voice::CHIP_BARS as f32 * 4.0, 12.0);
     let glyph_space = if path.is_some() { GLYPH.x + 8.0 } else { 0.0 };
+    let mark_space = if levels.is_some() { MARK.x + 6.0 } else { 0.0 };
     let figure = rtt_ms
         .map(|rtt| format!("  {}", delay_text(rtt)))
         .unwrap_or_default();
     let figure = ui
         .painter()
         .layout_no_wrap(figure, theme::medium(14.0), theme::secondary());
-    let max_text =
-        (rect.width() - 2.0 * TOOLBAR_MARGIN - 2.0 * PADDING.x - glyph_space - figure.size().x)
-            .max(0.0);
+    let max_text = (rect.width()
+        - 2.0 * TOOLBAR_MARGIN
+        - 2.0 * PADDING.x
+        - glyph_space
+        - mark_space
+        - figure.size().x)
+        .max(0.0);
     let mut job = egui::text::LayoutJob::simple_singleline(
         title.to_string(),
         theme::medium(14.0),
@@ -458,7 +466,7 @@ fn name_chip(
     let galley = ui.painter().layout_job(job);
     let chip = egui::Rect::from_min_size(
         rect.left_top() + egui::Vec2::splat(TOOLBAR_MARGIN),
-        egui::vec2(glyph_space + figure.size().x, 0.0) + galley.size() + 2.0 * PADDING,
+        egui::vec2(glyph_space + mark_space + figure.size().x, 0.0) + galley.size() + 2.0 * PADDING,
     )
     .intersect(rect);
     let mut painter = ui.painter_at(rect);
@@ -476,6 +484,12 @@ fn name_chip(
             ink,
         );
         left += glyph_space;
+    }
+    if let Some(levels) = levels {
+        let mark =
+            egui::Rect::from_min_size(egui::pos2(left, chip.center().y - MARK.y / 2.0), MARK);
+        voice::chip_mark(&painter, mark, levels);
+        left += mark_space;
     }
     let text_top = chip.top() + PADDING.y;
     let text_width = galley.size().x;
@@ -770,7 +784,11 @@ pub fn tile_overlay(
             theme::accent()
         };
         let path = path.map(|path| (path, path_ink));
-        name_chip(ui, rect, &chip, path, rtt, chip_opacity);
+        let levels = publisher
+            .filter(|member| member.voice.is_some())
+            .and_then(|member| state.voice.get(&member.id))
+            .map(|meter| &meter.levels);
+        name_chip(ui, rect, &chip, path, rtt, levels, chip_opacity);
     }
     if opacity <= 0.0 {
         return;
