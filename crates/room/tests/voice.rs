@@ -289,3 +289,151 @@ async fn unmuting_with_a_broken_microphone_stays_muted() {
     assert!(view.muted && !view.transmitting);
     assert!(view.error.is_some());
 }
+
+fn member_of(viewer: &Room, id: iroh::PublicKey) -> brp_room::MemberView {
+    viewer
+        .snapshot()
+        .members
+        .into_iter()
+        .find(|m| m.id == id)
+        .unwrap()
+}
+
+fn bytes_from(viewer: &Room, id: iroh::PublicKey) -> u64 {
+    viewer
+        .voice_levels()
+        .members
+        .get(&id)
+        .map_or(0, |sample| sample.bytes)
+}
+
+#[tokio::test]
+async fn a_person_you_mute_goes_silent_and_stays_subscribed() {
+    let mut people = room_of(&["alice", "bob"]).await;
+    join(&mut people[0]);
+    join(&mut people[1]);
+    hears(&people[1]).await;
+    let a = people[0].room.id();
+
+    people[1].room.set_hearing(a, false);
+
+    assert!(!member_of(&people[1].room, a).hearing);
+    goes_silent(&people[1]).await;
+    let before = bytes_from(&people[1].room, a);
+    wait_until("bytes still rising", WAIT, || {
+        bytes_from(&people[1].room, a) > before
+    })
+    .await;
+
+    people[1].room.set_hearing(a, true);
+    hears(&people[1]).await;
+}
+
+#[tokio::test]
+async fn a_person_you_deafen_hears_silence_while_others_hear_you() {
+    let mut people = room_of(&["alice", "bob", "carol"]).await;
+    for person in &mut people {
+        join(person);
+    }
+    hears(&people[1]).await;
+    hears(&people[2]).await;
+    let b = people[1].room.id();
+    // Only alice talks, so what bob and carol render is alice's.
+    people[1].room.set_voice_muted(true);
+    people[2].room.set_voice_muted(true);
+
+    people[0].room.set_sending(b, false);
+
+    assert!(!member_of(&people[0].room, b).sending);
+    goes_silent(&people[1]).await;
+    hears(&people[2]).await;
+}
+
+#[tokio::test]
+async fn voice_volume_scales_only_that_person() {
+    let mut people = room_of(&["alice", "bob"]).await;
+    join(&mut people[0]);
+    join(&mut people[1]);
+    hears(&people[1]).await;
+    let a = people[0].room.id();
+
+    people[1].room.set_voice_volume(a, 0.0);
+    goes_silent(&people[1]).await;
+    people[1].room.set_voice_volume(a, 1.0);
+    hears(&people[1]).await;
+
+    let member = member_of(&people[1].room, a);
+    assert_eq!(member.voice_gain, 1.0);
+    assert_eq!(member.gain, 1.0);
+    people[1].room.set_voice_volume(a, 7.0);
+    assert_eq!(member_of(&people[1].room, a).voice_gain, 1.0);
+}
+
+#[tokio::test]
+async fn per_person_controls_survive_leaving_and_rejoining_voice() {
+    let mut people = room_of(&["alice", "bob"]).await;
+    join(&mut people[0]);
+    join(&mut people[1]);
+    let a = people[0].room.id();
+    people[1].room.set_hearing(a, false);
+    people[1].room.set_sending(a, false);
+    people[1].room.set_voice_volume(a, 0.4);
+
+    people[1].room.leave_voice();
+    join(&mut people[1]);
+
+    let member = member_of(&people[1].room, a);
+    assert!(!member.hearing && !member.sending);
+    assert_eq!(member.voice_gain, 0.4);
+    goes_silent(&people[1]).await;
+}
+
+#[tokio::test]
+async fn a_member_who_leaves_the_room_leaves_no_listener_behind() {
+    let mut people = room_of(&["alice", "bob", "carol"]).await;
+    for person in &mut people {
+        join(person);
+    }
+    let (b, c) = (people[1].room.id(), people[2].room.id());
+    wait_until("alice listens to both", WAIT, || {
+        let members = people[0].room.voice_levels().members;
+        members.contains_key(&b) && members.contains_key(&c)
+    })
+    .await;
+    people[0].room.set_voice_volume(c, 0.3);
+
+    people.pop().unwrap().room.leave().await;
+
+    wait_until("carol's listener is gone", WAIT, || {
+        !people[0].room.voice_levels().members.contains_key(&c)
+    })
+    .await;
+    wait_until("carol's prefs are gone", WAIT, || {
+        people[0].room.snapshot().members.iter().all(|m| m.id != c)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn levels_rise_while_someone_talks() {
+    let mut people = room_of(&["alice", "bob"]).await;
+    join(&mut people[0]);
+    join(&mut people[1]);
+    let a = people[0].room.id();
+    wait_until("bob's meter for alice", WAIT, || {
+        // Rendering pulls the track through the mixer, which is what updates its level.
+        people[1].voice.render(960);
+        people[1]
+            .room
+            .voice_levels()
+            .members
+            .get(&a)
+            .is_some_and(|sample| sample.level > 0.0)
+    })
+    .await;
+    wait_until("alice's own meter", WAIT, || {
+        let own = people[0].room.voice_levels().own;
+        own.level > 0.0 && own.bytes > 0
+    })
+    .await;
+}

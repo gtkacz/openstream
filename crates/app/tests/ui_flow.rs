@@ -312,6 +312,9 @@ fn busy_room() -> brp_room::RoomSnapshot {
         version: 1,
         members: vec![MemberView {
             voice: None,
+            hearing: true,
+            sending: true,
+            voice_gain: 1.0,
             rtt_ms: None,
             signal_lost: false,
             watching_me: false,

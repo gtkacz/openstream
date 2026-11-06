@@ -1,5 +1,7 @@
 //! Read-only views the window renders. Cloned out of the room on every version bump.
 
+use std::collections::HashMap;
+
 use brp_audio::AudioSelection;
 use brp_net::PathKind;
 use brp_proto::{AudioMix, LiveInfo, Preset, VoiceState};
@@ -61,6 +63,19 @@ pub struct OwnVoiceView {
     pub error: Option<String>,
 }
 
+/// How loud one person's voice is now, and how many voice bytes have moved for them.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct VoiceSample {
+    pub level: f32,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VoiceLevels {
+    pub own: VoiceSample,
+    pub members: HashMap<PublicKey, VoiceSample>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberView {
     pub id: PublicKey,
@@ -79,6 +94,11 @@ pub struct MemberView {
     /// `None` for a peer on a release that does not say.
     pub audio_mix: Option<AudioMix>,
     pub gain: f32,
+    /// You hear their voice. Local to you, and kept while you stay in the room.
+    pub hearing: bool,
+    /// They hear your voice, rather than silence.
+    pub sending: bool,
+    pub voice_gain: f32,
     /// `None` when out of voice, or on a release that does not say.
     pub voice: Option<VoiceState>,
 }

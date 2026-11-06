@@ -16,6 +16,6 @@ pub use registry::ChangeNotify;
 pub use room::{Room, RoomConfig, RoomTimings};
 pub use snapshot::{
     AudioCaptureState, EncoderView, MemberView, OwnAudioView, OwnLiveView, OwnVoiceView,
-    PresetView, RoomSnapshot, WatchState, WatchView,
+    PresetView, RoomSnapshot, VoiceLevels, VoiceSample, WatchState, WatchView,
 };
 pub use watcher::{FrameNotify, WatchHandle};

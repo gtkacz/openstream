@@ -22,7 +22,7 @@ use crate::error::RoomError;
 use crate::gossip::lock;
 use crate::membership::Membership;
 use crate::registry::ChangeNotify;
-use crate::snapshot::OwnVoiceView;
+use crate::snapshot::{OwnVoiceView, VoiceLevels, VoiceSample};
 use crate::watcher::Watcher;
 
 struct Session {
@@ -34,10 +34,30 @@ struct Session {
     listeners: HashMap<PublicKey, Listener>,
 }
 
+/// What you have chosen about one person, kept outside the session so it survives either side
+/// leaving and rejoining voice.
+#[derive(Clone, Copy)]
+pub(crate) struct PeerPrefs {
+    pub hearing: bool,
+    pub sending: bool,
+    pub gain: f32,
+}
+
+impl Default for PeerPrefs {
+    fn default() -> Self {
+        Self {
+            hearing: true,
+            sending: true,
+            gain: 1.0,
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     me: SelfVoice,
     session: Option<Session>,
+    prefs: HashMap<PublicKey, PeerPrefs>,
     error: Option<String>,
 }
 
@@ -151,12 +171,90 @@ impl Voice {
     }
 
     pub fn member_left(&self, id: PublicKey) {
-        let listener = lock(&self.state)
-            .session
-            .as_mut()
-            .and_then(|session| session.listeners.remove(&id));
+        let listener = {
+            let mut state = lock(&self.state);
+            state.prefs.remove(&id);
+            state
+                .session
+                .as_mut()
+                .and_then(|session| session.listeners.remove(&id))
+        };
         lock(&self.not_sending).remove(&id);
         self.dispose(listener.into_iter().collect(), None);
+    }
+
+    pub fn prefs_of(&self, peer: &PublicKey) -> PeerPrefs {
+        lock(&self.state)
+            .prefs
+            .get(peer)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn set_hearing(&self, peer: PublicKey, hearing: bool) {
+        let mut state = lock(&self.state);
+        state.prefs.entry(peer).or_default().hearing = hearing;
+        if let Some(listener) = state
+            .session
+            .as_ref()
+            .and_then(|session| session.listeners.get(&peer))
+        {
+            listener.set_hearing(hearing);
+        }
+        drop(state);
+        (self.notify)();
+    }
+
+    pub fn set_sending(&self, peer: PublicKey, sending: bool) {
+        let mut state = lock(&self.state);
+        state.prefs.entry(peer).or_default().sending = sending;
+        // Under the controller lock so two quick toggles cannot reach the set out of order.
+        let mut not_sending = lock(&self.not_sending);
+        if sending {
+            not_sending.remove(&peer);
+        } else {
+            not_sending.insert(peer);
+        }
+        drop(not_sending);
+        drop(state);
+        (self.notify)();
+    }
+
+    pub fn set_voice_volume(&self, peer: PublicKey, gain: f32) {
+        let gain = gain.clamp(0.0, 1.0);
+        let mut state = lock(&self.state);
+        state.prefs.entry(peer).or_default().gain = gain;
+        if let Some(session) = &state.session {
+            session.mixer.set_gain(*peer.as_bytes(), gain);
+        }
+        drop(state);
+        (self.notify)();
+    }
+
+    pub fn levels(&self) -> VoiceLevels {
+        let state = lock(&self.state);
+        let Some(session) = &state.session else {
+            return VoiceLevels::default();
+        };
+        VoiceLevels {
+            own: VoiceSample {
+                level: session.send.level(),
+                bytes: session.send.bytes_encoded(),
+            },
+            members: session
+                .listeners
+                .iter()
+                .map(|(peer, listener)| {
+                    (
+                        *peer,
+                        VoiceSample {
+                            level: session.mixer.level(peer.as_bytes()),
+                            bytes: listener.bytes_received(),
+                        },
+                    )
+                })
+                .collect(),
+        }
     }
 
     pub fn presence(&self) -> Option<VoiceState> {
@@ -255,13 +353,15 @@ impl Voice {
             .filter_map(|id| session.listeners.remove(id))
             .collect();
         for peer in desired {
+            let prefs = state.prefs.get(&peer).copied().unwrap_or_default();
             session.listeners.entry(peer).or_insert_with(|| {
+                session.mixer.set_gain(*peer.as_bytes(), prefs.gain);
                 Listener::start(
                     peer,
                     self.watcher.clone(),
                     self.decoders.clone(),
                     session.mixer.clone(),
-                    true,
+                    prefs.hearing,
                     self.runtime.clone(),
                 )
             });

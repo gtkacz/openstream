@@ -602,6 +602,9 @@ mod tests {
     fn member(nickname: &str) -> MemberView {
         MemberView {
             voice: None,
+            hearing: true,
+            sending: true,
+            voice_gain: 1.0,
             id: SecretKey::generate().public(),
             nickname: nickname.into(),
             lives: Vec::new(),

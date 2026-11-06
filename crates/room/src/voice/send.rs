@@ -106,14 +106,10 @@ impl VoiceSend {
             .or_else(|| lock(&self.session).as_ref().and_then(|s| s.error()))
     }
 
-    // Read by the per-person controls, which are not wired yet.
-    #[allow(dead_code)]
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
-    // Read by the per-person controls, which are not wired yet.
-    #[allow(dead_code)]
     pub fn bytes_encoded(&self) -> u64 {
         self.publisher.stats().bytes_encoded.load(Ordering::Relaxed)
     }

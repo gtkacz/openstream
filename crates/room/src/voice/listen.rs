@@ -43,8 +43,6 @@ struct Slot {
     forwarder: Option<AbortHandle>,
 }
 
-// Read by the per-person controls, which are not wired yet.
-#[allow(dead_code)]
 pub(crate) struct Listener {
     peer: PublicKey,
     mixer: Mixer,
@@ -87,14 +85,10 @@ impl Listener {
         }
     }
 
-    // Read by the per-person controls, which are not wired yet.
-    #[allow(dead_code)]
     pub(crate) fn set_hearing(&self, hearing: bool) {
         self.hearing.store(hearing, Ordering::Relaxed);
     }
 
-    // Read by the per-person controls, which are not wired yet.
-    #[allow(dead_code)]
     pub(crate) fn bytes_received(&self) -> u64 {
         self.bytes.load(Ordering::Relaxed)
     }

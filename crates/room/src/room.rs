@@ -29,7 +29,7 @@ use crate::error::RoomError;
 use crate::gossip::{self, PresenceLoop, lock};
 use crate::membership::Membership;
 use crate::registry::{CaptureFan, ChangeNotify, LiveRegistry};
-use crate::snapshot::{MemberView, RoomSnapshot};
+use crate::snapshot::{MemberView, RoomSnapshot, VoiceLevels};
 use crate::source::MediaSource;
 use crate::voice::Voice;
 use crate::watcher::{FrameNotify, WatchHandle, Watcher};
@@ -355,7 +355,8 @@ impl Room {
         let viewers = lock(&self.viewers).clone();
         let members = lock(&self.membership)
             .members()
-            .map(|m| MemberView {
+            .map(|m| (m, self.voice.prefs_of(&m.id)))
+            .map(|(m, prefs)| MemberView {
                 rtt_ms: self
                     .watcher
                     .path_rtt(&m.id)
@@ -371,6 +372,9 @@ impl Room {
                 path: self.watcher.path_kind(&m.id),
                 gain: self.mixer.gain(m.id.as_bytes()),
                 voice: m.presence.voice,
+                hearing: prefs.hearing,
+                sending: prefs.sending,
+                voice_gain: prefs.gain,
             })
             .collect();
         RoomSnapshot {
@@ -498,6 +502,22 @@ impl Room {
 
     pub fn set_voice_deafened(&self, deafened: bool) {
         self.voice.set_deafened(deafened);
+    }
+
+    pub fn set_hearing(&self, peer: PublicKey, hearing: bool) {
+        self.voice.set_hearing(peer, hearing);
+    }
+
+    pub fn set_sending(&self, peer: PublicKey, sending: bool) {
+        self.voice.set_sending(peer, sending);
+    }
+
+    pub fn set_voice_volume(&self, peer: PublicKey, gain: f32) {
+        self.voice.set_voice_volume(peer, gain);
+    }
+
+    pub fn voice_levels(&self) -> VoiceLevels {
+        self.voice.levels()
     }
 
     pub async fn leave(mut self) {

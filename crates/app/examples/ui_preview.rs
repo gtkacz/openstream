@@ -112,6 +112,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     ) {
         snapshot.members.push(MemberView {
             voice: None,
+            hearing: true,
+            sending: true,
+            voice_gain: 1.0,
             signal_lost: false,
             id: SecretKey::from_bytes(&[2; 32]).public(),
             nickname: "Morgan".into(),
