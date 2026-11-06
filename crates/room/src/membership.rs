@@ -60,7 +60,8 @@ impl Membership {
             Some(existing) => {
                 let changed = existing.presence.nickname != presence.nickname
                     || existing.presence.lives != presence.lives
-                    || existing.presence.audio_mix != presence.audio_mix;
+                    || existing.presence.audio_mix != presence.audio_mix
+                    || existing.presence.voice != presence.voice;
                 existing.presence = presence;
                 existing.last_seen = now;
                 if changed {
@@ -133,6 +134,18 @@ mod tests {
         membership.apply(key(1), presence(1, "gt"), now);
         let changed = Presence {
             audio_mix: Some(brp_proto::AudioMix::All),
+            ..presence(2, "gt")
+        };
+        assert_eq!(membership.apply(key(1), changed, now), Applied::Updated);
+    }
+
+    #[test]
+    fn a_changed_voice_state_counts_as_an_update() {
+        let mut membership = Membership::new(Duration::from_secs(20));
+        let now = Instant::now();
+        membership.apply(key(1), presence(1, "gt"), now);
+        let changed = Presence {
+            voice: Some(brp_proto::VoiceState::default()),
             ..presence(2, "gt")
         };
         assert_eq!(membership.apply(key(1), changed, now), Applied::Updated);

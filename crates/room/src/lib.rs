@@ -7,6 +7,7 @@ pub mod membership;
 pub mod registry;
 mod room;
 pub mod snapshot;
+mod voice;
 mod watcher;
 
 pub use error::RoomError;
