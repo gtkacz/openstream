@@ -2,15 +2,16 @@
 //! room says is in voice and hearing.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use brp_audio::{AudioCaptureSession, VoiceCapture};
 use brp_codec::{AudioEncoder, AudioFrame, CodecError};
 use brp_net::{AudioSubscription, SubscribeRejected};
-use brp_pipeline::AudioPublisher;
+use brp_pipeline::{AudioPublisher, FrameHook};
 use brp_proto::EncodedFrame;
 use brp_proto::constants::AUDIO_SENDER_BACKLOG_PACKETS;
+use brp_voiceproc::{EchoReference, ProcessingConfig, VoiceProcessor};
 use iroh::PublicKey;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
@@ -43,6 +44,8 @@ pub(crate) struct VoiceSend {
     runtime: Handle,
     // f32 bits: std has no atomic float.
     level: Arc<AtomicU32>,
+    // Gates the hook's level writes so a closed mic can read zero without racing queued frames.
+    metering: Arc<AtomicBool>,
     session: Mutex<Option<Box<dyn AudioCaptureSession>>>,
     open_error: Mutex<Option<String>>,
 }
@@ -51,17 +54,39 @@ impl VoiceSend {
     pub fn start(
         encoder: Box<dyn AudioEncoder>,
         silence: Vec<u8>,
+        processing: ProcessingConfig,
+        reference: EchoReference,
         membership: Arc<Mutex<Membership>>,
         not_sending: Arc<Mutex<HashSet<PublicKey>>>,
         runtime: Handle,
     ) -> Self {
+        let level = Arc::new(AtomicU32::new(0));
+        let metering = Arc::new(AtomicBool::new(false));
+        let hook_level = level.clone();
+        let hook_metering = metering.clone();
+        // The processor is built on the encode thread: it is not `Send`, and building it may be
+        // slow.
+        let make_hook: Box<dyn FnOnce() -> FrameHook + Send> = Box::new(move || {
+            let mut processor = VoiceProcessor::new(processing, &reference);
+            Box::new(move |frame| {
+                processor.process(&mut frame.samples);
+                if hook_metering.load(Ordering::Relaxed) {
+                    let peak = frame
+                        .samples
+                        .iter()
+                        .fold(0.0_f32, |peak, s| peak.max(s.abs()));
+                    hook_level.store(peak.to_bits(), Ordering::Relaxed);
+                }
+            })
+        });
         Self {
-            publisher: AudioPublisher::start(encoder),
+            publisher: AudioPublisher::start_with_hook(encoder, make_hook),
             silence: Arc::new(silence),
             membership,
             not_sending,
             runtime,
-            level: Arc::new(AtomicU32::new(0)),
+            level,
+            metering,
             session: Mutex::new(None),
             open_error: Mutex::new(None),
         }
@@ -69,17 +94,8 @@ impl VoiceSend {
 
     pub fn open_mic(&self, capture: &dyn VoiceCapture) -> Result<(), String> {
         self.close_mic();
-        let mut sink = self.publisher.sink();
-        let level = self.level.clone();
-        let metered = Box::new(move |chunk: brp_audio::AudioChunk| {
-            let peak = chunk
-                .samples
-                .iter()
-                .fold(0.0_f32, |peak, s| peak.max(s.abs()));
-            level.store(peak.to_bits(), Ordering::Relaxed);
-            sink(chunk);
-        });
-        match capture.start(metered) {
+        self.metering.store(true, Ordering::Relaxed);
+        match capture.start(self.publisher.sink()) {
             Ok(session) => {
                 *lock(&self.open_error) = None;
                 *lock(&self.session) = Some(session);
@@ -97,6 +113,7 @@ impl VoiceSend {
         if let Some(session) = lock(&self.session).take() {
             session.stop();
         }
+        self.metering.store(false, Ordering::Relaxed);
         self.level.store(0, Ordering::Relaxed);
     }
 
@@ -183,6 +200,7 @@ mod tests {
     use brp_codec::fake::FakeAudioEncoder;
     use brp_proto::constants::PROTOCOL_VERSION;
     use brp_proto::{Presence, VoiceState};
+    use brp_voiceproc::Suppression;
     use iroh::SecretKey;
     use tokio::time::timeout;
 
@@ -224,6 +242,13 @@ mod tests {
     }
 
     fn fixture(listeners: &[(u8, Option<VoiceState>)]) -> Fixture {
+        fixture_with(listeners, ProcessingConfig::OFF)
+    }
+
+    fn fixture_with(
+        listeners: &[(u8, Option<VoiceState>)],
+        processing: ProcessingConfig,
+    ) -> Fixture {
         let membership = Arc::new(Mutex::new(Membership::new(Duration::from_secs(20))));
         for (seed, voice) in listeners {
             lock(&membership).apply(key(*seed), with_voice(1, *voice), Instant::now());
@@ -232,6 +257,8 @@ mod tests {
         let send = VoiceSend::start(
             Box::new(FakeAudioEncoder::default()),
             silence(),
+            processing,
+            EchoReference::new(),
             membership.clone(),
             not_sending.clone(),
             Handle::current(),
@@ -289,6 +316,32 @@ mod tests {
             (1, Some(VoiceState::default())),
             (2, Some(VoiceState::default())),
         ]);
+        lock(&f.not_sending).insert(key(2));
+        let mut heard = f.send.subscribe(key(1)).unwrap();
+        let mut deafened = f.send.subscribe(key(2)).unwrap();
+        f.send.open_mic(&tone()).unwrap();
+        let silence = silence();
+        for _ in 0..3 {
+            let a = next(&mut heard).await;
+            let b = next(&mut deafened).await;
+            assert_eq!(a.seq, b.seq);
+            assert_eq!(b.data, silence);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_deafened_listener_gets_silence_at_the_same_rate_with_processing_on() {
+        let f = fixture_with(
+            &[
+                (1, Some(VoiceState::default())),
+                (2, Some(VoiceState::default())),
+            ],
+            ProcessingConfig {
+                echo_cancellation: true,
+                noise_suppression: Suppression::Light,
+                automatic_gain: true,
+            },
+        );
         lock(&f.not_sending).insert(key(2));
         let mut heard = f.send.subscribe(key(1)).unwrap();
         let mut deafened = f.send.subscribe(key(2)).unwrap();

@@ -1,3 +1,4 @@
+use brp_voiceproc::ProcessingConfig;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -101,7 +102,10 @@ async fn room_of(names: &[&str]) -> Vec<Person> {
 
 fn join(person: &mut Person) {
     let (output, handle) = voice_output();
-    person.room.join_voice(mic(), output).unwrap();
+    person
+        .room
+        .join_voice(mic(), output, ProcessingConfig::OFF)
+        .unwrap();
     person.voice = handle;
 }
 
@@ -253,9 +257,15 @@ async fn joining_twice_opens_one_output() {
         starts: starts.clone(),
         inner: FakeOutput::new().0,
     });
-    people[0].room.join_voice(mic(), output.clone()).unwrap();
+    people[0]
+        .room
+        .join_voice(mic(), output.clone(), ProcessingConfig::OFF)
+        .unwrap();
     let before = people[0].room.snapshot().voice;
-    people[0].room.join_voice(mic(), output).unwrap();
+    people[0]
+        .room
+        .join_voice(mic(), output, ProcessingConfig::OFF)
+        .unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     assert_eq!(people[0].room.snapshot().voice, before);
 }
@@ -269,7 +279,10 @@ async fn a_missing_microphone_leaves_you_in_voice_listening_and_muted() {
     let mut people = room_of(&["alice", "bob"]).await;
     join(&mut people[1]);
     let (output, handle) = voice_output();
-    people[0].room.join_voice(broken_mic(), output).unwrap();
+    people[0]
+        .room
+        .join_voice(broken_mic(), output, ProcessingConfig::OFF)
+        .unwrap();
     people[0].voice = handle;
 
     let view = people[0].room.snapshot().voice;
@@ -282,7 +295,10 @@ async fn a_missing_microphone_leaves_you_in_voice_listening_and_muted() {
 async fn unmuting_with_a_broken_microphone_stays_muted() {
     let people = room_of(&["alice"]).await;
     let (output, _) = voice_output();
-    people[0].room.join_voice(broken_mic(), output).unwrap();
+    people[0]
+        .room
+        .join_voice(broken_mic(), output, ProcessingConfig::OFF)
+        .unwrap();
 
     people[0].room.set_voice_muted(false);
 

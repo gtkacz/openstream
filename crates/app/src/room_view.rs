@@ -1,6 +1,7 @@
 //! Everything the window holds once a room is open: the room handle, its last snapshot, the
 //! watch handles that feed tiles, and the share in flight. The window delegates room commands here.
 
+use brp_voiceproc::ProcessingConfig;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -254,6 +255,7 @@ impl RoomView {
                     self.join_voice(
                         Arc::new(CpalInput::new(audio.input_device.clone())),
                         Arc::new(CpalOutput::new(audio.voice_output())),
+                        ProcessingConfig::OFF,
                         state,
                     );
                     Ok(())
@@ -294,9 +296,10 @@ impl RoomView {
         &self,
         capture: Arc<dyn VoiceCapture>,
         output: Arc<dyn AudioOutput>,
+        processing: ProcessingConfig,
         state: &mut UiState,
     ) {
-        if let Err(error) = self.room.join_voice(capture, output) {
+        if let Err(error) = self.room.join_voice(capture, output, processing) {
             state.status = error.to_string();
         }
     }
@@ -499,7 +502,12 @@ mod tests {
         let room = Arc::new(Room::create(config("alice")).await.unwrap());
         let view = RoomView::new(room);
         let mut state = UiState::new();
-        view.join_voice(synthetic_voice(), Arc::new(FakeOutput::new().0), &mut state);
+        view.join_voice(
+            synthetic_voice(),
+            Arc::new(FakeOutput::new().0),
+            ProcessingConfig::OFF,
+            &mut state,
+        );
         assert!(state.status.is_empty(), "{}", state.status);
         assert!(view.room.snapshot().voice.joined);
         view.leave().await;
@@ -510,7 +518,12 @@ mod tests {
         let room = Arc::new(Room::create(config("alice")).await.unwrap());
         let view = RoomView::new(room);
         let mut state = UiState::new();
-        view.join_voice(synthetic_voice(), Arc::new(BrokenOutput), &mut state);
+        view.join_voice(
+            synthetic_voice(),
+            Arc::new(BrokenOutput),
+            ProcessingConfig::OFF,
+            &mut state,
+        );
         assert!(
             state.status.starts_with("Could not join voice"),
             "{}",

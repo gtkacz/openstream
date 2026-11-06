@@ -10,7 +10,7 @@ pub mod publisher;
 pub mod reorder;
 pub mod slot;
 pub mod viewer;
-pub use audio_publisher::{AudioPublisher, AudioPublisherStats, FrameAssembler};
+pub use audio_publisher::{AudioPublisher, AudioPublisherStats, FrameAssembler, FrameHook};
 pub use audio_viewer::{AudioViewer, AudioViewerStats};
 pub use error::PipelineError;
 pub use fanout::{FanOut, KeyframeRequest, PushOutcome};

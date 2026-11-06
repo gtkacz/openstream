@@ -12,6 +12,7 @@ brp-pipeline.workspace = true
 brp-codec.workspace = true
 brp-capture.workspace = true
 brp-audio.workspace = true
+brp-voiceproc.workspace = true
 iroh.workspace = true
 iroh-gossip.workspace = true
 n0-future.workspace = true

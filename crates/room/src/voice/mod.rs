@@ -14,6 +14,7 @@ use brp_net::AudioSubscription;
 use brp_net::SubscribeRejected;
 use brp_pipeline::Mixer;
 use brp_proto::VoiceState;
+use brp_voiceproc::{EchoReference, ProcessingConfig, ReferenceChannel};
 use iroh::PublicKey;
 use tokio::runtime::Handle;
 
@@ -71,6 +72,7 @@ pub(crate) struct Voice {
     runtime: Handle,
     notify: ChangeNotify,
     not_sending: Arc<Mutex<HashSet<PublicKey>>>,
+    echo: EchoReference,
     state: Mutex<State>,
 }
 
@@ -82,6 +84,7 @@ impl Voice {
         decoders: Arc<dyn DecoderFactory>,
         runtime: Handle,
         notify: ChangeNotify,
+        echo: EchoReference,
     ) -> Arc<Self> {
         Arc::new(Self {
             membership,
@@ -91,6 +94,7 @@ impl Voice {
             runtime,
             notify,
             not_sending: Arc::new(Mutex::new(HashSet::new())),
+            echo,
             state: Mutex::new(State::default()),
         })
     }
@@ -99,6 +103,7 @@ impl Voice {
         &self,
         capture: Arc<dyn VoiceCapture>,
         output: Arc<dyn AudioOutput>,
+        processing: ProcessingConfig,
     ) -> Result<(), RoomError> {
         {
             let mut state = lock(&self.state);
@@ -107,7 +112,9 @@ impl Voice {
             }
             let mixer = Mixer::new();
             let output = output
-                .start(mixer.render_fn())
+                .start(Box::new(
+                    self.echo.tap(ReferenceChannel::Voice, mixer.render_fn()),
+                ))
                 .map_err(RoomError::VoiceOutput)?;
             let encoder = self.encoders.open_voice()?;
             // A separate instance: encoding the probe frames would advance the live encoder's state.
@@ -115,6 +122,8 @@ impl Voice {
             let send = VoiceSend::start(
                 encoder,
                 silence,
+                processing,
+                self.echo.clone(),
                 self.membership.clone(),
                 self.not_sending.clone(),
                 self.runtime.clone(),

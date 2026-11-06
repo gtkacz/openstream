@@ -1,5 +1,6 @@
 //! Wires endpoint, gossip, media server, registry, and watcher together behind one handle.
 
+use brp_voiceproc::{EchoReference, ProcessingConfig, ReferenceChannel};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -155,8 +156,10 @@ impl Room {
         };
 
         let mixer = Mixer::new();
-        let (audio_output, audio_output_error) = match config.audio_output.start(mixer.render_fn())
-        {
+        let echo = EchoReference::new();
+        let (audio_output, audio_output_error) = match config.audio_output.start(Box::new(
+            echo.tap(ReferenceChannel::Streams, mixer.render_fn()),
+        )) {
             Ok(session) => (Some(session), None),
             Err(error) => {
                 tracing::warn!(%error, "audio output unavailable; watches will not ask for audio");
@@ -180,6 +183,7 @@ impl Room {
             config.decoders.clone(),
             tokio::runtime::Handle::current(),
             registry_notify.clone(),
+            echo,
         );
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -514,8 +518,9 @@ impl Room {
         &self,
         capture: Arc<dyn VoiceCapture>,
         output: Arc<dyn AudioOutput>,
+        processing: ProcessingConfig,
     ) -> Result<(), RoomError> {
-        self.voice.join(capture, output)
+        self.voice.join(capture, output, processing)
     }
 
     pub fn leave_voice(&self) {

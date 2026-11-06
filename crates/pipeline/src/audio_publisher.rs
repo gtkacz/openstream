@@ -50,6 +50,10 @@ impl FrameAssembler {
 /// dropping is better than growing latency.
 const CHUNK_QUEUE: usize = 50;
 
+/// Runs on the encode thread over every assembled frame, just before it is encoded. Not `Send`:
+/// it is made, used and dropped on that one thread.
+pub type FrameHook = Box<dyn FnMut(&mut AudioFrame) + 'static>;
+
 #[derive(Default)]
 pub struct AudioPublisherStats {
     pub packets_encoded: AtomicU64,
@@ -80,6 +84,15 @@ struct Inner {
 
 impl AudioPublisher {
     pub fn start(encoder: Box<dyn AudioEncoder>) -> Self {
+        Self::start_with_hook(encoder, Box::new(|| Box::new(|_| {})))
+    }
+
+    /// `make_hook` runs on the encode thread before its loop, so a slow setup never blocks the
+    /// caller.
+    pub fn start_with_hook(
+        encoder: Box<dyn AudioEncoder>,
+        make_hook: Box<dyn FnOnce() -> FrameHook + Send>,
+    ) -> Self {
         let (tx, rx) = mpsc::sync_channel::<(u64, AudioChunk)>(CHUNK_QUEUE);
         let inner = Arc::new(Inner {
             params: encoder.params(),
@@ -93,7 +106,10 @@ impl AudioPublisher {
         let worker = inner.clone();
         let handle = thread::Builder::new()
             .name("brp-audio-encode".into())
-            .spawn(move || encode_loop(worker, rx, encoder))
+            .spawn(move || {
+                let hook = make_hook();
+                encode_loop(worker, rx, encoder, hook)
+            })
             .expect("spawning a thread only fails when the system is out of resources");
         *lock(&inner.thread) = Some(handle);
         Self { inner, chunks: tx }
@@ -146,6 +162,7 @@ fn encode_loop(
     inner: Arc<Inner>,
     chunks: mpsc::Receiver<(u64, AudioChunk)>,
     mut encoder: Box<dyn AudioEncoder>,
+    mut hook: FrameHook,
 ) {
     let mut assembler = FrameAssembler::default();
     let mut assembling = 0;
@@ -168,11 +185,12 @@ fn encode_loop(
             assembler = FrameAssembler::default();
             assembling = generation;
         }
-        for frame in assembler.push(chunk) {
+        for mut frame in assembler.push(chunk) {
             // libopus's 6.5 ms lookahead puts the end of the replaced capture into the first
             // packet after a swap. The viewer's jitter buffer plays that slot as silence.
             let carries_replaced = encoded != 0 && encoded != generation;
             encoded = generation;
+            hook(&mut frame);
             match encoder.encode(&frame) {
                 Ok(_) if carries_replaced => {}
                 Ok(packets) => {
@@ -311,6 +329,38 @@ mod tests {
         selected(chunk(AudioFrame::FRAME_LEN, 50_000, 0.5));
         selected(chunk(AudioFrame::FRAME_LEN, 70_000, 0.5));
         assert_eq!(next_packet(&mut rx).capture_ts_us, 70_000);
+        publisher.stop();
+    }
+
+    #[test]
+    fn a_hook_sees_every_frame_before_it_is_encoded() {
+        let publisher = AudioPublisher::start_with_hook(
+            Box::new(brp_codec::fake::FakeAudioEncoder::default()),
+            Box::new(|| Box::new(|frame| frame.samples.fill(0.0))),
+        );
+        let mut rx = publisher.subscribe();
+        let mut sink = publisher.sink();
+        sink(chunk(AudioFrame::FRAME_LEN, 0, 0.5));
+        sink(chunk(AudioFrame::FRAME_LEN, 20_000, 0.5));
+        for _ in 0..2 {
+            assert!(next_packet(&mut rx).data.iter().all(|b| *b == 0));
+        }
+        publisher.stop();
+    }
+
+    #[test]
+    fn the_hook_is_made_on_the_encode_thread() {
+        let (tx, rx) = mpsc::channel();
+        let publisher = AudioPublisher::start_with_hook(
+            Box::new(brp_codec::fake::FakeAudioEncoder::default()),
+            Box::new(move || {
+                tx.send(thread::current().name().map(str::to_owned))
+                    .unwrap();
+                Box::new(|_| {})
+            }),
+        );
+        let name = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(name.as_deref(), Some("brp-audio-encode"));
         publisher.stop();
     }
 
