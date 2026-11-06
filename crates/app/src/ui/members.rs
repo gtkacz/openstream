@@ -45,7 +45,7 @@ const RAIL_MARGIN: f32 = 16.0;
 fn rail_max_width(window_width: f32) -> f32 {
     let left_for_rail =
         window_width - status::WIDE_DOCK_FITS_FROM - 2.0 * RAIL_MARGIN - 2.0 * status::DOCK_MARGIN;
-    left_for_rail.min(RAIL_MAX).max(RAIL_MIN)
+    left_for_rail.clamp(RAIL_MIN, RAIL_MAX)
 }
 
 /// Draws the rail and pushes `Watch`/`Unwatch` commands for switch and preset changes.
