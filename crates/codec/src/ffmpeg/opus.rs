@@ -128,7 +128,7 @@ impl AudioEncoder for OpusEncoder {
             if self.channels == VOICE_CHANNELS {
                 let mono =
                     std::slice::from_raw_parts_mut(f.data[0] as *mut f32, AUDIO_FRAME_SAMPLES);
-                for (out, pair) in mono.iter_mut().zip(frame.samples.chunks_exact(2)) {
+                for (out, pair) in mono.iter_mut().zip(frame.samples.as_chunks::<2>().0) {
                     *out = (pair[0] + pair[1]) / 2.0;
                 }
             } else {
