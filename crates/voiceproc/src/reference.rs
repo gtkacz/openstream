@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use brp_proto::constants::{AUDIO_SAMPLE_RATE, ECHO_REFERENCE_MAX};
@@ -30,7 +30,8 @@ struct Buffers {
 
 #[derive(Default)]
 struct Shared {
-    active: AtomicBool,
+    // A count, because a finished session's processor can be dropped after its successor started.
+    active: AtomicUsize,
     buffers: Mutex<Buffers>,
 }
 
@@ -55,7 +56,7 @@ impl EchoReference {
 
     /// Returns false only when the lock was contended; inactive counts as handled.
     fn try_push(&self, channel: ReferenceChannel, stereo: &[f32]) -> bool {
-        if !self.0.active.load(Ordering::Acquire) {
+        if self.0.active.load(Ordering::Acquire) == 0 {
             return true;
         }
         let Ok(mut buffers) = self.0.buffers.try_lock() else {
@@ -109,9 +110,12 @@ impl EchoReference {
         }
     }
 
-    pub(crate) fn set_active(&self, active: bool) {
-        self.0.active.store(active, Ordering::Release);
-        if !active {
+    pub(crate) fn activate(&self) {
+        self.0.active.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn deactivate(&self) {
+        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
             *self.0.buffers.lock().unwrap() = Buffers::default();
         }
     }
@@ -147,7 +151,7 @@ mod tests {
 
     fn active() -> EchoReference {
         let reference = EchoReference::new();
-        reference.set_active(true);
+        reference.activate();
         reference
     }
 
@@ -237,9 +241,18 @@ mod tests {
         let reference = active();
         reference.push(VOICE, &stereo(960, 1.0));
         reference.push(STREAMS, &stereo(960, 1.0));
-        reference.set_active(false);
-        reference.set_active(true);
+        reference.deactivate();
+        reference.activate();
         assert!(reference.drain_hops().is_empty());
+    }
+
+    #[test]
+    fn an_earlier_session_ending_late_does_not_stop_a_newer_one() {
+        let reference = active();
+        reference.activate();
+        reference.deactivate();
+        reference.push(VOICE, &stereo(960, 1.0));
+        assert_eq!(reference.drain_hops().len(), 2);
     }
 
     #[test]

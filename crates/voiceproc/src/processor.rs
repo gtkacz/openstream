@@ -47,9 +47,11 @@ fn pipeline() -> Pipeline {
 fn render_reference(apm: &mut AudioProcessing, reference: &EchoReference) -> Result<(), String> {
     for [voice, streams] in reference.drain_hops() {
         let (mut sink_voice, mut sink_streams) = ([0.0f32; HOP], [0.0f32; HOP]);
+        // AEC3 aligns its delay estimate to render channel 0 first, and only streams reach the
+        // speakers while voice stays on headphones.
         apm.process_render_f32(
-            &[&voice, &streams],
-            &mut [&mut sink_voice[..], &mut sink_streams[..]],
+            &[&streams, &voice],
+            &mut [&mut sink_streams[..], &mut sink_voice[..]],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -110,7 +112,7 @@ impl VoiceProcessor {
             },
         );
         let reference = config.echo_cancellation.then(|| {
-            reference.set_active(true);
+            reference.activate();
             reference.clone()
         });
         let gain = config.automatic_gain.then(|| {
@@ -155,7 +157,7 @@ impl VoiceProcessor {
             if self.capture.is_none()
                 && let Some(reference) = self.reference.take()
             {
-                reference.set_active(false);
+                reference.deactivate();
             }
             run_stage(&mut self.denoise, "noise suppression", &mut hop, |d, h| {
                 let scaled = h.map(|s| s * I16_SCALE);
@@ -180,7 +182,7 @@ impl VoiceProcessor {
 impl Drop for VoiceProcessor {
     fn drop(&mut self) {
         if let Some(reference) = &self.reference {
-            reference.set_active(false);
+            reference.deactivate();
         }
     }
 }
@@ -296,14 +298,16 @@ mod tests {
 
     /// Plays `voice` and `streams` while the microphone hears `mic`, a frame at a time, and
     /// returns the echo removed, in dB, over the frames after 5 s where `heard` is not silent.
-    fn echo_removed(voice: &[f32], streams: &[f32], mic: &[f32], heard: &[f32]) -> f32 {
+    fn echo_removed(voice: &[f32], streams: Option<&[f32]>, mic: &[f32], heard: &[f32]) -> f32 {
         let reference = EchoReference::new();
         let mut p = echo_processor(&reference);
         let (mut mic_kept, mut out_kept) = (Vec::new(), Vec::new());
         for (k, m) in mic.as_chunks::<FRAME>().0.iter().enumerate() {
             let range = k * FRAME..(k + 1) * FRAME;
             reference.push(ReferenceChannel::Voice, &stereo(&voice[range.clone()]));
-            reference.push(ReferenceChannel::Streams, &stereo(&streams[range.clone()]));
+            if let Some(streams) = streams {
+                reference.push(ReferenceChannel::Streams, &stereo(&streams[range.clone()]));
+            }
             let mut frame = stereo(m);
             p.process(&mut frame);
             if range.start >= 5 * SECOND && rms_db(&heard[range]) > -60.0 {
@@ -318,23 +322,45 @@ mod tests {
     fn echo_cancellation_removes_a_speaker_echo() {
         let far = looped(&speech(), 15.0);
         let mic = sparse_echo(&far, 40, 1);
-        let silence = vec![0.0; far.len()];
-        let removed = echo_removed(&far, &silence, &mic, &far);
+        let removed = echo_removed(&far, None, &mic, &far);
         assert!(removed >= 30.0);
     }
 
     #[test]
     fn only_the_stream_echo_is_cancelled_while_voice_plays_on_headphones() {
-        // Different material per channel (reversed vs. offset speech): the same speech on both
-        // makes AEC3 unable to attribute the echo to one of them.
-        let voice = looped(&speech().into_iter().rev().collect::<Vec<_>>(), 15.0);
-        let streams: Vec<f32> = looped(&speech()[SECOND * 13 / 10..], 15.0)
-            .iter()
-            .map(|s| 0.8 * s)
-            .collect();
+        let mut rot = speech();
+        rot.rotate_left(SECOND * 13 / 10);
+        let streams: Vec<f32> = looped(&rot, 15.0).iter().map(|s| 0.8 * s).collect();
         let mic = sparse_echo(&streams, 60, 2);
-        let removed = echo_removed(&voice, &streams, &mic, &streams);
-        assert!(removed >= 30.0);
+        // The delay estimate locks onto whichever channel is loud first, so a voice that joins
+        // late must not pull it away from the streams.
+        for voice_starts_s in [0.5, 3.0] {
+            let lead = (voice_starts_s * SECOND as f32) as usize;
+            let mut voice = vec![0.0; lead];
+            voice.extend(looped(&speech(), 15.0).iter().take(15 * SECOND - lead));
+            let removed = echo_removed(&voice, Some(&streams), &mic, &streams);
+            assert!(
+                removed >= 30.0,
+                "voice at {voice_starts_s} s: {removed:.1} dB"
+            );
+        }
+    }
+
+    #[test]
+    fn dropping_the_capture_stage_stops_the_reference_collecting() {
+        let reference = EchoReference::new();
+        let mut p = VoiceProcessor::new(
+            ProcessingConfig {
+                echo_cancellation: true,
+                noise_suppression: Suppression::Off,
+                automatic_gain: true,
+            },
+            &reference,
+        );
+        p.capture = None;
+        p.process(&mut vec![0.0; 960]);
+        reference.push(ReferenceChannel::Voice, &vec![0.5; 960 * 2]);
+        assert!(reference.drain_hops().is_empty());
     }
 
     #[test]
