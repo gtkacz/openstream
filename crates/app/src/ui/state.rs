@@ -7,7 +7,8 @@ use brp_audio::{AudioSource, SendVolumeSupport};
 use brp_capture::{SourceDescriptor, SourceId};
 use brp_proto::SourceKind;
 use brp_proto::constants::STATS_LOG_INTERVAL;
-use brp_room::{MemberView, RoomSnapshot, WatchState, WatchView};
+use brp_room::{MemberView, RoomSnapshot, VoiceSample, WatchState, WatchView};
+use iroh::PublicKey;
 
 use super::applications::ApplicationPicker;
 use crate::commands::RoomCommand;
@@ -44,6 +45,8 @@ pub struct DrawnTile {
 pub struct UiState {
     /// What each watched stream has carried, sampled as the window draws.
     pub traffic: HashMap<TileKey, StreamTraffic>,
+    /// How loud and how busy each person in voice is, with this participant under their own key.
+    pub voice: HashMap<PublicKey, VoiceMeter>,
     /// The room's events, newest last.
     pub ledger: Ledger,
     /// This participant's streams with their controls unfolded in the rail.
@@ -136,6 +139,25 @@ impl StreamTraffic {
         self.last_at = Some(now);
         self.last_bytes = bytes;
         self.last_keyframes = keyframes;
+    }
+}
+
+/// One person's voice: the bytes it has moved, and one loudness level per tick for the meter.
+#[derive(Debug, Default)]
+pub struct VoiceMeter {
+    pub traffic: StreamTraffic,
+    pub levels: std::collections::VecDeque<f32>,
+}
+
+impl VoiceMeter {
+    const LEVELS: usize = 50;
+
+    pub fn sample(&mut self, sample: VoiceSample, now: Instant) {
+        self.traffic.sample(sample.bytes, 0, now);
+        self.levels.push_back(sample.level);
+        if self.levels.len() > Self::LEVELS {
+            self.levels.pop_front();
+        }
     }
 }
 
@@ -475,6 +497,22 @@ pub fn live_title(snapshot: &RoomSnapshot, key: TileKey) -> Option<String> {
 mod tests {
     use super::*;
     use brp_audio::AudioSelection;
+
+    #[test]
+    fn a_voice_meter_keeps_one_level_per_tick_up_to_fifty() {
+        let mut meter = VoiceMeter::default();
+        let start = Instant::now();
+        for tick in 0..60u32 {
+            let sample = VoiceSample {
+                level: tick as f32,
+                bytes: 0,
+            };
+            meter.sample(sample, start + Duration::from_millis(100) * tick);
+        }
+        assert_eq!(meter.levels.len(), 50);
+        assert_eq!(meter.levels.front(), Some(&10.0));
+        assert_eq!(meter.levels.back(), Some(&59.0));
+    }
 
     #[test]
     fn the_ledger_remembers_how_an_event_went_and_how_recent_the_newest_is() {

@@ -151,10 +151,12 @@ mod tests {
                     names: vec!["firefox".into(), "game.exe".into()],
                     ..Default::default()
                 },
+                ..Default::default()
             },
             recent_rooms: Vec::new(),
             check_updates: true,
             auto_join_links: false,
+            auto_join_voice: false,
         }
     }
 

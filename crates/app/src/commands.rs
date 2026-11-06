@@ -14,7 +14,10 @@ use crate::render::tiles::TileKey;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RoomCommand {
     /// Starts a watch, or switches its preset when the key is already watched.
-    Watch { key: TileKey, preset_id: u32 },
+    Watch {
+        key: TileKey,
+        preset_id: u32,
+    },
     /// Stops watching a live.
     Unwatch(TileKey),
     /// Starts a new live of this kind. Without a source the window asks the room for the
@@ -26,11 +29,17 @@ pub enum RoomCommand {
     /// Stops publishing the live with this id.
     StopLive(u32),
     /// Replaces the preset list offered for a live.
-    SetPresets { live_id: u32, presets: Vec<Preset> },
+    SetPresets {
+        live_id: u32,
+        presets: Vec<Preset>,
+    },
     /// Turns this participant's audio on or off for every live at once.
     SetAudio(bool),
     /// Sets how loud one publisher plays, 0 to 1.
-    SetVolume { publisher: PublicKey, gain: f32 },
+    SetVolume {
+        publisher: PublicKey,
+        gain: f32,
+    },
     /// Silences all playback without touching the per-publisher gains.
     SetMasterMute(bool),
     /// Replaces which applications this participant's audio carries.
@@ -39,6 +48,26 @@ pub enum RoomCommand {
     SetAudioVolumes(BTreeMap<AppKey, u8>),
     /// Lists what is playing audio and opens the application picker, or refreshes an open one.
     ChooseApplications,
+    /// Opens the microphone and the voice output and puts this participant in voice.
+    JoinVoice,
+    LeaveVoice,
+    SetVoiceMuted(bool),
+    SetVoiceDeafened(bool),
+    /// Listens to one person in voice, or stops.
+    SetHearing {
+        peer: PublicKey,
+        hearing: bool,
+    },
+    /// Sends this participant's voice to one person, or stops.
+    SetSending {
+        peer: PublicKey,
+        sending: bool,
+    },
+    /// Sets how loud one person's voice plays, 0 to 1.
+    SetVoiceVolume {
+        peer: PublicKey,
+        gain: f32,
+    },
 }
 
 /// A command a panel wants applied to the windows, not the room: which live gets its own window

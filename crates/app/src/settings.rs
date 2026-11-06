@@ -38,6 +38,9 @@ pub struct Settings {
     /// A `brp://` link joins its room at once instead of asking. Off by default because any web page
     /// can fire one, and joining shows the room this person's name and IP address.
     pub auto_join_links: bool,
+    /// Join voice as soon as a room opens. Off by default because it opens the microphone in
+    /// every room this person enters.
+    pub auto_join_voice: bool,
     /// The colour of the tube. Kept in the file but not applied while choosing one is disabled.
     pub phosphor: crate::ui::theme::Phosphor,
 }
@@ -52,6 +55,7 @@ impl Default for Settings {
             recent_rooms: Vec::new(),
             check_updates: true,
             auto_join_links: false,
+            auto_join_voice: false,
             phosphor: crate::ui::theme::Phosphor::default(),
         }
     }
@@ -89,7 +93,23 @@ impl RelayChoice {
 pub struct AudioSettings {
     /// A cpal device id in its `Display` form; `None` is the system default.
     pub output_device: Option<String>,
+    /// The microphone, in the same form as `output_device`.
+    pub input_device: Option<String>,
+    /// Used for voice only while `separate_voice_output` is set.
+    pub voice_output_device: Option<String>,
+    pub separate_voice_output: bool,
     pub applications: AudioApplications,
+}
+
+impl AudioSettings {
+    /// The device voice plays through: the audio output unless voice was given its own.
+    pub fn voice_output(&self) -> Option<String> {
+        if self.separate_voice_output {
+            self.voice_output_device.clone()
+        } else {
+            self.output_device.clone()
+        }
+    }
 }
 
 /// Serialised as `[audio.applications] mode = "all" | "only"` with `names` and, under
@@ -310,6 +330,7 @@ mod tests {
                     names: vec!["firefox".into(), "game.exe".into()],
                     ..Default::default()
                 },
+                ..Default::default()
             },
             recent_rooms: vec![RecentRoom {
                 ticket: "brpticket".into(),
@@ -317,6 +338,7 @@ mod tests {
             }],
             check_updates: false,
             auto_join_links: true,
+            auto_join_voice: true,
         }
     }
 
@@ -383,6 +405,28 @@ mod tests {
     fn a_file_from_before_the_setting_still_asks_before_a_link_joins() {
         let settings: Settings = toml::from_str("fps = 24\n").unwrap();
         assert!(!settings.auto_join_links);
+    }
+
+    #[test]
+    fn an_older_settings_file_reads_voice_as_off_with_default_devices() {
+        let settings: Settings =
+            toml::from_str("fps = 24\n[audio]\noutput_device = \"x\"\n").unwrap();
+        assert!(!settings.auto_join_voice);
+        assert_eq!(settings.audio.input_device, None);
+        assert_eq!(settings.audio.voice_output_device, None);
+        assert!(!settings.audio.separate_voice_output);
+    }
+
+    #[test]
+    fn voice_plays_through_the_audio_output_unless_separated() {
+        let mut audio = AudioSettings {
+            output_device: Some("speakers".into()),
+            voice_output_device: Some("headset".into()),
+            ..Default::default()
+        };
+        assert_eq!(audio.voice_output().as_deref(), Some("speakers"));
+        audio.separate_voice_output = true;
+        assert_eq!(audio.voice_output().as_deref(), Some("headset"));
     }
 
     #[test]

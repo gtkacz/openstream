@@ -649,7 +649,7 @@ impl App {
                 &self.runtime,
                 &self.proxy,
                 &mut self.state,
-                &self.store.settings.audio.applications,
+                &self.store.settings.audio,
             );
         }
         if had_window_commands {
@@ -683,14 +683,14 @@ impl App {
                     (commands, true)
                 }
             };
-            let stored = self.store.settings.audio.applications.clone();
+            let audio = self.store.settings.audio.clone();
             if let Phase::Room(view) = &mut self.phase {
                 view.apply(
                     commands,
                     &self.runtime,
                     &self.proxy,
                     &mut self.state,
-                    &stored,
+                    &audio,
                 );
             }
             // Saved after the command is applied, because `RoomView::apply` clears the status line
@@ -776,7 +776,7 @@ impl App {
                 &self.runtime,
                 &self.proxy,
                 &mut self.state,
-                &self.store.settings.audio.applications,
+                &self.store.settings.audio,
             );
         }
         if had_window_commands {
@@ -961,7 +961,17 @@ impl ApplicationHandler<AppEvent> for App {
                         .set_title(&format!("OpenStream · {}", room.snapshot().nickname));
                 }
                 self.remember_open(&room);
-                self.phase = Phase::Room(Box::new(RoomView::new(room)));
+                let mut view = Box::new(RoomView::new(room));
+                if self.store.settings.auto_join_voice {
+                    view.apply(
+                        vec![RoomCommand::JoinVoice],
+                        &self.runtime,
+                        &self.proxy,
+                        &mut self.state,
+                        &self.store.settings.audio,
+                    );
+                }
+                self.phase = Phase::Room(view);
             }
             AppEvent::RoomOpened(Err(message)) => {
                 self.pending_open = None;

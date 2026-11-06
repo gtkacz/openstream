@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
+use brp_audio::{AudioOutput, CpalInput, CpalOutput, VoiceCapture};
 use brp_capture::{SourceId, SourceListing};
 use brp_proto::{RoomTicket, SourceKind};
 use brp_room::{Room, RoomError, RoomSnapshot, WatchHandle};
@@ -15,7 +16,7 @@ use winit::event_loop::EventLoopProxy;
 use crate::commands::RoomCommand;
 use crate::render::GpuContext;
 use crate::render::tiles::{TileKey, TileRenderer};
-use crate::settings::AudioApplications;
+use crate::settings::AudioSettings;
 use crate::ui::state::UiState;
 use crate::window::AppEvent;
 
@@ -132,6 +133,18 @@ impl RoomView {
                 now,
             );
         }
+        let levels = self.room.voice_levels();
+        state
+            .voice
+            .retain(|key, _| *key == self.snapshot.me || levels.members.contains_key(key));
+        state
+            .voice
+            .entry(self.snapshot.me)
+            .or_default()
+            .sample(levels.own, now);
+        for (peer, sample) in levels.members {
+            state.voice.entry(peer).or_default().sample(sample, now);
+        }
     }
 
     /// Uploads the newest decoded frame of every watched live.
@@ -147,7 +160,7 @@ impl RoomView {
         }
     }
 
-    /// Applies the commands one egui pass produced. Errors land in the status line. `stored` seeds
+    /// Applies the commands one egui pass produced. Errors land in the status line. `audio.applications` seeds
     /// a picker these commands open: under `all` only the settings still hold the chosen names.
     pub fn apply(
         &mut self,
@@ -155,7 +168,7 @@ impl RoomView {
         runtime: &Handle,
         proxy: &EventLoopProxy<AppEvent>,
         state: &mut UiState,
-        stored: &AudioApplications,
+        audio: &AudioSettings,
     ) {
         if commands.is_empty() {
             return;
@@ -225,7 +238,11 @@ impl RoomView {
                 // path, so a platform listing failure reaches the user as a status line.
                 RoomCommand::ChooseApplications => match self.room.audio_sources() {
                     Ok(sources) => {
-                        state.open_applications(sources, stored, self.room.send_volume_support());
+                        state.open_applications(
+                            sources,
+                            &audio.applications,
+                            self.room.send_volume_support(),
+                        );
                         Ok(())
                     }
                     Err(error) => {
@@ -233,10 +250,54 @@ impl RoomView {
                         Ok(())
                     }
                 },
+                RoomCommand::JoinVoice => {
+                    self.join_voice(
+                        Arc::new(CpalInput::new(audio.input_device.clone())),
+                        Arc::new(CpalOutput::new(audio.voice_output())),
+                        state,
+                    );
+                    Ok(())
+                }
+                RoomCommand::LeaveVoice => {
+                    self.room.leave_voice();
+                    Ok(())
+                }
+                RoomCommand::SetVoiceMuted(muted) => {
+                    self.room.set_voice_muted(muted);
+                    Ok(())
+                }
+                RoomCommand::SetVoiceDeafened(deafened) => {
+                    self.room.set_voice_deafened(deafened);
+                    Ok(())
+                }
+                RoomCommand::SetHearing { peer, hearing } => {
+                    self.room.set_hearing(peer, hearing);
+                    Ok(())
+                }
+                RoomCommand::SetSending { peer, sending } => {
+                    self.room.set_sending(peer, sending);
+                    Ok(())
+                }
+                RoomCommand::SetVoiceVolume { peer, gain } => {
+                    self.room.set_voice_volume(peer, gain);
+                    Ok(())
+                }
             };
             if let Err(error) = result {
                 state.status = error.to_string();
             }
+        }
+    }
+
+    /// Puts the room in voice with these devices. A failure lands in the status line.
+    pub fn join_voice(
+        &self,
+        capture: Arc<dyn VoiceCapture>,
+        output: Arc<dyn AudioOutput>,
+        state: &mut UiState,
+    ) {
+        if let Err(error) = self.room.join_voice(capture, output) {
+            state.status = error.to_string();
         }
     }
 
@@ -412,6 +473,49 @@ mod tests {
         refresh_ticket_cache(&mut last, &mut cached, relayed.clone());
         assert_eq!(cached, relayed.to_string());
         assert_eq!(last, relayed);
+    }
+
+    struct BrokenOutput;
+
+    impl AudioOutput for BrokenOutput {
+        fn start(
+            &self,
+            _render: brp_audio::RenderFn,
+        ) -> Result<Box<dyn brp_audio::AudioOutputSession>, brp_audio::AudioError> {
+            Err(brp_audio::AudioError::Device("no sound card".into()))
+        }
+    }
+
+    fn synthetic_voice() -> Arc<dyn VoiceCapture> {
+        Arc::new(SyntheticTone {
+            frequency_hz: 440.0,
+            amplitude: 0.5,
+        })
+    }
+
+    #[tokio::test]
+    async fn joining_voice_from_the_window_puts_the_room_in_voice() {
+        let room = Arc::new(Room::create(config("alice")).await.unwrap());
+        let view = RoomView::new(room);
+        let mut state = UiState::new();
+        view.join_voice(synthetic_voice(), Arc::new(FakeOutput::new().0), &mut state);
+        assert!(state.status.is_empty(), "{}", state.status);
+        assert!(view.room.snapshot().voice.joined);
+        view.leave().await;
+    }
+
+    #[tokio::test]
+    async fn a_voice_output_failure_lands_in_the_status_line() {
+        let room = Arc::new(Room::create(config("alice")).await.unwrap());
+        let view = RoomView::new(room);
+        let mut state = UiState::new();
+        view.join_voice(synthetic_voice(), Arc::new(BrokenOutput), &mut state);
+        assert!(
+            state.status.starts_with("Could not join voice"),
+            "{}",
+            state.status
+        );
+        view.leave().await;
     }
 
     #[tokio::test]
