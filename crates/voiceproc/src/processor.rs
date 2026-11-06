@@ -2,7 +2,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use nnnoiseless::DenoiseState;
 use sonora::config::{
-    AdaptiveDigital, FixedDigital, GainController2, HighPassFilter, MaxProcessingRate, Pipeline,
+    AdaptiveDigital, EchoCanceller, FixedDigital, GainController2, HighPassFilter,
+    MaxProcessingRate, Pipeline,
 };
 use sonora::{AudioProcessing, Config, StreamConfig};
 use tracing::warn;
@@ -12,23 +13,26 @@ use crate::reference::{EchoReference, HOP};
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: usize = 2;
+// Voice and streams are separate render channels so only the streams echo is modelled.
+const REFERENCE_CHANNELS: u16 = 2;
 // RNNoise works on the i16 scale, not on [-1, 1].
 const I16_SCALE: f32 = 32768.0;
 
 type Hop = [f32; HOP];
 
 pub struct VoiceProcessor {
+    reference: Option<EchoReference>,
     capture: Option<AudioProcessing>,
     denoise: Option<Box<DenoiseState<'static>>>,
     gain: Option<AudioProcessing>,
 }
 
-fn apm(config: Config) -> AudioProcessing {
+fn apm(config: Config, render_channels: u16) -> AudioProcessing {
     let stream = StreamConfig::new(SAMPLE_RATE, 1);
     AudioProcessing::builder()
         .config(config)
         .capture_config(stream)
-        .render_config(stream)
+        .render_config(StreamConfig::new(SAMPLE_RATE, render_channels))
         .build()
 }
 
@@ -37,6 +41,19 @@ fn pipeline() -> Pipeline {
         maximum_internal_processing_rate: MaxProcessingRate::Rate48kHz,
         ..Default::default()
     }
+}
+
+/// Feeds what brp played since the last hop, so the canceller sees it before the microphone.
+fn render_reference(apm: &mut AudioProcessing, reference: &EchoReference) -> Result<(), String> {
+    for [voice, streams] in reference.drain_hops() {
+        let (mut sink_voice, mut sink_streams) = ([0.0f32; HOP], [0.0f32; HOP]);
+        apm.process_render_f32(
+            &[&voice, &streams],
+            &mut [&mut sink_voice[..], &mut sink_streams[..]],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn run_apm(apm: &mut AudioProcessing, hop: &mut Hop) -> Result<(), String> {
@@ -70,31 +87,48 @@ fn run_stage<S>(
 }
 
 impl VoiceProcessor {
-    pub fn new(config: ProcessingConfig, _reference: &EchoReference) -> Self {
+    pub fn new(config: ProcessingConfig, reference: &EchoReference) -> Self {
         if config.is_off() {
             return Self {
+                reference: None,
                 capture: None,
                 denoise: None,
                 gain: None,
             };
         }
-        let capture = apm(Config {
-            pipeline: pipeline(),
-            high_pass_filter: Some(HighPassFilter::default()),
-            ..Default::default()
+        let capture = apm(
+            Config {
+                pipeline: pipeline(),
+                high_pass_filter: Some(HighPassFilter::default()),
+                echo_canceller: config.echo_cancellation.then(EchoCanceller::default),
+                ..Default::default()
+            },
+            if config.echo_cancellation {
+                REFERENCE_CHANNELS
+            } else {
+                1
+            },
+        );
+        let reference = config.echo_cancellation.then(|| {
+            reference.set_active(true);
+            reference.clone()
         });
         let gain = config.automatic_gain.then(|| {
-            apm(Config {
-                pipeline: pipeline(),
-                gain_controller2: Some(GainController2 {
-                    input_volume_controller: false,
-                    adaptive_digital: Some(AdaptiveDigital::default()),
-                    fixed_digital: FixedDigital::default(),
-                }),
-                ..Default::default()
-            })
+            apm(
+                Config {
+                    pipeline: pipeline(),
+                    gain_controller2: Some(GainController2 {
+                        input_volume_controller: false,
+                        adaptive_digital: Some(AdaptiveDigital::default()),
+                        fixed_digital: FixedDigital::default(),
+                    }),
+                    ..Default::default()
+                },
+                1,
+            )
         });
         Self {
+            reference,
             capture: Some(capture),
             denoise: (config.noise_suppression == Suppression::Light).then(DenoiseState::new),
             gain,
@@ -113,8 +147,16 @@ impl VoiceProcessor {
                 *m = (f[0] + f[1]) / 2.0;
             }
             run_stage(&mut self.capture, "high-pass", &mut hop, |a, h| {
+                if let Some(reference) = &self.reference {
+                    render_reference(a, reference)?;
+                }
                 run_apm(a, h)
             });
+            if self.capture.is_none()
+                && let Some(reference) = self.reference.take()
+            {
+                reference.set_active(false);
+            }
             run_stage(&mut self.denoise, "noise suppression", &mut hop, |d, h| {
                 let scaled = h.map(|s| s * I16_SCALE);
                 let mut out = [0.0f32; HOP];
@@ -135,10 +177,19 @@ impl VoiceProcessor {
     }
 }
 
+impl Drop for VoiceProcessor {
+    fn drop(&mut self) {
+        if let Some(reference) = &self.reference {
+            reference.set_active(false);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_signals::{at_peak, at_rms, looped, noise, rms_db, run, speech};
+    use crate::reference::ReferenceChannel;
+    use crate::test_signals::{at_peak, at_rms, looped, noise, rms_db, run, sparse_echo, speech};
 
     const SECOND: usize = 48_000;
 
@@ -224,5 +275,88 @@ mod tests {
         run_stage(&mut stage, "test", &mut hop, |_, _| panic!("boom"));
         assert!(stage.is_none());
         assert_eq!(hop, [1.0f32; HOP]);
+    }
+
+    const FRAME: usize = 960;
+
+    fn echo_processor(reference: &EchoReference) -> VoiceProcessor {
+        VoiceProcessor::new(
+            ProcessingConfig {
+                echo_cancellation: true,
+                noise_suppression: Suppression::Off,
+                automatic_gain: false,
+            },
+            reference,
+        )
+    }
+
+    fn stereo(mono: &[f32]) -> Vec<f32> {
+        mono.iter().flat_map(|&s| [s, s]).collect()
+    }
+
+    /// Plays `voice` and `streams` while the microphone hears `mic`, a frame at a time, and
+    /// returns the echo removed, in dB, over the frames after 5 s where `heard` is not silent.
+    fn echo_removed(voice: &[f32], streams: &[f32], mic: &[f32], heard: &[f32]) -> f32 {
+        let reference = EchoReference::new();
+        let mut p = echo_processor(&reference);
+        let (mut mic_kept, mut out_kept) = (Vec::new(), Vec::new());
+        for (k, m) in mic.as_chunks::<FRAME>().0.iter().enumerate() {
+            let range = k * FRAME..(k + 1) * FRAME;
+            reference.push(ReferenceChannel::Voice, &stereo(&voice[range.clone()]));
+            reference.push(ReferenceChannel::Streams, &stereo(&streams[range.clone()]));
+            let mut frame = stereo(m);
+            p.process(&mut frame);
+            if range.start >= 5 * SECOND && rms_db(&heard[range]) > -60.0 {
+                mic_kept.extend_from_slice(m);
+                out_kept.extend(frame.as_chunks::<2>().0.iter().map(|f| f[0]));
+            }
+        }
+        rms_db(&mic_kept) - rms_db(&out_kept)
+    }
+
+    #[test]
+    fn echo_cancellation_removes_a_speaker_echo() {
+        let far = looped(&speech(), 15.0);
+        let mic = sparse_echo(&far, 40, 1);
+        let silence = vec![0.0; far.len()];
+        let removed = echo_removed(&far, &silence, &mic, &far);
+        assert!(removed >= 30.0);
+    }
+
+    #[test]
+    fn only_the_stream_echo_is_cancelled_while_voice_plays_on_headphones() {
+        // Different material per channel (reversed vs. offset speech): the same speech on both
+        // makes AEC3 unable to attribute the echo to one of them.
+        let voice = looped(&speech().into_iter().rev().collect::<Vec<_>>(), 15.0);
+        let streams: Vec<f32> = looped(&speech()[SECOND * 13 / 10..], 15.0)
+            .iter()
+            .map(|s| 0.8 * s)
+            .collect();
+        let mic = sparse_echo(&streams, 60, 2);
+        let removed = echo_removed(&voice, &streams, &mic, &streams);
+        assert!(removed >= 30.0);
+    }
+
+    #[test]
+    fn dropping_the_processor_stops_the_reference_collecting() {
+        let reference = EchoReference::new();
+        drop(echo_processor(&reference));
+        reference.push(ReferenceChannel::Voice, &vec![0.5; 960 * 2]);
+        assert!(reference.drain_hops().is_empty());
+    }
+
+    #[test]
+    fn without_echo_cancellation_the_reference_stays_inactive() {
+        let reference = EchoReference::new();
+        let _p = VoiceProcessor::new(
+            ProcessingConfig {
+                echo_cancellation: false,
+                noise_suppression: Suppression::Light,
+                automatic_gain: true,
+            },
+            &reference,
+        );
+        reference.push(ReferenceChannel::Voice, &vec![0.5; 960 * 2]);
+        assert!(reference.drain_hops().is_empty());
     }
 }

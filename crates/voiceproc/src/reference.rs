@@ -109,10 +109,6 @@ impl EchoReference {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the processor drives activation from Task 2")
-    )]
     pub(crate) fn set_active(&self, active: bool) {
         self.0.active.store(active, Ordering::Release);
         if !active {
@@ -120,10 +116,6 @@ impl EchoReference {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the processor drains hops from Task 2")
-    )]
     pub(crate) fn drain_hops(&self) -> Vec<[[f32; HOP]; CHANNELS]> {
         let mut buffers = self.0.buffers.lock().unwrap();
         let Some(hops) = (0..CHANNELS)

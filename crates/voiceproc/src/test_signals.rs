@@ -69,3 +69,34 @@ pub fn run(processor: &mut VoiceProcessor, mono: &[f32]) -> Vec<f32> {
         })
         .collect()
 }
+
+fn lcg(state: &mut u64) -> f32 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    ((*state >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+}
+
+/// A speaker-to-microphone path of one direct arrival and 20 sparse reflections, plus a noise floor.
+pub fn sparse_echo(far: &[f32], delay_ms: usize, seed: u64) -> Vec<f32> {
+    let ms = SAMPLE_RATE / 1000;
+    let mut state = seed;
+    let direct = delay_ms * ms;
+    let mut taps = vec![(direct, 0.5f32)];
+    for k in 0..20 {
+        let jitter = (lcg(&mut state).abs() * 40.0) as usize;
+        let at = direct + (2 + 3 * k) * ms + jitter;
+        taps.push((at, 0.25 * lcg(&mut state) * (-(k as f32) / 6.0).exp()));
+    }
+    let mut noise = seed.wrapping_add(1000);
+    (0..far.len())
+        .map(|i| {
+            let echo: f32 = taps
+                .iter()
+                .filter(|(t, _)| i >= *t)
+                .map(|(t, g)| g * far[i - t])
+                .sum();
+            echo + lcg(&mut noise) * 3e-4
+        })
+        .collect()
+}
