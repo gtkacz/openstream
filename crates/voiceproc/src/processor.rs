@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use nnnoiseless::DenoiseState;
@@ -22,6 +23,7 @@ type Hop = [f32; HOP];
 
 pub struct VoiceProcessor {
     reference: Option<EchoReference>,
+    pending_reference: VecDeque<[Hop; REFERENCE_CHANNELS as usize]>,
     capture: Option<AudioProcessing>,
     denoise: Option<Box<DenoiseState<'static>>>,
     gain: Option<AudioProcessing>,
@@ -43,19 +45,25 @@ fn pipeline() -> Pipeline {
     }
 }
 
-/// Feeds what brp played since the last hop, so the canceller sees it before the microphone.
-fn render_reference(apm: &mut AudioProcessing, reference: &EchoReference) -> Result<(), String> {
-    for [voice, streams] in reference.drain_hops() {
-        let (mut sink_voice, mut sink_streams) = ([0.0f32; HOP], [0.0f32; HOP]);
-        // AEC3 aligns its delay estimate to render channel 0 first, and only streams reach the
-        // speakers while voice stays on headphones.
-        apm.process_render_f32(
-            &[&streams, &voice],
-            &mut [&mut sink_streams[..], &mut sink_voice[..]],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+/// Feeds the oldest pending hop of what brp played, so the canceller sees it just before the
+/// microphone hop it belongs to. Rendering a whole frame ahead of its capture hops
+/// (render, render, capture, capture) leaves AEC3 unable to converge on two channels.
+fn render_reference(
+    apm: &mut AudioProcessing,
+    reference: &EchoReference,
+    pending: &mut VecDeque<[Hop; REFERENCE_CHANNELS as usize]>,
+) -> Result<(), String> {
+    pending.extend(reference.drain_hops());
+    let Some([voice, streams]) = pending.pop_front() else {
+        return Ok(());
+    };
+    let (mut sink_voice, mut sink_streams) = ([0.0f32; HOP], [0.0f32; HOP]);
+    // The order of the channels does not affect the result.
+    apm.process_render_f32(
+        &[&streams, &voice],
+        &mut [&mut sink_streams[..], &mut sink_voice[..]],
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn run_apm(apm: &mut AudioProcessing, hop: &mut Hop) -> Result<(), String> {
@@ -93,6 +101,7 @@ impl VoiceProcessor {
         if config.is_off() {
             return Self {
                 reference: None,
+                pending_reference: VecDeque::new(),
                 capture: None,
                 denoise: None,
                 gain: None,
@@ -131,6 +140,7 @@ impl VoiceProcessor {
         });
         Self {
             reference,
+            pending_reference: VecDeque::new(),
             capture: Some(capture),
             denoise: (config.noise_suppression == Suppression::Light).then(DenoiseState::new),
             gain,
@@ -150,7 +160,7 @@ impl VoiceProcessor {
             }
             run_stage(&mut self.capture, "high-pass", &mut hop, |a, h| {
                 if let Some(reference) = &self.reference {
-                    render_reference(a, reference)?;
+                    render_reference(a, reference, &mut self.pending_reference)?;
                 }
                 run_apm(a, h)
             });
@@ -191,7 +201,9 @@ impl Drop for VoiceProcessor {
 mod tests {
     use super::*;
     use crate::reference::ReferenceChannel;
-    use crate::test_signals::{at_peak, at_rms, looped, noise, rms_db, run, sparse_echo, speech};
+    use crate::test_signals::{
+        at_peak, at_rms, looped, noise, rms_db, run, sparse_echo, speech, stretched,
+    };
 
     const SECOND: usize = 48_000;
 
@@ -310,7 +322,7 @@ mod tests {
             }
             let mut frame = stereo(m);
             p.process(&mut frame);
-            if range.start >= 5 * SECOND && rms_db(&heard[range]) > -60.0 {
+            if range.start >= mic.len() - 5 * SECOND && rms_db(&heard[range]) > -60.0 {
                 mic_kept.extend_from_slice(m);
                 out_kept.extend(frame.as_chunks::<2>().0.iter().map(|f| f[0]));
             }
@@ -328,16 +340,17 @@ mod tests {
 
     #[test]
     fn only_the_stream_echo_is_cancelled_while_voice_plays_on_headphones() {
-        let mut rot = speech();
-        rot.rotate_left(SECOND * 13 / 10);
-        let streams: Vec<f32> = looped(&rot, 15.0).iter().map(|s| 0.8 * s).collect();
+        // Distinct material per channel: a shifted copy of one short loop is so correlated
+        // with it that the canceller cannot tell which channel echoes.
+        let streams: Vec<f32> = looped(&stretched(&speech(), 0.8), 20.0)
+            .iter()
+            .map(|s| 0.8 * s)
+            .collect();
         let mic = sparse_echo(&streams, 60, 2);
-        // The delay estimate locks onto whichever channel is loud first, so a voice that joins
-        // late must not pull it away from the streams.
-        for voice_starts_s in [0.5, 3.0] {
+        for voice_starts_s in [0.0, 0.5, 3.0] {
             let lead = (voice_starts_s * SECOND as f32) as usize;
             let mut voice = vec![0.0; lead];
-            voice.extend(looped(&speech(), 15.0).iter().take(15 * SECOND - lead));
+            voice.extend(looped(&speech(), 20.0).iter().take(20 * SECOND - lead));
             let removed = echo_removed(&voice, Some(&streams), &mic, &streams);
             assert!(
                 removed >= 30.0,

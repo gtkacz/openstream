@@ -65,7 +65,7 @@ Echo cancellation comes first because it models a linear path from the speaker t
 
 - **Echo reference.** The reference is what brp's two mixers render: voice, and the application audio of streams you watch. Either can reach your speakers and return through your microphone.
   - The canceller receives them as two separate channels, one per mixer, each averaged to mono. AEC3 then keeps a separate echo filter for each one. So when voice plays on headphones and stream audio on speakers, it learns that only the stream echoes, and the processing never needs to know which device is which. Summing the two into one reference fails exactly there (measured in section 9).
-  - Streams is render channel 0, because AEC3 aligns its delay estimate to channel 0 first. With voice on speakers and streams on headphones at comparable levels, cancellation stays poor until voice dominates; sonora does not expose AEC3's render-alignment downmix that would fix it.
+  - With voice and stream audio on different devices, AEC3 aligns its delay estimate to whichever playback is louder, so a stream echo with a long output latency (beyond about 50 ms, such as Bluetooth speakers) can go uncancelled while voice is louder. With one shared device, the default, this does not arise.
   - The reference is taken as the mixers produce it on their device threads, which must never wait for it.
 - **Delay.** AEC3's own delay estimator finds the speaker-to-microphone delay. brp does not measure device latency.
 - **Threads.** Processing runs on the voice publisher's encode thread, never in the microphone's device callback. Strong costs up to about a millisecond per 10 ms on a fast desktop and several times that on a laptop, which the device callback cannot afford.
