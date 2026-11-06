@@ -173,13 +173,11 @@ impl Voice {
     pub fn member_left(&self, id: PublicKey) {
         let listener = {
             let mut state = lock(&self.state);
-            state.prefs.remove(&id);
             state
                 .session
                 .as_mut()
                 .and_then(|session| session.listeners.remove(&id))
         };
-        lock(&self.not_sending).remove(&id);
         self.dispose(listener.into_iter().collect(), None);
     }
 

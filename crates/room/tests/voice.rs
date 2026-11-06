@@ -290,6 +290,10 @@ async fn unmuting_with_a_broken_microphone_stays_muted() {
     assert!(view.error.is_some());
 }
 
+fn sees(viewer: &Room, id: iroh::PublicKey) -> bool {
+    viewer.snapshot().members.iter().any(|m| m.id == id)
+}
+
 fn member_of(viewer: &Room, id: iroh::PublicKey) -> brp_room::MemberView {
     viewer
         .snapshot()
@@ -408,10 +412,37 @@ async fn a_member_who_leaves_the_room_leaves_no_listener_behind() {
         !people[0].room.voice_levels().members.contains_key(&c)
     })
     .await;
-    wait_until("carol's prefs are gone", WAIT, || {
-        people[0].room.snapshot().members.iter().all(|m| m.id != c)
-    })
-    .await;
+}
+
+#[tokio::test]
+async fn a_member_who_expires_and_returns_keeps_what_you_chose_for_them() {
+    let alice = Room::create(config("alice")).await.unwrap();
+    let ticket = alice.ticket();
+    let carol_config = config("carol");
+    let secret = carol_config.secret.clone();
+    let carol = Room::join(carol_config, ticket.clone()).await.unwrap();
+    let c = carol.id();
+    wait_until("alice sees carol", WAIT, || sees(&alice, c)).await;
+    alice.set_hearing(c, false);
+    alice.set_voice_volume(c, 0.3);
+
+    carol.leave().await;
+    wait_until("carol has expired", WAIT, || !sees(&alice, c)).await;
+
+    let _back = Room::join(
+        RoomConfig {
+            secret,
+            ..config("carol")
+        },
+        ticket,
+    )
+    .await
+    .unwrap();
+    wait_until("carol is back", WAIT, || sees(&alice, c)).await;
+
+    let member = member_of(&alice, c);
+    assert!(!member.hearing);
+    assert_eq!(member.voice_gain, 0.3);
 }
 
 #[tokio::test]
