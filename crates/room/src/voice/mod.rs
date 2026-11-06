@@ -2,5 +2,7 @@
 #![allow(dead_code, unused_imports)]
 
 mod rules;
+mod send;
 
 pub(crate) use rules::{SelfVoice, desired_listeners, listens_to};
+pub(crate) use send::{VoiceSend, silence_packet};

@@ -8,6 +8,7 @@ use brp_codec::ffmpeg::SwsConverter;
 use brp_codec::{
     AudioDecoder, AudioEncoder, CodecError, EncoderConfig, FrameConverter, VideoDecoder,
     VideoEncoder, open_audio_decoder, open_audio_encoder, open_decoder, open_encoder,
+    open_voice_encoder,
 };
 use brp_proto::{AudioParams, ChromaLayout, Codec, CodecParams, PixelFormat, Preset, VideoQuality};
 
@@ -39,6 +40,8 @@ pub trait EncoderFactory: Send + Sync + 'static {
     }
 
     fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError>;
+
+    fn open_voice(&self) -> Result<Box<dyn AudioEncoder>, CodecError>;
 }
 
 pub trait DecoderFactory: Send + Sync + 'static {
@@ -135,6 +138,10 @@ impl EncoderFactory for FfmpegCodecs {
     fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
         open_audio_encoder()
     }
+
+    fn open_voice(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
+        open_voice_encoder()
+    }
 }
 
 impl DecoderFactory for FfmpegCodecs {
@@ -188,6 +195,10 @@ pub mod fake {
         }
 
         fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
+            Ok(Box::new(FakeAudioEncoder::default()))
+        }
+
+        fn open_voice(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
             Ok(Box::new(FakeAudioEncoder::default()))
         }
     }

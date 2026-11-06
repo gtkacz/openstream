@@ -576,6 +576,10 @@ impl EncoderFactory for CountingCodecs {
     fn open_audio(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
         self.inner.open_audio()
     }
+
+    fn open_voice(&self) -> Result<Box<dyn AudioEncoder>, CodecError> {
+        self.inner.open_voice()
+    }
 }
 
 /// Sleeps before delegating, standing in for an encoder slow enough to matter — the same style
