@@ -55,11 +55,13 @@ pub const MAX_LIVES_PER_PARTICIPANT: usize = 8;
 pub const MAX_PRESETS_PER_LIVE: usize = 6;
 /// Bounds how late an idle encoder is noticed relative to the stop grace.
 pub const REGISTRY_HOUSEKEEPING: Duration = Duration::from_secs(1);
-/// Three heartbeats to reach the first neighbour before a join is reported failed.
-pub const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
-/// How many times a joiner re-dials the ticket's bootstrap list before giving up. Each attempt
-/// gets the whole `JOIN_TIMEOUT`, so a peer that is mid-restart, or a relay that is, answers a
-/// later attempt without the joiner ever seeing an error.
+/// One join attempt's wait for a first neighbour. Times `JOIN_ATTEMPTS`, it is how long a dead or
+/// mistyped ticket keeps the user waiting for the error.
+pub const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How many times a joiner asks the ticket's bootstrap list to take it in before giving up. Each
+/// attempt gets the whole `JOIN_TIMEOUT`, so a peer that is mid-restart, or a relay that is,
+/// answers a later attempt without the joiner ever seeing an error. A connection still being set
+/// up carries over between attempts, so a slow link has the attempts' combined time to come up.
 pub const JOIN_ATTEMPTS: u32 = 3;
 /// Derived preset heights offered when smaller than the source.
 pub const TEMPLATE_HEIGHTS: [u32; 3] = [1080, 720, 480];

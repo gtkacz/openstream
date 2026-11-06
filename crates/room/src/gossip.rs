@@ -44,8 +44,9 @@ pub(crate) async fn join(
             Ok(Err(error)) => tracing::debug!(%error, "gossip join attempt failed"),
             Err(_) => tracing::debug!("gossip join attempt timed out"),
         }
-        // Dropping the topic handle makes the actor leave the topic, so the next attempt
-        // re-dials the bootstrap list from scratch.
+        // Dropping the topic handle leaves the topic; the next attempt sends a fresh Join to the
+        // bootstrap list. Gossip dials per peer, not per topic, and never abandons a dial, so a
+        // slow connection begun by an earlier attempt carries on and delivers the new Join.
     }
     Err(RoomError::JoinTimeout)
 }

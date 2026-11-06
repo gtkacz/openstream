@@ -39,8 +39,8 @@ pub struct RoomTimings {
     pub housekeeping: Duration,
     pub encoder_grace: Duration,
     pub join_timeout: Duration,
-    /// How many times the joiner re-dials the ticket's bootstrap list before giving up. Never
-    /// fewer than one attempt, whatever this is set to.
+    /// How many times the joiner asks the ticket's bootstrap list to take it in before giving
+    /// up. Never fewer than one attempt, whatever this is set to.
     pub join_attempts: u32,
 }
 
