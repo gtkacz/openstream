@@ -10,8 +10,8 @@ use brp_net::{
 };
 use brp_proto::constants::{AUDIO_PRESET_ID, MEDIA_ALPN};
 use brp_proto::{AudioParams, Codec, CodecParams, EncodedFrame, FrameKind, ViewerMessage};
-use iroh::SecretKey;
 use iroh::protocol::Router;
+use iroh::{EndpointId, SecretKey};
 use tokio::sync::mpsc;
 
 struct ScriptedSource {
@@ -19,6 +19,8 @@ struct ScriptedSource {
     frames: Mutex<VecDeque<mpsc::Receiver<Arc<EncodedFrame>>>>,
     audio: Mutex<VecDeque<mpsc::Receiver<Arc<EncodedFrame>>>>,
     keyframe_requests: AtomicUsize,
+    voice: Mutex<VecDeque<mpsc::Receiver<Arc<EncodedFrame>>>>,
+    voice_peers: Mutex<Vec<EndpointId>>,
 }
 
 impl LiveSource for ScriptedSource {
@@ -60,6 +62,19 @@ impl LiveSource for ScriptedSource {
             })
             .ok_or(SubscribeRejected::NoAudio)
     }
+
+    fn subscribe_voice(&self, peer: EndpointId) -> Result<AudioSubscription, SubscribeRejected> {
+        self.voice_peers.lock().unwrap().push(peer);
+        self.voice
+            .lock()
+            .unwrap()
+            .pop_front()
+            .map(|packets| AudioSubscription {
+                params: AudioParams::VOICE,
+                packets,
+            })
+            .ok_or(SubscribeRejected::NoVoice)
+    }
 }
 
 fn params() -> CodecParams {
@@ -80,6 +95,8 @@ async fn frames_travel_from_source_to_viewer_over_loopback() {
         frames: Mutex::new(VecDeque::from([rx])),
         audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::new()),
+        voice_peers: Mutex::new(Vec::new()),
     });
 
     let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
@@ -164,6 +181,8 @@ async fn strangers_are_refused_before_any_subscription() {
         frames: Mutex::new(VecDeque::from([rx])),
         audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::new()),
+        voice_peers: Mutex::new(Vec::new()),
     });
     let member_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
         .await
@@ -214,6 +233,8 @@ async fn audio_packets_travel_on_their_own_route_when_asked_for() {
         frames: Mutex::new(VecDeque::from([rx])),
         audio: Mutex::new(VecDeque::from([audio_rx])),
         keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::new()),
+        voice_peers: Mutex::new(Vec::new()),
     });
 
     let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
@@ -285,6 +306,8 @@ async fn asking_for_audio_a_source_lacks_yields_video_only() {
         frames: Mutex::new(VecDeque::from([rx])),
         audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::new()),
+        voice_peers: Mutex::new(Vec::new()),
     });
 
     let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
@@ -324,6 +347,8 @@ async fn a_stale_subscriptions_teardown_does_not_evict_a_newer_one() {
         frames: Mutex::new(VecDeque::from([rx_a, rx_b])),
         audio: Mutex::new(VecDeque::from([audio_rx_a, audio_rx_b])),
         keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::new()),
+        voice_peers: Mutex::new(Vec::new()),
     });
 
     let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
@@ -419,6 +444,8 @@ async fn a_viewer_that_stops_reading_loses_frames_instead_of_holding_them_in_mem
         frames: Mutex::new(VecDeque::from([rx])),
         audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::new()),
+        voice_peers: Mutex::new(Vec::new()),
     });
     let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
         .await
@@ -479,6 +506,8 @@ async fn a_viewer_asking_for_keyframes_in_a_burst_reaches_the_publisher_once() {
         frames: Mutex::new(VecDeque::from([rx])),
         audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::new()),
+        voice_peers: Mutex::new(Vec::new()),
     });
     let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
         .await
@@ -525,6 +554,8 @@ async fn half_a_second_of_video_arriving_at_once_all_reaches_the_viewer() {
         frames: Mutex::new(VecDeque::from([rx])),
         audio: Mutex::new(VecDeque::new()),
         keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::new()),
+        voice_peers: Mutex::new(Vec::new()),
     });
     let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
         .await
@@ -562,4 +593,135 @@ async fn half_a_second_of_video_arriving_at_once_all_reaches_the_viewer() {
     drop(tx);
     client.close();
     router.shutdown().await.unwrap();
+}
+
+struct VoiceRig {
+    source: Arc<ScriptedSource>,
+    server: MediaServer,
+    router: Router,
+    client_ep: iroh::Endpoint,
+    client: MediaClient,
+}
+
+async fn voice_rig(
+    voice: Vec<mpsc::Receiver<Arc<EncodedFrame>>>,
+    frames: Vec<mpsc::Receiver<Arc<EncodedFrame>>>,
+) -> VoiceRig {
+    let source = Arc::new(ScriptedSource {
+        params: params(),
+        frames: Mutex::new(VecDeque::from(frames)),
+        audio: Mutex::new(VecDeque::new()),
+        keyframe_requests: AtomicUsize::new(0),
+        voice: Mutex::new(VecDeque::from(voice)),
+        voice_peers: Mutex::new(Vec::new()),
+    });
+    let server_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let server = MediaServer::new(source.clone(), Arc::new(AllowAll));
+    let router = Router::builder(server_ep.clone())
+        .accept(MEDIA_ALPN, server.clone())
+        .spawn();
+    let client_ep = bind_endpoint(SecretKey::generate(), RelaySetting::Disabled, vec![])
+        .await
+        .unwrap();
+    let client = MediaClient::connect(&client_ep, server_ep.addr())
+        .await
+        .unwrap();
+    VoiceRig {
+        source,
+        server,
+        router,
+        client_ep,
+        client,
+    }
+}
+
+#[tokio::test]
+async fn voice_packets_reach_a_voice_subscriber_on_their_own_route() {
+    let (voice_tx, voice_rx) = mpsc::channel(8);
+    let rig = voice_rig(vec![voice_rx], vec![]).await;
+
+    let mut sub = rig.client.subscribe_voice().await.unwrap();
+    assert_eq!(sub.params, AudioParams::VOICE);
+    voice_tx
+        .send(Arc::new(EncodedFrame {
+            seq: 0,
+            capture_ts_us: 5,
+            keyframe: true,
+            data: vec![7, 7],
+        }))
+        .await
+        .unwrap();
+    let packet = tokio::time::timeout(Duration::from_secs(5), sub.packets.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(packet.header.kind, FrameKind::Voice);
+    assert_eq!(packet.payload, vec![7, 7]);
+    assert_eq!(
+        *rig.source.voice_peers.lock().unwrap(),
+        [rig.client_ep.id()]
+    );
+
+    rig.client.close();
+    rig.router.shutdown().await.unwrap();
+    rig.client_ep.close().await;
+}
+
+#[tokio::test]
+async fn a_voice_subscription_does_not_count_as_watching() {
+    let (_voice_tx, voice_rx) = mpsc::channel(8);
+    let (_tx, rx) = mpsc::channel(8);
+    let rig = voice_rig(vec![voice_rx], vec![rx]).await;
+    let watching = |rig: &VoiceRig| {
+        rig.server
+            .viewers()
+            .lock()
+            .unwrap()
+            .get(&rig.client_ep.id())
+            .copied()
+            .unwrap_or(0)
+    };
+
+    let _voice = rig.client.subscribe_voice().await.unwrap();
+    assert_eq!(watching(&rig), 0);
+    let _video = rig.client.subscribe(1, 1, false).await.unwrap();
+    assert_eq!(watching(&rig), 1);
+
+    rig.client.close();
+    rig.router.shutdown().await.unwrap();
+    rig.client_ep.close().await;
+}
+
+#[tokio::test]
+async fn a_refused_voice_subscription_reaches_the_client_as_a_rejection() {
+    let rig = voice_rig(vec![], vec![]).await;
+
+    let refused = rig.client.subscribe_voice().await;
+    match refused {
+        Err(NetError::Rejected(reason)) => assert!(reason.contains("not in voice"), "{reason}"),
+        other => panic!("expected a rejection, got {other:?}"),
+    }
+
+    rig.client.close();
+    rig.router.shutdown().await.unwrap();
+    rig.client_ep.close().await;
+}
+
+#[tokio::test]
+async fn closing_the_sources_channel_ends_the_voice_subscription() {
+    let (voice_tx, voice_rx) = mpsc::channel(8);
+    let rig = voice_rig(vec![voice_rx], vec![]).await;
+
+    let mut sub = rig.client.subscribe_voice().await.unwrap();
+    drop(voice_tx);
+    let ended = tokio::time::timeout(Duration::from_secs(5), sub.packets.recv())
+        .await
+        .unwrap();
+    assert!(ended.is_none());
+
+    rig.client.close();
+    rig.router.shutdown().await.unwrap();
+    rig.client_ep.close().await;
 }

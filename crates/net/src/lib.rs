@@ -8,7 +8,7 @@ pub mod policy;
 pub mod server;
 pub mod source;
 
-pub use client::{AudioStream, MediaClient, PathKind, ViewerSubscription};
+pub use client::{AudioStream, MediaClient, PathKind, ViewerSubscription, VoiceSubscription};
 pub use endpoint::{RelaySetting, bind_endpoint};
 pub use error::NetError;
 pub use policy::{AllowAll, ConnectionPolicy};

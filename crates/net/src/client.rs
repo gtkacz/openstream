@@ -25,7 +25,11 @@ type Routes = Arc<Mutex<HashMap<(u32, u32), Sender<ReceivedFrame>>>>;
 pub struct MediaClient {
     conn: Connection,
     routes: Routes,
+    voice: VoiceSlot,
 }
+
+/// Voice is not keyed by live or preset, so it has one slot per connection.
+type VoiceSlot = Arc<Mutex<Option<Sender<ReceivedFrame>>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathKind {
@@ -39,6 +43,15 @@ pub enum PathKind {
 pub struct AudioStream {
     pub params: AudioParams,
     pub packets: Receiver<ReceivedFrame>,
+}
+
+/// Voice packets from one member, which arrive on their own route beside any watch.
+#[derive(Debug)]
+pub struct VoiceSubscription {
+    pub params: AudioParams,
+    pub packets: Receiver<ReceivedFrame>,
+    /// Dropping this unsubscribes.
+    pub control: Sender<ViewerMessage>,
 }
 
 #[derive(Debug)]
@@ -60,8 +73,13 @@ impl MediaClient {
             .await
             .map_err(|error| NetError::Connect(error.to_string()))?;
         let routes: Routes = Arc::default();
-        tokio::spawn(receive_frames(conn.clone(), routes.clone()));
-        Ok(Self { conn, routes })
+        let voice = VoiceSlot::default();
+        tokio::spawn(receive_frames(conn.clone(), routes.clone(), voice.clone()));
+        Ok(Self {
+            conn,
+            routes,
+            voice,
+        })
     }
 
     pub fn remote_id(&self) -> iroh::EndpointId {
@@ -200,6 +218,56 @@ impl MediaClient {
         })
     }
 
+    pub async fn subscribe_voice(&self) -> Result<VoiceSubscription, NetError> {
+        let (mut send, mut recv) = self.conn.open_bi().await.map_err(NetError::connection)?;
+        write_msg(&mut send, &ViewerMessage::SubscribeVoice).await?;
+        let params = match read_msg::<PublisherMessage>(&mut recv, MAX_CONTROL_BYTES).await? {
+            PublisherMessage::VoiceAck { audio } => audio,
+            PublisherMessage::SubscribeError { reason } => {
+                return Err(NetError::Rejected(reason));
+            }
+            _ => return Err(NetError::Protocol("expected VoiceAck")),
+        };
+
+        let (packets_tx, packets_rx) = mpsc::channel(AUDIO_SENDER_BACKLOG_PACKETS);
+        *self
+            .voice
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(packets_tx.clone());
+
+        let (control_tx, mut control_rx) = mpsc::channel::<ViewerMessage>(16);
+        tokio::spawn(async move {
+            while let Some(message) = control_rx.recv().await {
+                if write_msg(&mut send, &message).await.is_err() {
+                    break;
+                }
+            }
+            let _ = send.finish();
+        });
+
+        let voice = self.voice.clone();
+        tokio::spawn(async move {
+            // The publisher ends the subscription by finishing its stream, which reads as an error.
+            while read_msg::<PublisherMessage>(&mut recv, MAX_CONTROL_BYTES)
+                .await
+                .is_ok()
+            {}
+            let mut slot = voice
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // A newer voice subscription may already own the slot.
+            if slot.as_ref().is_some_and(|tx| tx.same_channel(&packets_tx)) {
+                *slot = None;
+            }
+        });
+
+        Ok(VoiceSubscription {
+            params,
+            packets: packets_rx,
+            control: control_tx,
+        })
+    }
+
     pub fn close(&self) {
         self.conn.close(0u32.into(), b"done");
     }
@@ -316,12 +384,13 @@ async fn read_frame(
 }
 
 /// Reads each frame stream independently so a large keyframe cannot delay later frames.
-async fn receive_frames(conn: Connection, routes: Routes) {
+async fn receive_frames(conn: Connection, routes: Routes, voice: VoiceSlot) {
     // Malformed frames are a peer misbehaving, not an event per packet: one warning says it.
     let warned = Arc::new(AtomicBool::new(false));
     let budget = Arc::new(AtomicUsize::new(0));
     while let Ok(mut stream) = conn.accept_uni().await {
         let routes = routes.clone();
+        let voice = voice.clone();
         let warned = warned.clone();
         let budget = budget.clone();
         tokio::spawn(async move {
@@ -335,8 +404,10 @@ async fn receive_frames(conn: Connection, routes: Routes) {
                     return;
                 }
             };
+            // Voice frames bypass the route check so they can only ever reach the voice slot.
+            let is_voice = header.kind == FrameKind::Voice;
             if !check_payload_len(header.kind, header.len as usize)
-                || !kind_matches_route(header.kind, header.preset_id)
+                || (!is_voice && !kind_matches_route(header.kind, header.preset_id))
             {
                 if !warned.swap(true, Ordering::Relaxed) {
                     tracing::warn!(
@@ -348,11 +419,18 @@ async fn receive_frames(conn: Connection, routes: Routes) {
                 }
                 return;
             }
-            let route = routes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&(header.live_id, header.preset_id))
-                .cloned();
+            let route = if is_voice {
+                voice
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+            } else {
+                routes
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(&(header.live_id, header.preset_id))
+                    .cloned()
+            };
             match route {
                 Some(sender) => {
                     let payload = payload.to_vec();
@@ -402,6 +480,15 @@ mod tests {
         ));
         assert!(check_payload_len(FrameKind::Video, MAX_FRAME_BYTES));
         assert!(!check_payload_len(FrameKind::Video, MAX_FRAME_BYTES + 1));
+    }
+
+    #[test]
+    fn the_voice_route_takes_only_small_frames() {
+        assert!(check_payload_len(FrameKind::Voice, MAX_AUDIO_PACKET_BYTES));
+        assert!(!check_payload_len(
+            FrameKind::Voice,
+            MAX_AUDIO_PACKET_BYTES + 1
+        ));
     }
 
     #[test]

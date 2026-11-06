@@ -1,5 +1,6 @@
 use brp_proto::constants::{FORCED_KEYFRAME_MIN_INTERVAL, STALLED_VIEWER_KEYFRAME_MAX_INTERVAL};
 use brp_proto::{AudioParams, CodecParams, EncodedFrame, FrameHeader};
+use iroh::EndpointId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -15,6 +16,12 @@ pub trait LiveSource: Send + Sync + 'static {
     fn subscribe_audio(&self, live_id: u32) -> Result<AudioSubscription, SubscribeRejected> {
         let _ = live_id;
         Err(SubscribeRejected::NoAudio)
+    }
+    /// The publisher's voice, for a member who asked to hear it. Sources not in voice keep the
+    /// default.
+    fn subscribe_voice(&self, peer: EndpointId) -> Result<AudioSubscription, SubscribeRejected> {
+        let _ = peer;
+        Err(SubscribeRejected::NoVoice)
     }
 }
 /// How often one viewer may cost a preset's other viewers a keyframe, which is much larger than a
@@ -66,6 +73,8 @@ pub enum SubscribeRejected {
     EncoderFailed(String),
     #[error("live offers no audio")]
     NoAudio,
+    #[error("not in voice")]
+    NoVoice,
 }
 /// One frame read from the media stream, before reordering.
 #[derive(Debug)]

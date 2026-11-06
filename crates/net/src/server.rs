@@ -64,17 +64,11 @@ impl ProtocolHandler for MediaServer {
             let source = self.source.clone();
             let conn = connection.clone();
             let viewers = self.viewers.clone();
-            if let Ok(mut viewers) = viewers.lock() {
-                *viewers.entry(peer).or_insert(0) += 1;
-            }
             tokio::spawn(async move {
-                if let Err(error) = serve_subscription(conn, send, recv, source).await {
-                    tracing::debug!(%error, "subscription ended");
-                }
-                if let Ok(mut viewers) = viewers.lock()
-                    && let Some(count) = viewers.get_mut(&peer)
+                if let Err(error) =
+                    serve_subscription(conn, send, recv, source, peer, viewers).await
                 {
-                    *count = count.saturating_sub(1);
+                    tracing::debug!(%error, "subscription ended");
                 }
             });
         }
@@ -88,26 +82,53 @@ async fn serve_subscription(
     mut send: SendStream,
     mut recv: iroh::endpoint::RecvStream,
     source: Arc<dyn LiveSource>,
+    peer: iroh::EndpointId,
+    viewers: Viewers,
 ) -> Result<(), NetError> {
     let first: ViewerMessage = read_msg(&mut recv, MAX_CONTROL_BYTES).await?;
-    let ViewerMessage::Subscribe {
-        live_id,
-        preset_id,
-        want_audio,
-    } = first
-    else {
-        write_msg(
-            &mut send,
-            &PublisherMessage::SubscribeError {
-                reason: "first message must be Subscribe".into(),
-            },
-        )
-        .await?;
-        return Err(NetError::Protocol(
-            "expected Subscribe as the first control message",
-        ));
+    let (live_id, preset_id, want_audio) = match first {
+        ViewerMessage::Subscribe {
+            live_id,
+            preset_id,
+            want_audio,
+        } => (live_id, preset_id, want_audio),
+        // Listening to someone's voice is not watching them, so it stays out of the count.
+        ViewerMessage::SubscribeVoice => return serve_voice(conn, send, recv, source, peer).await,
+        _ => {
+            write_msg(
+                &mut send,
+                &PublisherMessage::SubscribeError {
+                    reason: "first message must be Subscribe".into(),
+                },
+            )
+            .await?;
+            return Err(NetError::Protocol(
+                "expected Subscribe as the first control message",
+            ));
+        }
     };
 
+    if let Ok(mut viewers) = viewers.lock() {
+        *viewers.entry(peer).or_insert(0) += 1;
+    }
+    let served = serve_watch(conn, send, recv, source, live_id, preset_id, want_audio).await;
+    if let Ok(mut viewers) = viewers.lock()
+        && let Some(count) = viewers.get_mut(&peer)
+    {
+        *count = count.saturating_sub(1);
+    }
+    served
+}
+
+async fn serve_watch(
+    conn: Connection,
+    mut send: SendStream,
+    mut recv: iroh::endpoint::RecvStream,
+    source: Arc<dyn LiveSource>,
+    live_id: u32,
+    preset_id: u32,
+    want_audio: bool,
+) -> Result<(), NetError> {
     let subscription = match source.subscribe(live_id, preset_id) {
         Ok(subscription) => subscription,
         Err(rejected) => {
@@ -188,6 +209,45 @@ async fn serve_subscription(
     if let Some(audio_sender) = audio_sender {
         audio_sender.abort();
     }
+    Ok(())
+}
+
+async fn serve_voice(
+    conn: Connection,
+    mut send: SendStream,
+    mut recv: iroh::endpoint::RecvStream,
+    source: Arc<dyn LiveSource>,
+    peer: iroh::EndpointId,
+) -> Result<(), NetError> {
+    let voice = match source.subscribe_voice(peer) {
+        Ok(voice) => voice,
+        Err(rejected) => {
+            write_msg(
+                &mut send,
+                &PublisherMessage::SubscribeError {
+                    reason: rejected.to_string(),
+                },
+            )
+            .await?;
+            send.finish().map_err(NetError::stream)?;
+            return Ok(());
+        }
+    };
+    write_msg(
+        &mut send,
+        &PublisherMessage::VoiceAck {
+            audio: voice.params,
+        },
+    )
+    .await?;
+    let sender = tokio::spawn(send_voice(conn, send, voice.packets));
+    // Nothing but Unsubscribe means anything on this stream, so any end of it ends the subscription.
+    while let Ok(message) = read_msg::<ViewerMessage>(&mut recv, MAX_CONTROL_BYTES).await {
+        if matches!(message, ViewerMessage::Unsubscribe) {
+            break;
+        }
+    }
+    sender.abort();
     Ok(())
 }
 
@@ -275,6 +335,29 @@ async fn send_audio(
         };
         write_frame(&conn, header, &packet.data, AUDIO_STREAM_PRIORITY).await?;
     }
+    Ok(())
+}
+
+async fn send_voice(
+    conn: Connection,
+    mut control: SendStream,
+    mut packets: Receiver<Arc<EncodedFrame>>,
+) -> Result<(), NetError> {
+    while let Some(packet) = packets.recv().await {
+        let len = u32::try_from(packet.data.len())
+            .map_err(|_| NetError::Protocol("voice packet larger than u32"))?;
+        let header = FrameHeader {
+            live_id: 0,
+            preset_id: AUDIO_PRESET_ID,
+            kind: FrameKind::Voice,
+            seq: packet.seq,
+            capture_ts_us: packet.capture_ts_us,
+            keyframe: true,
+            len,
+        };
+        write_frame(&conn, header, &packet.data, AUDIO_STREAM_PRIORITY).await?;
+    }
+    control.finish().map_err(NetError::stream)?;
     Ok(())
 }
 
