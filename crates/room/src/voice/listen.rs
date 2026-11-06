@@ -161,6 +161,7 @@ async fn listen_once(
             bytes.clone(),
         ))
         .abort_handle();
+    let track = mixer.add_track(*peer.as_bytes());
     let mut ended = {
         let mut state = lock(slot);
         if state.stopped {
@@ -171,7 +172,7 @@ async fn listen_once(
             runtime.clone(),
             rx,
             decoder,
-            mixer.add_track(*peer.as_bytes()),
+            track.clone(),
             Arc::new(AudioViewerStats::default()),
         );
         let ended = viewer.take_ended();
@@ -187,6 +188,8 @@ async fn listen_once(
     if let Some(viewer) = viewer {
         let _ = tokio::task::spawn_blocking(move || viewer.stop()).await;
     }
+    // After the decode thread has stopped, which could otherwise push one more peak over it.
+    track.clear_level();
     drop(subscription.control);
     Ok(())
 }

@@ -60,6 +60,14 @@ impl Track {
         f32::from_bits(self.inner.level_bits.load(Ordering::Relaxed))
     }
 
+    /// Drops the level to silence when the source goes away, since a stopped feed pushes nothing
+    /// to overwrite its last peak.
+    pub fn clear_level(&self) {
+        self.inner
+            .level_bits
+            .store(0.0f32.to_bits(), Ordering::Relaxed);
+    }
+
     pub fn queued(&self) -> usize {
         lock(&self.inner.buffer).len()
     }
@@ -256,6 +264,15 @@ mod tests {
         a.push(&[0.1, -0.6, 0.3]);
         assert!((mixer.level(&A) - 0.6).abs() < 1e-6);
         a.push(&[0.0; 4]);
+        assert_eq!(mixer.level(&A), 0.0);
+    }
+
+    #[test]
+    fn clearing_a_tracks_level_silences_its_last_peak() {
+        let mixer = Mixer::new();
+        let a = mixer.add_track(A);
+        a.push(&[0.6]);
+        a.clear_level();
         assert_eq!(mixer.level(&A), 0.0);
     }
 
