@@ -18,16 +18,17 @@ use super::own_lives;
 use super::state::{Outcome, UiState, delay_text, ordered_members};
 use super::status;
 use super::theme::{self, icons};
+use super::voice;
 use crate::commands::{RoomCommand, WindowCommand};
 use crate::link;
 
-const ROW_HEIGHT: f32 = 24.0;
+pub(super) const ROW_HEIGHT: f32 = 24.0;
 const PERSON_GAP: f32 = 8.0;
-const PEER_INDENT: f32 = 40.0;
-const STREAM_INDENT: f32 = 72.0;
+pub(super) const PEER_INDENT: f32 = 40.0;
+pub(super) const STREAM_INDENT: f32 = 72.0;
 const GLYPH_BOX: f32 = 24.0;
 const GLYPH_CELL: f32 = 3.0;
-const STRIP_HEIGHT: f32 = 14.0;
+pub(super) const STRIP_HEIGHT: f32 = 14.0;
 const LEDGER_ROWS: usize = 5;
 const LEDGER_LINE: f32 = 16.0;
 /// How often network motion steps. Things you touch stay on springs; things the network does tick.
@@ -106,6 +107,18 @@ pub fn contents(
         window_commands.push(WindowCommand::LeaveRoom);
     }
     ui.add_space(8.0);
+    // Below a measured width the dock hands its Voice switch to the rail.
+    if theme::is_compact(ui.ctx()) || !state.voice_switch_in_dock {
+        let mut joined = snapshot.voice.joined;
+        if theme::switch(ui, &mut joined, "Voice").changed() {
+            commands.push(if joined {
+                RoomCommand::JoinVoice
+            } else {
+                RoomCommand::LeaveVoice
+            });
+        }
+        ui.add_space(8.0);
+    }
     // `snapshot.members` excludes this participant, so count it in.
     theme::section_heading(ui, &format!("{} in this room", snapshot.members.len() + 1));
     ui.add_space(4.0);
@@ -212,6 +225,22 @@ fn circuit(
         theme::text(),
     );
     let trunk = pos2(me_glyph.center().x, me_glyph.bottom());
+    if snapshot.voice.joined {
+        let at = voice::own_row(ui, snapshot, state);
+        wires.push(Wire {
+            points: vec![
+                trunk,
+                pos2(trunk.x, at),
+                pos2(ui.max_rect().left() + PEER_INDENT - 6.0, at),
+            ],
+            shape: PathShape::of(PathKind::Direct),
+            lost: false,
+            relay_at: None,
+            dim: false,
+            forward: 0.0,
+            back: 0.0,
+        });
+    }
     for live in &snapshot.own_lives {
         let (rect, row) =
             ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
@@ -318,7 +347,12 @@ fn circuit(
     }
     let shapes = paint_wires(ui, &wires);
     ui.painter().set(slot, Shape::Vec(shapes));
-    let flowing = !snapshot.watches.is_empty() || snapshot.members.iter().any(|m| m.watching_me);
+    let flowing = !snapshot.watches.is_empty()
+        || snapshot.members.iter().any(|m| m.watching_me)
+        || state
+            .voice
+            .values()
+            .any(|meter| meter.traffic.bytes_per_second > 0.0);
     if flowing && ui.input(|input| input.focused) && motion::ambient_allowed(ui.ctx()) {
         ui.ctx()
             .request_repaint_after(Duration::from_secs_f64(WIRE_TICK));
@@ -444,6 +478,7 @@ fn member_block(
         .filter_map(|live| state.traffic.get(&(member.id, live.id)))
         .map(|traffic| traffic.bytes_per_second)
         .sum();
+    let (voice_forward, voice_back) = voice::wire_rates(snapshot, state, member);
     wires.push(Wire {
         points: vec![
             trunk,
@@ -454,13 +489,33 @@ fn member_block(
         lost,
         relay_at: Some(pos2((trunk.x + glyph.left()) / 2.0, rect.center().y)),
         dim: false,
-        forward: if member.watching_me && !lost {
-            out_rate
-        } else {
-            0.0
-        },
-        back: if lost { 0.0 } else { flowing },
+        forward: if lost { 0.0 } else { voice_forward }
+            + if member.watching_me && !lost {
+                out_rate
+            } else {
+                0.0
+            },
+        back: if lost { 0.0 } else { flowing + voice_back },
     });
+    let branch = pos2(glyph.center().x, glyph.bottom());
+    if member.voice.is_some() {
+        let at = motion::reveal(ui, ("member-voice", member.id), |ui| {
+            voice::member_rows(ui, member, state, commands)
+        });
+        wires.push(Wire {
+            points: vec![
+                branch,
+                pos2(branch.x, at),
+                pos2(ui.max_rect().left() + STREAM_INDENT - 6.0, at),
+            ],
+            shape: PathShape::of(PathKind::Direct),
+            lost: false,
+            relay_at: None,
+            dim: !member.hearing,
+            forward: 0.0,
+            back: 0.0,
+        });
+    }
     if member.has_audio {
         ui.horizontal(|ui| {
             ui.add_space(STREAM_INDENT);
@@ -490,7 +545,6 @@ fn member_block(
             });
         }
     }
-    let branch = pos2(glyph.center().x, glyph.bottom());
     for live in &member.lives {
         let key = (member.id, live.id);
         let at = motion::reveal(ui, ("member-live", key), |ui| {
@@ -730,7 +784,7 @@ fn row_hover(ui: &egui::Ui, row: &egui::Response, rect: Rect) {
     }
 }
 
-fn truncated(
+pub(super) fn truncated(
     painter: &Painter,
     text: &str,
     font: egui::FontId,
@@ -743,7 +797,7 @@ fn truncated(
 }
 
 /// Returns where the text starts, for the next thing leftwards.
-fn right_text(painter: &Painter, right_centre: Pos2, text: &str, ink: Color32) -> f32 {
+pub(super) fn right_text(painter: &Painter, right_centre: Pos2, text: &str, ink: Color32) -> f32 {
     painter
         .text(
             right_centre,

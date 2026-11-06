@@ -200,6 +200,7 @@ pub struct Ledger {
     newest_at: Option<Instant>,
     seen: HashMap<iroh::PublicKey, (brp_net::PathKind, bool, String)>,
     watching: HashSet<TileKey>,
+    in_voice: HashSet<iroh::PublicKey>,
     primed: bool,
 }
 
@@ -244,6 +245,7 @@ impl Ledger {
         for member in &snapshot.members {
             present.insert(member.id);
             let lost = member.signal_lost;
+            let was_known = self.seen.contains_key(&member.id);
             match self.seen.get(&member.id).cloned() {
                 None => {
                     let path = path_words(member.path, member.rtt_ms);
@@ -265,6 +267,13 @@ impl Ledger {
             }
             self.seen
                 .insert(member.id, (member.path, lost, member.nickname.clone()));
+            let in_voice = member.voice.is_some();
+            // A newcomer already in voice is announced by the join line alone.
+            if in_voice && self.in_voice.insert(member.id) && was_known {
+                self.add(format!("{} joined voice", member.nickname), Outcome::Good);
+            } else if !in_voice && self.in_voice.remove(&member.id) {
+                self.add(format!("{} left voice", member.nickname), Outcome::Neutral);
+            }
         }
         let gone: Vec<_> = self
             .seen
@@ -273,6 +282,7 @@ impl Ledger {
             .copied()
             .collect();
         for id in gone {
+            self.in_voice.remove(&id);
             if let Some((_, _, name)) = self.seen.remove(&id) {
                 self.add(format!("{name} left"), Outcome::Neutral);
             }
@@ -860,5 +870,101 @@ mod tests {
 
         state.cancel_applications();
         assert!(state.applications.is_none());
+    }
+
+    fn voice_room(members: Vec<MemberView>) -> brp_room::RoomSnapshot {
+        brp_room::RoomSnapshot {
+            voice: Default::default(),
+            me: SecretKey::from_bytes(&[1; 32]).public(),
+            nickname: "Alex".into(),
+            version: 1,
+            members,
+            own_lives: Vec::new(),
+            watches: Vec::new(),
+            own_audio: OwnAudioView {
+                enabled: false,
+                state: AudioCaptureState::Off,
+                selection: Default::default(),
+                subscribers: 0,
+                packets_encoded: 0,
+            },
+            audio_output_error: None,
+            master_mute: false,
+        }
+    }
+
+    fn morgan(voice: Option<brp_proto::VoiceState>) -> MemberView {
+        MemberView {
+            voice,
+            hearing: true,
+            sending: true,
+            voice_gain: 1.0,
+            rtt_ms: None,
+            signal_lost: false,
+            watching_me: false,
+            id: SecretKey::from_bytes(&[2; 32]).public(),
+            nickname: "Morgan".into(),
+            lives: Vec::new(),
+            seen_ago_ms: 0,
+            path: PathKind::Direct,
+            has_audio: false,
+            audio_mix: None,
+            gain: 1.0,
+        }
+    }
+
+    fn lines(ledger: &Ledger) -> Vec<(&str, Outcome)> {
+        ledger
+            .lines
+            .iter()
+            .map(|(line, outcome)| (line.split_once(' ').map_or("", |(_, rest)| rest), *outcome))
+            .collect()
+    }
+
+    #[test]
+    fn the_ledger_notes_joining_and_leaving_voice() {
+        let mut ledger = Ledger::default();
+        ledger.note(&voice_room(vec![morgan(None)]));
+        ledger.note(&voice_room(vec![morgan(Some(Default::default()))]));
+        ledger.note(&voice_room(vec![morgan(None)]));
+        let lines = lines(&ledger);
+        assert_eq!(
+            lines[lines.len() - 2..],
+            [
+                ("Morgan joined voice", Outcome::Good),
+                ("Morgan left voice", Outcome::Neutral)
+            ]
+        );
+    }
+
+    #[test]
+    fn leaving_the_room_in_voice_is_one_line() {
+        let mut ledger = Ledger::default();
+        ledger.note(&voice_room(vec![morgan(None)]));
+        ledger.note(&voice_room(vec![morgan(Some(Default::default()))]));
+        ledger.note(&voice_room(Vec::new()));
+        let lines = lines(&ledger);
+        assert_eq!(lines.last(), Some(&("Morgan left", Outcome::Neutral)));
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|(line, _)| line.ends_with("voice"))
+                .count(),
+            1,
+            "only the join"
+        );
+    }
+
+    #[test]
+    fn muting_and_deafening_are_not_logged() {
+        let mut ledger = Ledger::default();
+        ledger.note(&voice_room(vec![morgan(Some(Default::default()))]));
+        let before = ledger.lines.len();
+        let silent = brp_proto::VoiceState {
+            muted: true,
+            deafened: true,
+        };
+        ledger.note(&voice_room(vec![morgan(Some(silent))]));
+        assert_eq!(ledger.lines.len(), before);
     }
 }

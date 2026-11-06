@@ -1258,6 +1258,33 @@ fn a_rail_rows_figures_end_on_the_rails_inner_edge() {
 }
 
 #[test]
+fn voice_rows_end_on_the_rails_inner_edge() {
+    let ctx = egui::Context::default();
+    brp_app::ui::theme::install(&ctx);
+    let mut snapshot = busy_room();
+    snapshot.voice.joined = true;
+    snapshot.voice.muted = true;
+    snapshot.members[0].voice = Some(Default::default());
+    snapshot.members[0].hearing = false;
+    let mut state = brp_app::ui::state::UiState::new();
+    let (_, shapes) = settled_room(&ctx, (1280.0, 800.0), &snapshot, &mut state);
+    let own = text_rect(&shapes, "muted").right();
+    assert!((own - 304.0).abs() <= 1.0, "your word ends at {own}");
+    let ticks: Vec<f32> = ["[x]", "[ ]"]
+        .iter()
+        .flat_map(|mark| text_rects(&shapes, mark))
+        .map(|rect| rect.right())
+        .filter(|right| *right <= 305.0)
+        .collect();
+    assert_eq!(
+        ticks.len(),
+        2,
+        "the watch tick and the hear tick: {ticks:?}"
+    );
+    assert!((ticks[0] - ticks[1]).abs() <= 1.0, "{ticks:?}");
+}
+
+#[test]
 fn the_form_stays_clickable_over_the_field() {
     let ctx = egui::Context::default();
     brp_app::ui::theme::install(&ctx);
