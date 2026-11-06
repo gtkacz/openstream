@@ -16,6 +16,7 @@ use egui::{Color32, Painter, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 use super::motion;
 use super::own_lives;
 use super::state::{Outcome, UiState, delay_text, ordered_members};
+use super::status;
 use super::theme::{self, icons};
 use crate::commands::{RoomCommand, WindowCommand};
 use crate::link;
@@ -33,6 +34,19 @@ const LEDGER_LINE: f32 = 16.0;
 const WIRE_TICK: f64 = 1.0 / 12.0;
 const PACKET_SPEED: f32 = 144.0;
 
+const RAIL_MIN: f32 = 304.0;
+const RAIL_MAX: f32 = 420.0;
+/// The rail frame's inner margin on each side, as `theme::rail` sets it.
+const RAIL_MARGIN: f32 = 16.0;
+
+/// The widest the rail may be dragged in a window this wide: the dock under the video must keep the
+/// width its controls need to stay on one row.
+fn rail_max_width(window_width: f32) -> f32 {
+    let left_for_rail =
+        window_width - status::WIDE_DOCK_FITS_FROM - 2.0 * RAIL_MARGIN - 2.0 * status::DOCK_MARGIN;
+    left_for_rail.min(RAIL_MAX).max(RAIL_MIN)
+}
+
 /// Draws the rail and pushes `Watch`/`Unwatch` commands for switch and preset changes.
 pub fn draw(
     ui: &mut egui::Ui,
@@ -44,8 +58,8 @@ pub fn draw(
 ) {
     egui::Panel::left("members")
         .default_size(320.0)
-        .min_size(304.0)
-        .max_size(420.0)
+        .min_size(RAIL_MIN)
+        .max_size(rail_max_width(ui.ctx().content_rect().width()))
         .resizable(true)
         .frame(theme::rail())
         .show(ui, |ui| {
@@ -987,6 +1001,20 @@ mod tests {
     use super::*;
 
     use brp_proto::{Codec, SourceKind, template_presets};
+
+    #[test]
+    fn the_rail_leaves_the_dock_the_width_its_row_needs() {
+        let rail_frame = 2.0 * RAIL_MARGIN;
+        let dock_frame = 2.0 * status::DOCK_MARGIN;
+        for window in (theme::COMPACT_WIDTH as u32..=2000).step_by(4) {
+            let window = window as f32;
+            let dock = window - rail_frame - rail_max_width(window) - dock_frame;
+            assert!(
+                dock >= status::WIDE_DOCK_FITS_FROM,
+                "at {window} the dock gets {dock}"
+            );
+        }
+    }
 
     #[test]
     fn a_heartbeats_glow_cools_in_steps_and_is_gone_in_under_a_second() {

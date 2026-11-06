@@ -15,6 +15,11 @@ use crate::commands::RoomCommand;
 const GROUP_GAP: f32 = 8.0;
 /// Narrowest dock where the joined Voice surface fits with every other control already shed, from
 /// a scratch sweep of `wide_row` (524 overlapped); narrower, its switch moves to the rail.
+/// Where the wide row, joined to voice, first stays on one row, from a sweep of it. The rail yields
+/// width to keep the dock at least this wide.
+pub(crate) const WIDE_DOCK_FITS_FROM: f32 = 436.0;
+/// The dock panel's inner margin on each side.
+pub(crate) const DOCK_MARGIN: f32 = 12.0;
 const VOICE_SWITCH_AT: f32 = 528.0;
 
 /// Draws the dock. The master mute toggle emits `SetMasterMute`; the Settings button sets
@@ -318,14 +323,6 @@ mod tests {
         Compact,
     }
 
-    /// The narrowest dock the wide row is drawn in: a window at the compact threshold, less the
-    /// rail at its widest (`members::draw` allows 420) and the margins of the rail and the dock.
-    const MIN_WIDE_DOCK: f32 = theme::COMPACT_WIDTH - 420.0 - 2.0 * 16.0 - 2.0 * 12.0;
-
-    /// Where the wide row, joined to voice, first stays on one row, from a sweep of it. Dock widths
-    /// from `MIN_WIDE_DOCK` to here still overflow (out of voice, below 348 too).
-    const WIDE_DOCK_FITS_FROM: f32 = 436.0;
-
     fn voice_states() -> [OwnVoiceView; 4] {
         let joined = OwnVoiceView {
             joined: true,
@@ -431,19 +428,6 @@ mod tests {
             assert_one_row_with_nothing_touching(
                 Row::Wide,
                 (WIDE_DOCK_FITS_FROM as u32..=1800).step_by(4),
-                &voice,
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "known overflow: the wide row needs 436 joined (348 not joined) but a rail dragged \
-                to 420 leaves 324; awaiting a ruling"]
-    fn the_dock_stays_on_one_row_where_a_wide_rail_leaves_it_least_room() {
-        for voice in voice_states() {
-            assert_one_row_with_nothing_touching(
-                Row::Wide,
-                (MIN_WIDE_DOCK as u32..WIDE_DOCK_FITS_FROM as u32).step_by(4),
                 &voice,
             );
         }
