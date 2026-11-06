@@ -11,7 +11,7 @@ use brp_proto::constants::{
 use iroh::PublicKey;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::codecs::DecoderFactory;
 use crate::error::RoomError;
@@ -34,13 +34,22 @@ pub(crate) async fn forward_heard(
     }
 }
 
+/// What `stop` and the listening task must agree on under one lock: a task that is between
+/// subscribing and storing its viewer would otherwise outlive `stop` and leave a track behind.
+#[derive(Default)]
+struct Slot {
+    stopped: bool,
+    viewer: Option<AudioViewer>,
+    forwarder: Option<AbortHandle>,
+}
+
 pub(crate) struct Listener {
     peer: PublicKey,
     mixer: Mixer,
     hearing: Arc<AtomicBool>,
     bytes: Arc<AtomicU64>,
     // Shared with the task so `stop` can end the decode thread the aborted task would leave behind.
-    viewer: Arc<Mutex<Option<AudioViewer>>>,
+    slot: Arc<Mutex<Slot>>,
     task: JoinHandle<()>,
 }
 
@@ -55,7 +64,7 @@ impl Listener {
     ) -> Self {
         let hearing = Arc::new(AtomicBool::new(hearing));
         let bytes = Arc::new(AtomicU64::new(0));
-        let viewer = Arc::new(Mutex::new(None));
+        let slot = Arc::new(Mutex::new(Slot::default()));
         let task = runtime.spawn(keep_listening(
             peer,
             watcher,
@@ -63,7 +72,7 @@ impl Listener {
             mixer.clone(),
             hearing.clone(),
             bytes.clone(),
-            viewer.clone(),
+            slot.clone(),
             runtime.clone(),
         ));
         Self {
@@ -71,7 +80,7 @@ impl Listener {
             mixer,
             hearing,
             bytes,
-            viewer,
+            slot,
             task,
         }
     }
@@ -86,7 +95,15 @@ impl Listener {
 
     pub(crate) fn stop(self) {
         self.task.abort();
-        if let Some(viewer) = lock(&self.viewer).take() {
+        let (viewer, forwarder) = {
+            let mut slot = lock(&self.slot);
+            slot.stopped = true;
+            (slot.viewer.take(), slot.forwarder.take())
+        };
+        if let Some(forwarder) = forwarder {
+            forwarder.abort();
+        }
+        if let Some(viewer) = viewer {
             viewer.stop();
         }
         self.mixer.remove_track(self.peer.as_bytes());
@@ -101,7 +118,7 @@ async fn keep_listening(
     mixer: Mixer,
     hearing: Arc<AtomicBool>,
     bytes: Arc<AtomicU64>,
-    slot: Arc<Mutex<Option<AudioViewer>>>,
+    slot: Arc<Mutex<Slot>>,
     runtime: Handle,
 ) {
     let mut backoff = RESUBSCRIBE_BACKOFF_INITIAL;
@@ -129,33 +146,44 @@ async fn listen_once(
     mixer: &Mixer,
     hearing: &Arc<AtomicBool>,
     bytes: &Arc<AtomicU64>,
-    slot: &Mutex<Option<AudioViewer>>,
+    slot: &Mutex<Slot>,
     runtime: &Handle,
 ) -> Result<(), RoomError> {
     let client = watcher.client_for(peer).await?;
     let subscription = client.subscribe_voice().await?;
     let decoder = decoders.open_audio(&subscription.params)?;
     let (tx, rx) = mpsc::channel(AUDIO_SENDER_BACKLOG_PACKETS);
-    let forwarder = runtime.spawn(forward_heard(
-        subscription.packets,
-        tx,
-        hearing.clone(),
-        bytes.clone(),
-    ));
-    let mut viewer = AudioViewer::start(
-        runtime.clone(),
-        rx,
-        decoder,
-        mixer.add_track(*peer.as_bytes()),
-        Arc::new(AudioViewerStats::default()),
-    );
-    let mut ended = viewer.take_ended();
-    *lock(slot) = Some(viewer);
+    let forwarder = runtime
+        .spawn(forward_heard(
+            subscription.packets,
+            tx,
+            hearing.clone(),
+            bytes.clone(),
+        ))
+        .abort_handle();
+    let mut ended = {
+        let mut state = lock(slot);
+        if state.stopped {
+            forwarder.abort();
+            return Ok(());
+        }
+        let mut viewer = AudioViewer::start(
+            runtime.clone(),
+            rx,
+            decoder,
+            mixer.add_track(*peer.as_bytes()),
+            Arc::new(AudioViewerStats::default()),
+        );
+        let ended = viewer.take_ended();
+        state.viewer = Some(viewer);
+        state.forwarder = Some(forwarder.clone());
+        ended
+    };
     if let Some(ended) = ended.as_mut() {
         ended.recv().await;
     }
     forwarder.abort();
-    let viewer = lock(slot).take();
+    let viewer = lock(slot).viewer.take();
     if let Some(viewer) = viewer {
         let _ = tokio::task::spawn_blocking(move || viewer.stop()).await;
     }
