@@ -123,6 +123,11 @@ async fn a_ticket_minted_after_others_join_survives_the_creator_leaving() {
     })
     .await;
 
+    wait_until("bob's reachable address", Duration::from_secs(10), || {
+        a.ticket().bootstrap.iter().any(|addr| addr.id == b.id())
+    })
+    .await;
+
     let a_id = a.id();
     let ticket = a.ticket();
     assert_eq!(
