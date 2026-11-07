@@ -29,6 +29,9 @@ pub fn init_in(dir: &Path) -> Option<PathBuf> {
     install(open_log_in(dir))
 }
 
+// libDF warns on every clipped hop through the log crate, up to 100 lines a second.
+const DEFAULT_FILTER: &str = "info,df=error";
+
 fn install(opened: Result<(PathBuf, Arc<File>), String>) -> Option<PathBuf> {
     let (path, to_file) = match &opened {
         // Each event is one unbuffered write to the file, so a hard crash keeps its last lines.
@@ -39,7 +42,7 @@ fn install(opened: Result<(PathBuf, Arc<File>), String>) -> Option<PathBuf> {
         Err(_) => (None, None),
     };
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER)))
         .with(fmt::layer().with_writer(io::stderr))
         .with(to_file)
         .init();
@@ -111,6 +114,13 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_default_filter_silences_libdf_warnings() {
+        let filter = EnvFilter::new(DEFAULT_FILTER).to_string();
+        assert!(filter.contains("df=error"));
+        assert!(filter.contains("info"));
     }
 
     #[test]

@@ -51,13 +51,22 @@ fn pipeline() -> Pipeline {
 
 // Loading takes ~175 ms, which is why the processor is built on the encode thread.
 fn load_deep_filter() -> Option<Box<DfTract>> {
-    match DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(1)) {
-        Ok(model) => Some(Box::new(model)),
-        Err(e) => {
-            warn!(stage = "strong noise suppression", reason = %e, "voice processing stage disabled for this session");
-            None
-        }
-    }
+    load_stage(|| {
+        DfTract::new(DfParams::default(), &RuntimeParams::default_with_ch(1))
+            .map(Box::new)
+            .map_err(|e| format!("{e:#}"))
+    })
+}
+
+// libDF unwraps while loading, and a panic here would end the voice encode thread.
+fn load_stage<S>(load: impl FnOnce() -> Result<S, String>) -> Option<S> {
+    let reason = match catch_unwind(AssertUnwindSafe(load)) {
+        Ok(Ok(stage)) => return Some(stage),
+        Ok(Err(reason)) => reason,
+        Err(_) => "panicked".to_owned(),
+    };
+    warn!(stage = "strong noise suppression", %reason, "voice processing stage disabled for this session");
+    None
 }
 
 fn run_deep_filter(model: &mut DfTract, hop: &mut Hop) -> Result<(), String> {
@@ -336,6 +345,13 @@ mod tests {
             assert!(frame.iter().all(|s| s.is_finite()));
             assert!(frame.as_chunks::<2>().0.iter().all(|f| f[0] == f[1]));
         }
+    }
+
+    #[test]
+    fn a_stage_that_panics_while_loading_comes_back_empty() {
+        assert!(load_stage::<()>(|| panic!("boom")).is_none());
+        assert!(load_stage::<()>(|| Err("no".into())).is_none());
+        assert!(load_stage(|| Ok(1)).is_some());
     }
 
     #[test]
