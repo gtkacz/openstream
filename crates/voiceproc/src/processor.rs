@@ -63,7 +63,11 @@ fn load_stage<S>(load: impl FnOnce() -> Result<S, String>) -> Option<S> {
     let reason = match catch_unwind(AssertUnwindSafe(load)) {
         Ok(Ok(stage)) => return Some(stage),
         Ok(Err(reason)) => reason,
-        Err(_) => "panicked".to_owned(),
+        Err(payload) => payload
+            .downcast_ref::<&str>()
+            .map(|reason| (*reason).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panicked".to_owned()),
     };
     warn!(stage = "strong noise suppression", %reason, "voice processing stage disabled for this session");
     None
@@ -77,13 +81,16 @@ fn run_deep_filter(model: &mut DfTract, hop: &mut Hop) -> Result<(), String> {
     Ok(())
 }
 
-/// Feeds the oldest pending hop, one per capture hop. Rendering a whole frame ahead of its
-/// capture hops (render, render, capture, capture) leaves AEC3 unable to converge on two
-/// channels. Pairing is by count, so a backlog would become a standing lag: it is trimmed.
 fn pending_cap() -> usize {
     ECHO_REFERENCE_PENDING_MAX.as_millis() as usize * SAMPLE_RATE as usize / 1000 / HOP
 }
 
+/// Feeds the oldest pending hop, one per capture hop. Rendering a whole frame ahead of its
+/// capture hops (render, render, capture, capture) leaves AEC3 unable to converge on two
+/// channels. Pairing by count alone would keep any backlog (playback before the first
+/// microphone frame, a mute, a stalled encode thread) as a standing lag, a negative delay AEC3
+/// cannot model, so while more than 2 hops wait after the pair a second one is fed, draining a
+/// backlog at twice the rate. Trimming to the pending cap stays as a backstop.
 fn render_reference(
     apm: &mut AudioProcessing,
     reference: &EchoReference,
@@ -92,16 +99,24 @@ fn render_reference(
     pending.extend(reference.drain_hops());
     let excess = pending.len().saturating_sub(pending_cap());
     pending.drain(..excess);
-    let Some([voice, streams]) = pending.pop_front() else {
+    let Some(paired) = pending.pop_front() else {
         return Ok(());
     };
-    let (mut sink_voice, mut sink_streams) = ([0.0f32; HOP], [0.0f32; HOP]);
-    // The order of the channels does not affect the result.
-    apm.process_render_f32(
-        &[&streams, &voice],
-        &mut [&mut sink_streams[..], &mut sink_voice[..]],
-    )
-    .map_err(|e| e.to_string())
+    let catch_up = if pending.len() > 2 {
+        pending.pop_front()
+    } else {
+        None
+    };
+    for [voice, streams] in std::iter::once(paired).chain(catch_up) {
+        let (mut sink_voice, mut sink_streams) = ([0.0f32; HOP], [0.0f32; HOP]);
+        // The order of the channels does not affect the result.
+        apm.process_render_f32(
+            &[&streams, &voice],
+            &mut [&mut sink_streams[..], &mut sink_voice[..]],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn run_apm(apm: &mut AudioProcessing, hop: &mut Hop) -> Result<(), String> {
@@ -159,6 +174,10 @@ impl VoiceProcessor {
                 1
             },
         );
+        let deep_filter = (config.noise_suppression == Suppression::Strong)
+            .then(load_deep_filter)
+            .flatten();
+        // After Strong's load, which would otherwise arrive as a backlog at every join.
         let reference = config.echo_cancellation.then(|| {
             reference.activate();
             reference.clone()
@@ -182,9 +201,7 @@ impl VoiceProcessor {
             pending_reference: VecDeque::new(),
             capture: Some(capture),
             denoise: (config.noise_suppression == Suppression::Light).then(DenoiseState::new),
-            deep_filter: (config.noise_suppression == Suppression::Strong)
-                .then(load_deep_filter)
-                .flatten(),
+            deep_filter,
             gain,
         }
     }
@@ -204,12 +221,17 @@ impl VoiceProcessor {
             for (m, f) in hop.iter_mut().zip(frames.as_chunks::<CHANNELS>().0.iter()) {
                 *m = (f[0] + f[1]) / 2.0;
             }
-            run_stage(&mut self.capture, "high-pass", &mut hop, |a, h| {
-                if let Some(reference) = &self.reference {
-                    render_reference(a, reference, &mut self.pending_reference)?;
-                }
-                run_apm(a, h)
-            });
+            run_stage(
+                &mut self.capture,
+                "high-pass and echo cancellation",
+                &mut hop,
+                |a, h| {
+                    if let Some(reference) = &self.reference {
+                        render_reference(a, reference, &mut self.pending_reference)?;
+                    }
+                    run_apm(a, h)
+                },
+            );
             if self.capture.is_none()
                 && let Some(reference) = self.reference.take()
             {
@@ -251,6 +273,8 @@ impl Drop for VoiceProcessor {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use super::*;
     use crate::reference::ReferenceChannel;
     use crate::test_signals::{
@@ -393,16 +417,32 @@ mod tests {
     }
 
     /// Plays `voice` and `streams` while the microphone hears `mic`, a frame at a time, and
-    /// returns the echo removed, in dB, over the last 5 s where `heard` is not silent.
-    fn echo_removed(voice: &[f32], streams: Option<&[f32]>, mic: &[f32], heard: &[f32]) -> f32 {
+    /// returns the echo removed, in dB, over the last 5 s where `heard` is not silent. The first
+    /// `pre_roll` samples play before the microphone's first frame, and frames starting within
+    /// `muted` play while the encode thread is idle.
+    fn echo_removed(
+        voice: &[f32],
+        streams: Option<&[f32]>,
+        mic: &[f32],
+        heard: &[f32],
+        pre_roll: usize,
+        muted: Range<usize>,
+    ) -> f32 {
         let reference = EchoReference::new();
         let mut p = echo_processor(&reference);
-        let (mut mic_kept, mut out_kept) = (Vec::new(), Vec::new());
-        for (k, m) in mic.as_chunks::<FRAME>().0.iter().enumerate() {
-            let range = k * FRAME..(k + 1) * FRAME;
+        let play = |range: Range<usize>| {
             reference.push(ReferenceChannel::Voice, &stereo(&voice[range.clone()]));
             if let Some(streams) = streams {
-                reference.push(ReferenceChannel::Streams, &stereo(&streams[range.clone()]));
+                reference.push(ReferenceChannel::Streams, &stereo(&streams[range]));
+            }
+        };
+        play(0..pre_roll);
+        let (mut mic_kept, mut out_kept) = (Vec::new(), Vec::new());
+        for (k, m) in mic[pre_roll..].as_chunks::<FRAME>().0.iter().enumerate() {
+            let range = pre_roll + k * FRAME..pre_roll + (k + 1) * FRAME;
+            play(range.clone());
+            if muted.contains(&range.start) {
+                continue;
             }
             let mut frame = stereo(m);
             p.process(&mut frame);
@@ -418,8 +458,24 @@ mod tests {
     fn echo_cancellation_removes_a_speaker_echo() {
         let far = looped(&speech(), 15.0);
         let mic = sparse_echo(&far, 40, 1);
-        let removed = echo_removed(&far, None, &mic, &far);
+        let removed = echo_removed(&far, None, &mic, &far, 0, 0..0);
         assert!(removed >= 30.0);
+    }
+
+    #[test]
+    fn echo_cancellation_recovers_after_a_mute() {
+        let far = looped(&speech(), 20.0);
+        let mic = sparse_echo(&far, 40, 1);
+        let removed = echo_removed(&far, None, &mic, &far, 0, 8 * SECOND..10 * SECOND);
+        assert!(removed >= 30.0, "{removed:.1} dB");
+    }
+
+    #[test]
+    fn echo_cancellation_survives_playback_before_the_first_microphone_frame() {
+        let far = looped(&speech(), 20.0);
+        let mic = sparse_echo(&far, 40, 1);
+        let removed = echo_removed(&far, None, &mic, &far, 150 * SECOND / 1000, 0..0);
+        assert!(removed >= 30.0, "{removed:.1} dB");
     }
 
     #[test]
@@ -435,7 +491,7 @@ mod tests {
             let lead = (voice_starts_s * SECOND as f32) as usize;
             let mut voice = vec![0.0; lead];
             voice.extend(looped(&speech(), 20.0).iter().take(20 * SECOND - lead));
-            let removed = echo_removed(&voice, Some(&streams), &mic, &streams);
+            let removed = echo_removed(&voice, Some(&streams), &mic, &streams, 0, 0..0);
             assert!(
                 removed >= 30.0,
                 "voice at {voice_starts_s} s: {removed:.1} dB"

@@ -101,9 +101,10 @@ impl EchoReference {
                 }
                 return;
             }
+            // Trimmed first, so a saturated backlog stays within what was reserved.
+            let excess = (backlog.len() + out.len()).saturating_sub(backlog_cap);
+            backlog.drain(..excess.min(backlog.len()));
             backlog.extend_from_slice(out);
-            let excess = backlog.len().saturating_sub(backlog_cap);
-            backlog.drain(..excess);
             if reference.try_push(channel, &backlog) {
                 backlog.clear();
             }
@@ -111,6 +112,14 @@ impl EchoReference {
     }
 
     pub(crate) fn activate(&self) {
+        // Reserved on the encode thread before any device can push, so devices never grow them.
+        // Twice the cap: a push lands before its excess is trimmed, and a tap's backlog can carry
+        // a whole cap at once.
+        if self.0.active.load(Ordering::Acquire) == 0 {
+            for samples in &mut self.0.buffers.lock().unwrap().samples {
+                samples.reserve(2 * Self::cap());
+            }
+        }
         self.0.active.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -118,7 +127,10 @@ impl EchoReference {
         let before = self.0.active.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(before > 0, "deactivated more often than activated");
         if before == 1 {
-            *self.0.buffers.lock().unwrap() = Buffers::default();
+            // Cleared rather than replaced, so the next session keeps the reserved capacity.
+            let mut buffers = self.0.buffers.lock().unwrap();
+            buffers.samples.iter_mut().for_each(VecDeque::clear);
+            buffers.playing = [false; CHANNELS];
         }
     }
 
@@ -246,6 +258,35 @@ mod tests {
         reference.deactivate();
         reference.activate();
         assert!(reference.drain_hops().is_empty());
+    }
+
+    #[test]
+    fn a_saturated_tap_never_outgrows_what_activation_reserved() {
+        let reference = active();
+        let capacity = || {
+            reference
+                .0
+                .buffers
+                .lock()
+                .unwrap()
+                .samples
+                .each_ref()
+                .map(VecDeque::capacity)
+        };
+        let reserved = capacity();
+        let mut tapped = reference.tap(VOICE, |_| {});
+        let mut callback = vec![0.0; 2048 * 2];
+        let held = reference.0.buffers.lock().unwrap();
+        for _ in 0..10 {
+            tapped(&mut callback);
+        }
+        drop(held);
+        for _ in 0..10 {
+            tapped(&mut callback);
+        }
+        reference.deactivate();
+        reference.activate();
+        assert_eq!(capacity(), reserved);
     }
 
     #[test]

@@ -92,12 +92,11 @@ tar = "0.4"
 flate2 = "1.1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
-# tract's debug assertions reject DeepFilterNet3's graph while loading, and unoptimised it is too slow to test.
+# A debug-only check in tract 0.21.4 fails DeepFilterNet3's model load, so debug builds could not
+# load Strong at all; opt-level only keeps the Strong tests from being too slow unoptimised.
 [profile.dev.package.tract-linalg]
 opt-level = 3
 debug-assertions = false
-overflow-checks = false
 [profile.dev.package.tract-core]
 opt-level = 3
 debug-assertions = false
-overflow-checks = false
