@@ -118,9 +118,28 @@ mod tests {
 
     #[test]
     fn the_default_filter_silences_libdf_warnings() {
-        let filter = EnvFilter::new(DEFAULT_FILTER).to_string();
-        assert!(filter.contains("df=error"));
-        assert!(filter.contains("info"));
+        struct Targets(Arc<std::sync::Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Targets {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(event.metadata().target().to_owned());
+            }
+        }
+        let seen = Arc::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new(DEFAULT_FILTER))
+            .with(Targets(Arc::clone(&seen)));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(target: "df::tract", "clipped");
+            tracing::info!(target: "brp", "kept");
+        });
+        assert_eq!(*seen.lock().unwrap(), ["brp"]);
     }
 
     #[test]
